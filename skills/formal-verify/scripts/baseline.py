@@ -119,13 +119,13 @@ def tla_definitions(path, text):
     for line in strip_tla_comments(text).split("\n"):
         if line[:1].strip():
             match = DEFINITION.match(line)
-            if not match and not MODULE_LEVEL.match(line) and "==" in line:
-                raise ValueError(f"{path}: '{collapse(line)}' defines an operator in a form the record cannot read; write Name == ..., Name(a, b) == ... or Name[x \\in S] == ...")
             if match or MODULE_LEVEL.match(line):
                 if name:
                     found[name] = collapse(" ".join(lines))
                 name, lines = (match[1], [line]) if match else (None, [])
                 continue
+            if "==" in line:
+                raise ValueError(f"{path}: '{collapse(line)}' defines an operator in a form the record cannot read; write Name == ..., Name(a, b) == ... or Name[x \\in S] == ...")
         if name:
             lines.append(line)
     if name:
@@ -322,15 +322,14 @@ def write_record(path, models):
 
 
 def record(record_path, files):
-    kinds = []
     for file in files:
         if file.suffix not in KINDS:
             print(f"usage: {file} has no model surface; expected one of {', '.join(KINDS)}")
             return 2
-        kinds.append(KINDS[file.suffix])
     models = read_record(record_path) if record_path.exists() else {}
     updates = {}
-    for file, kind in zip(files, kinds):
+    for file in files:
+        kind = KINDS[file.suffix]
         surface = SURFACES[kind](file.resolve())
         updates[str(file.resolve())] = {"kind": kind, "digest": digest(surface), "surface": surface}
     for model, entry in updates.items():

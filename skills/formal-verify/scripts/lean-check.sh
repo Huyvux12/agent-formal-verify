@@ -91,7 +91,6 @@ private def hasTheoremParent (env : Environment) : Name → Bool
   | .str parent _ | .num parent _ =>
     (match env.find? parent with | some (.thmInfo _) => true | _ => false) || hasTheoremParent env parent
 
-open Lean in
 private def oneLine (s : String) : String :=
   (s.foldl (fun (acc, gap) c =>
     if c.isWhitespace then (acc, true) else ((if gap then acc.push ' ' else acc).push c, false)) ("", false)).1

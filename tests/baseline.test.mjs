@@ -112,9 +112,7 @@ test("a weakened TLA+ property is changed", () => {
 });
 
 test("a TLA+ helper that a property references is changed, and an action that none references is not", () => {
-  const helper = (files) => {
-    edit(files.spec, "AllConsumed == <>(consumed = Items)", "Finished == consumed = Items\nAllConsumed == <>Finished");
-  };
+  const helper = tla("AllConsumed == <>(consumed = Items)", "Finished == consumed = Items\nAllConsumed == <>Finished");
   const outcome = recordedThenEdited(helper, "matrix", tla("Finished == consumed = Items", "Finished == consumed >= 0"));
   assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla Finished");
   assertUnchanged(recordedThenEdited(null, "matrix", tla("next' = next + 1", "next' = next + 2")), "matrix");
@@ -125,7 +123,7 @@ test("a TLA+ Init that Spec narrows is changed", () => {
 });
 
 test("an edit on an unindented continuation line of a TLA+ property is changed", () => {
-  const unindented = (files) => edit(files.spec, "InWindow == consumed <= next /\\ next <= consumed + Window", "InWindow ==\nconsumed <= next /\\\nnext <= consumed + Window");
+  const unindented = tla("InWindow == consumed <= next /\\ next <= consumed + Window", "InWindow ==\nconsumed <= next /\\\nnext <= consumed + Window");
   const outcome = recordedThenEdited(unindented, "matrix", tla("\nnext <= consumed + Window", "\nnext <= consumed + Window + 1"));
   assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla InWindow");
 });
@@ -151,8 +149,7 @@ test("a TLA+ definition header the record cannot read fails the record", () => {
 test("a TLA+ comment edit and an added run line leave the model unchanged", () => {
   assertUnchanged(recordedThenEdited(null, "matrix", tla("\\* Stutter at the end", "\\* Stutters at the very end")), "matrix");
   assertUnchanged(recordedThenEdited(null, "matrix", tla("consumed <= next /\\", "consumed <=   next (* why *) /\\")), "matrix");
-  const run = recordedThenEdited(null, "matrix", ({ matrix }) => edit(matrix, "run window=4 items=0 | Window=4 Items=0", "run window=4 items=0 | Window=4 Items=0\nrun window=2 items=2 | Window=2 Items=2"));
-  assertUnchanged(run, "matrix");
+  assertUnchanged(recordedThenEdited(null, "matrix", ({ matrix }) => edit(matrix, "run window=4 items=0 | Window=4 Items=0", "run window=4 items=0 | Window=4 Items=0\nrun window=2 items=2 | Window=2 Items=2")), "matrix");
 });
 
 test("a TLA+ run whose constants change is changed", () => {
@@ -182,7 +179,7 @@ test("an added Kani assume is changed", () => {
   assertChanged(outcome, "rust", "added assume state.next == 0");
 });
 
-const multiline = (files) => edit(files.rust, "kani::assume(window > 0 && window <= 2);", "kani::assume(\n            window > 0\n            && window <= 2,\n        );");
+const multiline = rust("kani::assume(window > 0 && window <= 2);", "kani::assume(\n            window > 0\n            && window <= 2,\n        );");
 
 test("an edit to one line of a multi-line Kani assume is changed", () => {
   const outcome = recordedThenEdited(multiline, "rust", rust("&& window <= 2,", "&& window <= 3,"));
@@ -199,10 +196,7 @@ test("a removed Kani cover is changed and an added cover is not", () => {
 });
 
 test("a removed Kani harness is changed", () => {
-  const remove = ({ rust: path }) => {
-    const text = readFileSync(path, "utf8");
-    writeFileSync(path, text.replace("    #[kani::proof]\n    #[kani::unwind(2)]\n    fn consume_keeps_invariant", "    #[kani::unwind(2)]\n    fn consume_keeps_invariant"));
-  };
+  const remove = rust("    #[kani::proof]\n    #[kani::unwind(2)]\n    fn consume_keeps_invariant", "    #[kani::unwind(2)]\n    fn consume_keeps_invariant");
   assertChanged(recordedThenEdited(null, "rust", remove), "rust", "removed harness consume_keeps_invariant");
 });
 
@@ -223,7 +217,7 @@ test("an added kani::any_where narrows like an assume and is changed", () => {
 });
 
 test("a harness and stub written under cfg_attr(kani, ...) are recorded", () => {
-  const wrapped = (files) => edit(files.rust, "    #[kani::proof]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant", "    #[cfg_attr(kani, kani::proof)]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant");
+  const wrapped = rust("    #[kani::proof]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant", "    #[cfg_attr(kani, kani::proof)]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant");
   const removed = recordedThenEdited(wrapped, "rust", rust("    #[cfg_attr(kani, kani::proof)]\n", ""));
   assertChanged(removed, "rust", "removed harness claim_keeps_invariant");
   const stubbed = recordedThenEdited(null, "rust", rust("    #[kani::proof]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant", "    #[kani::proof]\n    #[cfg_attr(kani, kani::stub(consume, claim))]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant"));
@@ -259,7 +253,7 @@ test("re-recording a changed file prints the previous digest, and compare then p
   const digest = lines(first)[0].split(" ").at(-1);
   edit(files.rust, "kani::assume(window > 0 && window <= 2);", "kani::assume(window > 0 && window <= 1);");
   const second = lines(baseline(files.dir, "record", files.record, files.rust));
-  assert.equal(second[0].startsWith(`RECORDED ${files.rust} `), true);
+  assert.ok(second[0].startsWith(`RECORDED ${files.rust} `));
   assert.equal(second[1], `  previous ${digest}`);
   assert.equal(baseline(files.dir, "compare", files.record).status, 0);
 });
