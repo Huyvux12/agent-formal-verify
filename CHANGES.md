@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## 0.4.9 - a specification baseline, Lean kernel replay and checked witnesses
 
 The specification baseline now preserves whitespace and comment markers inside string literals, so edits to those parts of TLA+ properties and Kani assumptions are reported as changes. Lean kernel replay now selects exact modules and their project imports, leaving out cached objects from deleted, unimported descendants.
 
