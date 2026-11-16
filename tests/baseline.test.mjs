@@ -159,6 +159,19 @@ test("a TLA+ comment edit and an added run line leave the model unchanged", () =
   assertUnchanged(recordedThenEdited(null, "matrix", ({ matrix }) => edit(matrix, "run window=4 items=0 | Window=4 Items=0", "run window=4 items=0 | Window=4 Items=0\nrun window=2 items=2 | Window=2 Items=2")), "matrix");
 });
 
+test("TLA+ comment markers inside strings do not hide changes to a property", () => {
+  for (const literal of [String.raw`"(*"`, String.raw`"\\*"`, String.raw`"\"(*"`]) {
+    const property = `AllConsumed == <>(consumed = Items) /\\ ${literal} # "bad"`;
+    const setup = tla("AllConsumed == <>(consumed = Items)", property);
+    assertChanged(recordedThenEdited(setup, "matrix", tla(' # "bad"', ' # "worse"')), "matrix", "changed definition BoundedQueue.tla AllConsumed");
+  }
+});
+
+test("whitespace inside TLA+ string literals is part of the property", () => {
+  const setup = tla("AllConsumed == <>(consumed = Items)", 'AllConsumed == <>(consumed = Items) /\\ "a b" # "a  b"');
+  assertChanged(recordedThenEdited(setup, "matrix", tla('"a  b"', '"a b"')), "matrix", "changed definition BoundedQueue.tla AllConsumed");
+});
+
 test("a TLA+ run whose constants change is changed", () => {
   const outcome = recordedThenEdited(null, "matrix", ({ matrix }) => edit(matrix, "Window=4 Items=5", "Window=4 Items=1"));
   assertChanged(outcome, "matrix", "changed run BoundedQueue.tla window=4 items=5");
@@ -195,6 +208,16 @@ test("an edit to one line of a multi-line Kani assume is changed", () => {
 
 test("a reformatted Kani assume is unchanged", () => {
   assertUnchanged(recordedThenEdited(multiline, "rust", rust("window > 0\n            && window <= 2,", "window > 0 && window <= 2,")), "rust");
+});
+
+test("whitespace inside Rust string literals is part of a Kani assumption", () => {
+  for (const literal of ['"a b"', 'b"a b"', 'r##"a b"##', 'br#"a b"#', String.raw`r#"a \" b"#`, 'cr#"a " b " c"#']) {
+    const value = literal.startsWith("cr") ? `${literal}.to_bytes()` : literal;
+    const assumption = `kani::assume(${value}.len() == usize::from(window));`;
+    const setup = rust("kani::assume(window > 0 && window <= 2);", assumption);
+    assertChanged(recordedThenEdited(setup, "rust", rust(literal, literal.replace(" b", "  b"))), "rust", "removed assume", "added assume");
+    assertUnchanged(recordedThenEdited(setup, "rust", rust(assumption, `kani::assume(\n    ${value}.len() == usize::from(window)\n);`)), "rust");
+  }
 });
 
 test("a removed Kani cover is changed and an added cover is not", () => {

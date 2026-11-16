@@ -42,10 +42,18 @@ HERE = Path(__file__).resolve().parent
 FORMAT = 1
 NARROWING = {"lean": (), "tla": (), "kani": ("assume", "stub")}
 KINDS = {".statements": "lean", ".matrix": "tla", ".rs": "kani"}
+STRING = re.compile(r'"(?:\\.|[^"\\])*"', re.DOTALL)
 
 
-def collapse(text):
-    return " ".join(text.split())
+def collapse(text, literals=None):
+    if literals is None:
+        literals = (match.span() for match in STRING.finditer(text))
+    parts, end = [], 0
+    for start, stop in literals:
+        parts.extend((re.sub(r"\s+", " ", text[end:start]), text[start:stop]))
+        end = stop
+    parts.append(re.sub(r"\s+", " ", text[end:]))
+    return "".join(parts).strip()
 
 
 class Surface(dict):
@@ -72,7 +80,13 @@ def lean_surface(path):
 def blank_tla_comments(text):
     out, i = [], 0
     while i < len(text):
-        if text.startswith("(*", i):
+        if text[i] == '"':
+            string = STRING.match(text, i)
+            if string is None:
+                raise ValueError("unterminated TLA+ string")
+            out.append(string[0])
+            i = string.end()
+        elif text.startswith("(*", i):
             depth = 0
             while i < len(text):
                 if text.startswith("(*", i):
@@ -180,10 +194,12 @@ def tla_surface(path):
 class RustSource(NamedTuple):
     uncommented: str
     without_comments_or_strings: str
+    literals: list
 
 
 def rust_masks(source):
     text, mask = list(source), list(source)
+    literals = []
 
     def blank(start, end, *, both):
         for i in range(start, end):
@@ -211,23 +227,27 @@ def rust_masks(source):
                 else:
                     i += 1
             blank(start, i, both=True)
-        elif raw := re.compile(r'(?<!\w)b?r(#*)"').match(source, i):
+        elif raw := re.compile(r'(?<!\w)[bc]?r(#*)"').match(source, i):
             close = source.find('"' + raw[1], raw.end())
             content_end = len(source) if close < 0 else close
             blank(raw.end(), content_end, both=False)
             i = content_end + 1 + len(raw[1])
+            literals.append((raw.start(), min(i, len(source))))
         elif source[i] == '"':
+            opening = i
             start = i = i + 1
             while i < len(source) and source[i] != '"':
                 i += 2 if source[i] == "\\" else 1
             blank(start, min(i, len(source)), both=False)
             i += 1
+            literals.append((opening, min(i, len(source))))
         elif char := re.compile(r"'(?:\\.[^']*|[^'\\])'").match(source, i):
             blank(char.start() + 1, char.end() - 1, both=False)
             i = char.end()
+            literals.append(char.span())
         else:
             i += 1
-    return RustSource("".join(text), "".join(mask))
+    return RustSource("".join(text), "".join(mask), literals)
 
 
 def after_closing(mask, opener):
@@ -254,7 +274,8 @@ RENAMING_IMPORT = re.compile(r"\buse\s+[^;]*?(?<![\w:])(?:::\s*)?kani\b[^;]*?(?:
 
 
 def kani_surface(path):
-    text, mask = rust_masks(path.read_text(encoding="utf-8"))
+    source = rust_masks(path.read_text(encoding="utf-8"))
+    text, mask = source.uncommented, source.without_comments_or_strings
     if renaming := RENAMING_IMPORT.search(mask):
         raise ValueError(f"{path}: '{collapse(renaming[0])}' brings a Kani assumption, cover, stub or harness attribute in under another name; write each as kani::<name> so the record can read it")
     surface = Surface()
@@ -263,7 +284,8 @@ def kani_surface(path):
         for match in pattern.finditer(mask):
             end = after_closing(mask, match.end() - 1)
             read.append((match.start(), end))
-            spans.append((match.start(), kind, collapse(text[match.end():end - 1])))
+            argument = rust_masks(text[match.end():end - 1])
+            spans.append((match.start(), kind, collapse(argument.uncommented, argument.literals)))
     for match in PROOF.finditer(mask):
         read.append(match.span())
         i = match.end()

@@ -75,7 +75,7 @@ function leanFixture(log, { status = 0, audit = audited, files = [] } = {}) {
   command(dir, "elan", [
     '[ "$4" = "--version" ] && exit 0',
     `[ "$3" = "lean" ] && { echo "${dir}"; exit 0; }`,
-    'if [ "$7" = "leanchecker" ]; then echo replay >> "$TASK_TRACE"; shift 8; printf "replaying %s\\n" "$@"; [ -z "$TASK_REPLAY" ] || { echo "$TASK_REPLAY"; exit 1; }; exit 0; fi',
+    'if [[ "$8" == */lean-replay.lean ]]; then echo replay >> "$TASK_TRACE"; sed "s/^/replaying /" "$AFV_REPLAY_MODULES"; [ -z "$TASK_REPLAY" ] || { echo "$TASK_REPLAY"; exit 1; }; exit 0; fi',
     'if [ "$6" = "env" ]; then echo audit >> "$TASK_TRACE"; grep "^import" "$8"; printf "%s\\n" "$TASK_AUDIT"; exit 0; fi',
     'shift 6; printf "%s\\n" "$@" > "$TASK_BUILT"',
     `[ ${status} -ne 0 ] || for target; do target=\${target#"$TASK_PROJECT/"}; echo "/physical/.lake/build/lib/lean/\${target%.lean:olean}.olean"; done`,
@@ -175,6 +175,15 @@ test("the Lean checker replays the built modules through the kernel when the pin
   includes(result.stdout, "REPLAYED 2 modules through the Lean kernel\n");
   includes(result.stdout, "no added axiom, kernel replay passed");
   assert.equal(readFileSync(join(dir, "calls"), "utf8"), "audit\naudit\nreplay\n");
+});
+
+test("a named Lean replay includes imported project modules once", () => {
+  const { dir, check } = leanFixture("lake-search.log");
+  command(dir, "leanchecker", "exit 0");
+  const audit = ["IMPORTED Model", "IMPORTED Model.Sub", "IMPORTED Lean", audited].join("\n");
+  const result = check(["Model/Sub.lean"], audit);
+  assert.equal(result.status, 0, result.stdout);
+  includes(result.stdout, "REPLAYED 2 modules through the Lean kernel\n");
 });
 
 test("the Lean checker fails a module that kernel replay rejects, and names it", () => {
