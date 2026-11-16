@@ -211,11 +211,12 @@ test("a reformatted Kani assume is unchanged", () => {
 });
 
 test("whitespace inside Rust string literals is part of a Kani assumption", () => {
-  for (const literal of ['"a b"', 'b"a b"', 'r##"a b"##', 'br#"a b"#', String.raw`r#"a \" b"#`]) {
-    const assumption = `kani::assume(${literal}.len() == usize::from(window));`;
+  for (const literal of ['"a b"', 'b"a b"', 'r##"a b"##', 'br#"a b"#', String.raw`r#"a \" b"#`, 'cr#"a " b " c"#']) {
+    const value = literal.startsWith("cr") ? `${literal}.to_bytes()` : literal;
+    const assumption = `kani::assume(${value}.len() == usize::from(window));`;
     const setup = rust("kani::assume(window > 0 && window <= 2);", assumption);
     assertChanged(recordedThenEdited(setup, "rust", rust(literal, literal.replace(" b", "  b"))), "rust", "removed assume", "added assume");
-    assertUnchanged(recordedThenEdited(setup, "rust", rust(assumption, `kani::assume(\n    ${literal}.len() == usize::from(window)\n);`)), "rust");
+    assertUnchanged(recordedThenEdited(setup, "rust", rust(assumption, `kani::assume(\n    ${value}.len() == usize::from(window)\n);`)), "rust");
   }
 });
 

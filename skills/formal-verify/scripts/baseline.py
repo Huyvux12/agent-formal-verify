@@ -227,7 +227,7 @@ def rust_masks(source):
                 else:
                     i += 1
             blank(start, i, both=True)
-        elif raw := re.compile(r'(?<!\w)b?r(#*)"').match(source, i):
+        elif raw := re.compile(r'(?<!\w)[bc]?r(#*)"').match(source, i):
             close = source.find('"' + raw[1], raw.end())
             content_end = len(source) if close < 0 else close
             blank(raw.end(), content_end, both=False)
