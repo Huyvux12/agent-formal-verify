@@ -196,10 +196,13 @@ theorem bounded (n m : Nat) (h : step n = some m) : m ≤ 4 := by
   unfold step at h
   split at h <;> simp_all <;> omega
 theorem bounded.witness : ∃ (n : Nat), ∃ (m : Nat), step n = some m := ⟨0, 1, rfl⟩
+theorem witness (n : Nat) (h : n < 3) : n < 4 := by omega
 end Step
 EOF
 printf 'mutation never step\n- if n < 3 then\n+ if n < 0 then\n' > "$work/Model/Step.mutations"
 bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean
+bash "$scripts/lean-check.sh" "$work" | tee "$work/check"
+grep -q '^WITNESS absent Step.witness: ' "$work/check"
 if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
   echo 'FAIL a mutation that breaks only a witness counted as detected'
   exit 1
@@ -210,4 +213,5 @@ if grep -q '^UNCOVERED theorem Step.bounded.witness$' "$work/result"; then
   echo 'FAIL a public witness counted as a coverage target'
   exit 1
 fi
+grep -q '^UNCOVERED theorem Step.witness$' "$work/result"
 echo 'ok: qualified coverage and proof-sensitivity reporting checked with real Lean'

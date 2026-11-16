@@ -7,7 +7,7 @@
 # .lean file in the project, a theorem named <Property>.witness does not state
 # that the hypotheses of <Property> hold together, or the pin's leanchecker
 # rejects a built module on kernel replay. Otherwise prints the build output,
-# a WITNESS line for each public theorem and PASS. A property without a witness
+# a WITNESS line for each property and PASS. A property without a witness
 # passes, and so does a pin that ships no leanchecker; the PASS line counts the
 # first and reports the replay as unavailable for the second.
 # Named files limit the check to those sources, so agents that share a project
@@ -160,7 +160,10 @@ open Lean Elab Command in
     IO.println s!"STATEMENT {record.compress}"
     if info matches .thmInfo _ then theorems := theorems.push (name, userName, idx)
   for (name, userName, idx) in theorems.qsort (·.1.toString < ·.1.toString) do
-    if name != userName || userName matches .str _ "witness" then continue
+    let pairedWitness := match userName with
+      | .str parent "witness" => theorems.any fun (_, user, owner) => owner == idx && user == parent
+      | _ => false
+    if name != userName || pairedWitness then continue
     if env.isProjectionFn name || Meta.isInstanceCore env name then continue
     if (← findDeclarationRanges? name).isNone then continue
     let witness? := theorems.find? fun (_, user, owner) => owner == idx && user == userName ++ `witness
@@ -195,7 +198,7 @@ if [ "$status" -ne 0 ] || { [ "$freeze" -eq 0 ] && [ "$sorries" -ne 0 ]; } || [ 
     || echo "$toolchain cannot build a module by its source path; pin Lean 4.20.0 or later"
   if [ "$audit_status" -ne 0 ]; then
     echo "the axiom audit did not run or found no declarations:"
-    grep -v '^[[:space:]]*$' "$work/audit.out" | tail -40
+    grep -v -e '^[[:space:]]*$' -e '^IMPORTED ' "$work/audit.out" | tail -40
     ! grep -q 'environment already contains' "$work/audit.out" \
       || echo "two modules declare the same name; put each model in a namespace of its own"
   fi
