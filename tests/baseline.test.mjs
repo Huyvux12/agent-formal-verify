@@ -212,13 +212,26 @@ test("a harness and stub written under cfg_attr(kani, ...) are recorded", () => 
   assertChanged(stubbed, "rust", "added stub consume, claim");
 });
 
-test("an import that renames a Kani assumption fails the record", () => {
-  const files = models();
-  edit(files.rust, "#[cfg(kani)]", "use kani::assume;\n#[cfg(kani)]");
-  const result = baseline(files.dir, "record", files.record, files.rust);
-  assert.equal(result.status, 1);
-  assert.ok(lines(result)[0].startsWith("FAIL baseline:"));
-  assert.ok(result.stdout.includes("use kani::assume"));
+test("an any_where with a nested turbofish is read as an assume", () => {
+  const outcome = recordedThenEdited(null, "rust", rust("let window: u16 = kani::any();", "let window: u16 = kani::any_where::<Option<u16>>(|w| w.is_some()).unwrap();"));
+  assertChanged(outcome, "rust", "added assume |w| w.is_some()");
+});
+
+test("a Kani form or import the record cannot read fails the record instead of passing unrecorded", () => {
+  const forms = [
+    ["#[cfg(kani)]", "use kani::assume;\n#[cfg(kani)]", "use kani::assume"],
+    ["#[cfg(kani)]", "use ::kani::{any, assume as given};\n#[cfg(kani)]", "use ::kani::{any, assume"],
+    ["#[cfg(kani)]", "extern crate kani as k;\n#[cfg(kani)]", "extern crate kani as"],
+    ["    #[kani::unwind(2)]\n    fn claim_keeps_invariant", "    #[cfg_attr(all(kani, test), kani::stub(consume, claim))]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant", "kani::stub"],
+  ];
+  for (const [from, to, named] of forms) {
+    const files = models();
+    edit(files.rust, from, to);
+    const result = baseline(files.dir, "record", files.record, files.rust);
+    assert.equal(result.status, 1, to);
+    assert.ok(lines(result)[0].startsWith("FAIL baseline:"), result.stdout);
+    assert.ok(result.stdout.includes(named), result.stdout);
+  }
 });
 
 test("re-recording a changed file prints the previous digest, and compare then passes", () => {

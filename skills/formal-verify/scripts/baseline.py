@@ -243,27 +243,30 @@ def balanced(mask, opener):
 KANI_ATTRIBUTE = r"#\s*\[\s*(?:cfg_attr\s*\(\s*kani\s*,\s*)?kani\s*::\s*"
 MACROS = (
     ("assume", re.compile(r"\bkani\s*::\s*assume\s*\(")),
-    ("assume", re.compile(r"\bkani\s*::\s*any_where\s*(?:::\s*<[^>]*>\s*)?\(")),
+    ("assume", re.compile(r"\bkani\s*::\s*any_where\s*(?:::\s*<[^<>]*(?:<[^<>]*>[^<>]*)*>\s*)?\(")),
     ("cover", re.compile(r"\bkani\s*::\s*cover\s*!\s*\(")),
     ("stub", re.compile(KANI_ATTRIBUTE + r"stub\s*\(")),
 )
 PROOF = re.compile(KANI_ATTRIBUTE + r"proof(?:_for_contract\s*\([^)]*\))?\s*\)?\s*\]")
 FUNCTION = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:async|unsafe|const)\s+)*fn\s+(\w+)")
-# The record reads these calls only by their kani:: path, so an import that renames them would hide one.
-HIDING_IMPORT = re.compile(r"\buse\s+kani\s+as\b|\buse\s+kani\s*::[^;]*\b(?:assume|any_where|cover)\b|\buse\s+kani\s*::[^;]*\*")
+# The record fails closed: each of these tokens must sit in a form read above, and no import may rename one.
+KANI_TOKEN = re.compile(r"\bkani\s*::\s*(?:assume|any_where|cover|stub|proof)\w*\b")
+RENAMING_IMPORT = re.compile(r"\buse\s+(?:::\s*)?kani\b[^;]*(?:\bas\b|\*|\b(?:assume|any_where|cover|stub|proof)\w*\b)|\bextern\s+crate\s+kani\s+as\b")
 
 
 def kani_surface(path):
     text, mask = rust_masks(path.read_text(encoding="utf-8"))
-    if hiding := HIDING_IMPORT.search(mask):
-        raise ValueError(f"{path}: '{collapse(hiding[0])}' imports a Kani assumption or cover by another name; call it by its kani:: path so the record can read it")
+    if renaming := RENAMING_IMPORT.search(mask):
+        raise ValueError(f"{path}: '{collapse(renaming[0])}' brings a Kani assumption, cover, stub or harness attribute in under another name; write each as kani::<name> so the record can read it")
     surface = Surface()
-    spans = []
+    spans, read = [], []
     for kind, pattern in MACROS:
         for match in pattern.finditer(mask):
             end = balanced(mask, match.end() - 1)
+            read.append((match.start(), end))
             spans.append((match.start(), kind, collapse(text[match.end():end - 1])))
     for match in PROOF.finditer(mask):
+        read.append(match.span())
         i = match.end()
         while True:
             i = len(mask) - len(mask[i:].lstrip())
@@ -275,6 +278,10 @@ def kani_surface(path):
         if not name:
             raise ValueError(f"{path}: #[kani::proof] at offset {match.start()} is not followed by a function")
         spans.append((match.start(), "harness", name[1]))
+    for token in KANI_TOKEN.finditer(mask):
+        if not any(start <= token.start() < end for start, end in read):
+            line = mask.count("\n", 0, token.start()) + 1
+            raise ValueError(f"{path}:{line}: '{collapse(token[0])}' is in a form the record cannot read; write kani::assume(...), kani::any_where(...), kani::cover!(...), #[kani::stub(...)] or #[kani::proof], alone or under #[cfg_attr(kani, ...)]")
     for _, kind, item in sorted(spans):
         surface.add(f"{kind} {item}")
     return surface
