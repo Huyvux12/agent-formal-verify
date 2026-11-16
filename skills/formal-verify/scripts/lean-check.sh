@@ -95,9 +95,6 @@ private def oneLine (s : String) : String :=
   (s.foldl (fun (acc, gap) c =>
     if c.isWhitespace then (acc, true) else ((if gap then acc.push ' ' else acc).push c, false)) ("", false)).1
 
--- A property's hypotheses can hold together when some values of its variables
--- satisfy all of them. The witness must state exactly that, and the statement
--- is rebuilt from the property's type on every run, so it cannot go stale.
 open Lean Meta in
 private def witnessLine (property : ConstantInfo) (witness? : Option ConstantInfo) : MetaM String :=
   forallTelescope property.type fun xs _ => do
@@ -162,8 +159,6 @@ open Lean Elab Command in
       ("valueExpr", value), ("type", toJson pp.pretty)]
     IO.println s!"STATEMENT {record.compress}"
     if info matches .thmInfo _ then theorems := theorems.push (name, userName, idx)
-  -- A property is a theorem the mutation runner would target: public, written
-  -- in the source, and neither a projection nor an instance.
   for (name, userName, idx) in theorems.qsort (·.1.toString < ·.1.toString) do
     if name != userName || userName matches .str _ "witness" then continue
     if env.isProjectionFn name || Meta.isInstanceCore env name then continue

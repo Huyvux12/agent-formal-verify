@@ -189,9 +189,6 @@ for check in 'example : step 0 = 1 := by rfl' \
   grep -Fq "${check%% *} at $work/Model/Step.lean:3: the mutation changes its statement" "$work/result"
 done
 
-# A witness proves a property's hypotheses on chosen values. A mutation that
-# changes only those values breaks the witness and no property, so it is missed.
-# A public witness is not a property, so it needs no mutation of its own.
 cat > "$work/Model/Step.lean" <<'EOF'
 namespace Step
 def step (n : Nat) : Option Nat := if n < 3 then some (n + 1) else none

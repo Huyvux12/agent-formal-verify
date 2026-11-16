@@ -33,7 +33,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Importing tlc must not write __pycache__ into the skill directory.
 sys.dont_write_bytecode = True
 
 import tlc
@@ -49,8 +48,6 @@ def collapse(text):
 
 
 class Surface(dict):
-    """Item name to canonical value, with a repeated name numbered so that each occurrence is its own item."""
-
     def add(self, name, value=""):
         candidate, count = name, 1
         while candidate in self:
@@ -72,7 +69,6 @@ def lean_surface(path):
 
 
 def strip_tla_comments(text):
-    """Replace each \\* and (* *) comment with a space, keeping the lines of a block comment."""
     out, i = [], 0
     while i < len(text):
         if text.startswith("(*", i):
@@ -104,17 +100,10 @@ DEFINITION = re.compile(r"(?:LOCAL\s+)?([A-Za-z_]\w*)\s*(?:\((?:[^()]|\([^()]*\)
 MODULE_LEVEL = re.compile(r"-{4,}|={4,}|(?:EXTENDS|VARIABLES?|CONSTANTS?|ASSUME|ASSUMPTION|AXIOM|THEOREM|LEMMA|PROPOSITION|COROLLARY|INSTANCE|RECURSIVE|USE|HIDE)\b")
 IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 SUBSCRIPT = r"_(?:\w+|<<[^>]*>>)"
-# The actions under [][...]_v and WF_v(...) or SF_v(...) change with every correction of the transcription.
 SPEC_ACTIONS = re.compile(rf"\[\]\[[^\]]*\]{SUBSCRIPT}|[WS]F{SUBSCRIPT}\s*\([^()]*\)")
 
 
 def tla_definitions(path, text):
-    """Return each top-level definition's name and its text with whitespace collapsed.
-
-    A definition ends at the next definition, module-level keyword or separator in
-    column 0. Other column-0 text continues it, so an unindented line is never dropped.
-    A column-0 definition header it cannot read, such as an infix operator, fails.
-    """
     found, name, lines = {}, None, []
     for line in strip_tla_comments(text).split("\n"):
         if line[:1].strip():
@@ -134,7 +123,6 @@ def tla_definitions(path, text):
 
 
 def tla_closure(definitions, roots):
-    """Return the roots and the definitions they reference, following Spec everywhere but into its actions."""
     seen, pending = set(), list(roots)
     while pending:
         name = pending.pop()
@@ -184,7 +172,6 @@ def tla_surface(path):
 
 
 def rust_masks(source):
-    """Return the source with comments blanked, and again with string contents blanked; same length, same offsets."""
     text, mask = list(source), list(source)
 
     def blank(start, end, *, both):
@@ -233,7 +220,6 @@ def rust_masks(source):
 
 
 def balanced(mask, opener):
-    """Return the index after the bracket that closes the one at opener."""
     closer = {"(": ")", "[": "]"}[mask[opener]]
     depth = 0
     for i in range(opener, len(mask)):
@@ -252,7 +238,6 @@ MACROS = (
 )
 PROOF = re.compile(KANI_ATTRIBUTE + r"proof(?:_for_contract\s*\([^)]*\))?\s*\)?\s*\]")
 FUNCTION = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:async|unsafe|const)\s+)*fn\s+(\w+)")
-# The record fails closed: each of these tokens must sit in a form read above, and no import may rename one.
 KANI_TOKEN = re.compile(r"\bkani\s*::\s*(?:assume|any_where|cover|stub|proof)\w*\b")
 RENAMING_IMPORT = re.compile(r"\buse\b[^;]*?\bkani\b[^;]*?(?:\bas\b|\*|\b(?:assume|any_where|cover|stub|proof)\w*\b)|\bextern\s+crate\s+kani\s+as\b")
 

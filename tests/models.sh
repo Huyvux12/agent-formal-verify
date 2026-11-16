@@ -73,7 +73,6 @@ printf 'theorem vacuous (w : Nat) (s t : BoundedQueue.State) (hs : BoundedQueue.
 bash "$scripts/lean-check.sh" "$p" --freeze Model/BoundedQueue.lean
 rejected python3 "$scripts/mutate.py" "$p/Model/BoundedQueue.mutations" | tee "$work/lean.out"
 grep -q "^UNCOVERED theorem vacuous$" "$work/lean.out"
-# It has no witness, and the statement the checker prints for one has no proof.
 bash "$scripts/lean-check.sh" "$p" | tee "$work/lean.out"
 vacuous=$(sed -n 's/^WITNESS absent vacuous: no theorem vacuous.witness states //p' "$work/lean.out")
 [ "$vacuous" = '∃ (w : Nat), ∃ (s : BoundedQueue.State), ∃ (t : BoundedQueue.State), BoundedQueue.Invariant w s ∧ s.next < s.consumed ∧ BoundedQueue.claim w s = some t' ]
@@ -85,9 +84,6 @@ if grep -q '^WITNESS checked vacuous' "$work/lean.out"; then
   exit 1
 fi
 
-# A witness is found in a nested namespace, an axiom is not a witness, the
-# printed statement is accepted when copied as it is, and a witness for other
-# hypotheses fails with the statement to copy.
 scenario lean-witness
 cat > "$p/Model/Witness.lean" <<'EOF'
 namespace Witness.Nested
