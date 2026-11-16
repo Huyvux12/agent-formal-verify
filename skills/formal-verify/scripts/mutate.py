@@ -251,7 +251,10 @@ def check_lean(model, project, toolchain, unmutated_statements, mutation, work):
                                              f"so this error does not show its proof or check failing\n{where}")
         if error["fileName"] != str(copy) or not checks:
             return Result(Verdict.ERROR, where)
-        failed.extend(name for name, _ in checks if name not in failed)
+        # A witness proves a property's hypotheses on chosen values, so its failure shows a changed value, not a broken property.
+        failed.extend(name for name, _ in checks if name not in failed and not name.endswith(".witness"))
+    if not failed:
+        return Result(Verdict.MISSED)
     return Result(Verdict.DETECTED, "proof/check fails: " + "; ".join(failed), frozenset(failed))
 
 
