@@ -4,9 +4,12 @@
 # Builds a Lean 4 model with Lake, then audits every declaration of every built
 # module. Fails when the build fails, a declaration uses sorry or rests on an
 # axiom beyond propext, Classical.choice and Quot.sound, no Lake library owns a
-# .lean file in the project, or the pin's leanchecker rejects a built module on
-# kernel replay. Otherwise prints the build output and PASS. A pin that ships
-# no leanchecker passes with the replay reported as unavailable.
+# .lean file in the project, a theorem named <Property>.witness does not state
+# that the hypotheses of <Property> hold together, or the pin's leanchecker
+# rejects a built module on kernel replay. Otherwise prints the build output,
+# a WITNESS line for each public theorem and PASS. A property without a witness
+# passes, and so does a pin that ships no leanchecker; the PASS line counts the
+# first and reports the replay as unavailable for the second.
 # Named files limit the check to those sources, so agents that share a project
 # can each check their own model; a run without them checks the whole project.
 # Needs a pin of Lean 4.20.0 or later, the first whose Lake builds a module by
@@ -88,6 +91,37 @@ private def hasTheoremParent (env : Environment) : Name → Bool
   | .str parent _ | .num parent _ =>
     (match env.find? parent with | some (.thmInfo _) => true | _ => false) || hasTheoremParent env parent
 
+open Lean in
+private def oneLine (s : String) : String :=
+  (s.foldl (fun (acc, gap) c =>
+    if c.isWhitespace then (acc, true) else ((if gap then acc.push ' ' else acc).push c, false)) ("", false)).1
+
+-- A property's hypotheses can hold together when some values of its variables
+-- satisfy all of them. The witness must state exactly that, and the statement
+-- is rebuilt from the property's type on every run, so it cannot go stale.
+open Lean Meta in
+private def witnessLine (property : ConstantInfo) (witness? : Option ConstantInfo) : MetaM String :=
+  forallTelescope property.type fun xs _ => do
+    let name := property.name
+    let binders ← xs.mapM fun x => return (x, ← inferType x)
+    let hyps ← binders.filterM fun (_, type) => isProp type
+    if hyps.isEmpty then return s!"WITNESS no-hypotheses {name}"
+    let proofs := hyps.map (·.1.fvarId!)
+    for (x, type) in binders do
+      if type.hasAnyFVar proofs.contains then
+        return s!"WITNESS unavailable {name}: the type of {← ppExpr x} uses the proof of a hypothesis"
+    let vars := binders.filter fun (x, _) => !proofs.contains x.fvarId!
+    let all := hyps.pop.foldr (fun (_, hyp) rest => mkAnd hyp rest) hyps.back!.2
+    -- Explicit binders printed with their types let the statement be copied into the model.
+    let expected ← vars.foldrM (fun (x, type) body => do
+      mkAppM ``Exists #[.lam (← x.fvarId!.getUserName) type (body.abstract #[x]) .default]) all
+    let shown := oneLine (← withOptions (·.setBool `pp.funBinderTypes true) (ppExpr expected)).pretty
+    let some witness := witness? | return s!"WITNESS absent {name}: no theorem {name}.witness states {shown}"
+    let levels ← mkFreshLevelMVars property.levelParams.length
+    if ← isDefEq witness.type (expected.instantiateLevelParams property.levelParams levels) then
+      return s!"WITNESS checked {name}"
+    return s!"WITNESS failed {name}: {name}.witness must state {shown}"
+
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
   let env ← getEnv
@@ -96,6 +130,7 @@ open Lean Elab Command in
   let standard : Array Name := #[``propext, ``Classical.choice, ``Quot.sound]
   let names := env.constants.fold (fun acc name info => if info matches .axiomInfo _ then acc else acc.push name) #[]
   let mut audited := 0
+  let mut theorems : Array (Name × Name × ModuleIdx) := #[]
   for name in names do
     let some idx := env.getModuleIdxFor? name | continue
     unless modules.contains env.header.moduleNames[idx.toNat]! do continue
@@ -126,6 +161,18 @@ open Lean Elab Command in
       ("typeExpr", toJson (reprStr (info.levelParams, info.type))),
       ("valueExpr", value), ("type", toJson pp.pretty)]
     IO.println s!"STATEMENT {record.compress}"
+    if info matches .thmInfo _ then theorems := theorems.push (name, userName, idx)
+  -- A property is a theorem the mutation runner would target: public, written
+  -- in the source, and neither a projection nor an instance.
+  for (name, userName, idx) in theorems.qsort (·.1.toString < ·.1.toString) do
+    if name != userName || userName matches .str _ "witness" then continue
+    if env.isProjectionFn name || Meta.isInstanceCore env name then continue
+    if (← findDeclarationRanges? name).isNone then continue
+    let witness? := theorems.find? fun (_, user, owner) => owner == idx && user == userName ++ `witness
+    let line ← liftTermElabM <| tryCatchRuntimeEx
+      (witnessLine (env.find? name).get! (witness?.bind (env.find? ·.1)))
+      fun error => return s!"WITNESS unavailable {name}: {oneLine (← error.toMessageData.toString)}"
+    IO.println line
   IO.println s!"AUDITED {audited} declarations"
 EOF
   } > "$work/Audit.lean"
@@ -173,6 +220,12 @@ cat "$work/statements.out"
 grep -v '^[[:space:]]*$' "$log"
 [ "$freeze" -eq 0 ] || exit 0
 
+witnesses() { grep -c "^WITNESS $1 " "$work/audit.out"; }
+failed=$(witnesses failed)
+[ "$failed" -eq 0 ] || echo "FAIL $scope: $failed witnesses do not state their property's hypotheses"
+grep '^WITNESS ' "$work/audit.out"
+[ "$failed" -eq 0 ] || exit 1
+
 # The build trusts a declaration that a command adds to the environment without
 # a kernel check. leanchecker replays every declaration of the built modules
 # through the kernel and rejects it. It reads each argument as a name prefix,
@@ -192,4 +245,4 @@ case $replay in
     exit 1 ;;
   unavailable) echo "UNAVAILABLE kernel replay: $toolchain ships no leanchecker" ;;
 esac
-echo "PASS $scope: $(grep '^AUDITED ' "$work/audit.out" | cut -d' ' -f2) declarations checked, no unfinished proof (sorry), no added axiom, kernel replay $replay"
+echo "PASS $scope: $(grep '^AUDITED ' "$work/audit.out" | cut -d' ' -f2) declarations checked, no unfinished proof (sorry), no added axiom, kernel replay $replay, $(witnesses checked) witnesses checked, $(witnesses absent) absent, $(witnesses unavailable) unavailable, $(witnesses no-hypotheses) properties without hypotheses"

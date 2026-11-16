@@ -205,6 +205,32 @@ test("freezing does not replay", () => {
   excludes(readFileSync(join(dir, "calls"), "utf8"), "replay");
 });
 
+test("the Lean checker fails a witness that does not state its property's hypotheses, except when freezing", () => {
+  const failed = "WITNESS failed Model.step: Model.step.witness must state ∃ (n : Nat), n < 3";
+  const audit = statementAudit(statement("property"), "WITNESS checked Model.other", failed);
+  const { project, check, result } = leanFixture("lake-search.log", { audit });
+  assert.equal(result.status, 1);
+  includes(result.stdout, `FAIL ${project}: 1 witnesses do not state their property's hypotheses\n`);
+  includes(result.stdout, failed + "\n");
+  excludes(result.stdout, "PASS ");
+  const frozen = check(["--freeze", "Model.lean"]);
+  assert.equal(frozen.status, 0, frozen.stdout);
+  excludes(frozen.stdout, "WITNESS");
+});
+
+test("the Lean checker passes properties without a checked witness and counts each status", () => {
+  const lines = [
+    "WITNESS absent Model.a: no theorem Model.a.witness states ∃ (n : Nat), n < 3",
+    "WITNESS checked Model.b",
+    "WITNESS no-hypotheses Model.c",
+    "WITNESS unavailable Model.d: the type of hz uses the proof of a hypothesis",
+  ];
+  const { result } = leanFixture("lake-search.log", { audit: [...lines, audited].join("\n") });
+  assert.equal(result.status, 0, result.stdout);
+  for (const line of lines) includes(result.stdout, line + "\n");
+  includes(result.stdout, "kernel replay unavailable, 1 witnesses checked, 1 absent, 1 unavailable, 1 properties without hypotheses\n");
+});
+
 const statement = (name, kind = "theorem", typeExpr = "type", valueExpr = null, module = "Model") =>
   "STATEMENT " + JSON.stringify({ module, name, kind, typeExpr, valueExpr, type: typeExpr });
 

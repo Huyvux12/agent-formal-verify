@@ -54,7 +54,9 @@ grep -qF "VECTOR w=0 input=0,0 claim=none consume=none" "$work/vectors.out"
 grep -qF "VECTOR w=4 input=4,0 claim=none" "$work/vectors.out"
 grep -qF "VECTOR w=4 input=3,0 claim=some(4,0)" "$work/vectors.out"
 grep -q '^REPLAYED 1 modules through the Lean kernel$' "$work/vectors.out"
-grep -q '^PASS .* kernel replay passed' "$work/vectors.out"
+grep -q '^WITNESS checked BoundedQueue.claim_keeps_invariant$' "$work/vectors.out"
+grep -q '^WITNESS checked BoundedQueue.consume_keeps_invariant$' "$work/vectors.out"
+grep -q '^PASS .* kernel replay passed, 2 witnesses checked, 0 absent, 0 unavailable, 1 properties without hypotheses$' "$work/vectors.out"
 python3 "$scripts/mutate.py" "$work/lean/Model/BoundedQueue.mutations"
 bash "$ROOT/tests/lean-mutations.sh"
 
@@ -71,6 +73,44 @@ printf 'theorem vacuous (w : Nat) (s t : BoundedQueue.State) (hs : BoundedQueue.
 bash "$scripts/lean-check.sh" "$p" --freeze Model/BoundedQueue.lean
 rejected python3 "$scripts/mutate.py" "$p/Model/BoundedQueue.mutations" | tee "$work/lean.out"
 grep -q "^UNCOVERED theorem vacuous$" "$work/lean.out"
+# It has no witness, and the statement the checker prints for one has no proof.
+bash "$scripts/lean-check.sh" "$p" | tee "$work/lean.out"
+vacuous=$(sed -n 's/^WITNESS absent vacuous: no theorem vacuous.witness states //p' "$work/lean.out")
+[ "$vacuous" = '∃ (w : Nat), ∃ (s : BoundedQueue.State), ∃ (t : BoundedQueue.State), BoundedQueue.Invariant w s ∧ s.next < s.consumed ∧ BoundedQueue.claim w s = some t' ]
+printf 'private theorem vacuous.witness : %s := sorry\n' "$vacuous" >> "$p/Model/BoundedQueue.lean"
+rejected bash "$scripts/lean-check.sh" "$p" | tee "$work/lean.out"
+grep -q '1 unfinished proofs (sorry)' "$work/lean.out"
+if grep -q '^WITNESS checked vacuous' "$work/lean.out"; then
+  echo 'FAIL an unproved witness reported as checked'
+  exit 1
+fi
+
+# A witness is found in a nested namespace, an axiom is not a witness, the
+# printed statement is accepted when copied as it is, and a witness for other
+# hypotheses fails with the statement to copy.
+scenario lean-witness
+cat > "$p/Model/Witness.lean" <<'EOF'
+namespace Witness.Nested
+theorem bounded (n m : Nat) (h : n < 3) (hm : m = n + 1) : m < 4 := by omega
+private theorem bounded.witness : ∃ n m, n < 3 ∧ m = n + 1 := ⟨0, 1, by decide, rfl⟩
+theorem narrow (x : UInt32) (h : x < 100) : x < 200 := Nat.lt_trans h (by decide)
+theorem empty (n : Nat) (h : n < 0) : n = 7 := absurd h (Nat.not_lt_zero n)
+axiom empty.witness : ∃ n : Nat, n < 0
+theorem indexed (xs : Array Nat) (i : Nat) (h : i < xs.size) (hz : xs[i] = 0) : xs[i] + 1 = 1 := by omega
+end Witness.Nested
+EOF
+bash "$scripts/lean-check.sh" "$p" Model/Witness.lean | tee "$work/lean.out"
+grep -q '^WITNESS checked Witness.Nested.bounded$' "$work/lean.out"
+grep -q '^WITNESS absent Witness.Nested.empty: ' "$work/lean.out"
+grep -q '^WITNESS unavailable Witness.Nested.indexed: the type of hz uses the proof of a hypothesis$' "$work/lean.out"
+narrow=$(sed -n 's/^WITNESS absent Witness.Nested.narrow: no theorem Witness.Nested.narrow.witness states //p' "$work/lean.out")
+[ "$narrow" = '∃ (x : UInt32), x < 100' ]
+printf 'private theorem Witness.Nested.narrow.witness : %s := ⟨0, by decide⟩\n' "$narrow" >> "$p/Model/Witness.lean"
+bash "$scripts/lean-check.sh" "$p" Model/Witness.lean | tee "$work/lean.out"
+grep -q '^WITNESS checked Witness.Nested.narrow$' "$work/lean.out"
+sed -i.orig 's|∃ n m, n < 3 ∧|∃ n m, n < 5 ∧|' "$p/Model/Witness.lean"
+rejected bash "$scripts/lean-check.sh" "$p" Model/Witness.lean | tee "$work/lean.out"
+grep -qF 'WITNESS failed Witness.Nested.bounded: Witness.Nested.bounded.witness must state ∃ (n : Nat), ∃ (m : Nat), n < 3 ∧ m = n + 1' "$work/lean.out"
 
 scenario lean-unreachable
 sed -i.orig 's|if s.next < s.consumed + w then|if s.next < s.consumed + w - 1 then|' "$p/Model/BoundedQueue.lean"

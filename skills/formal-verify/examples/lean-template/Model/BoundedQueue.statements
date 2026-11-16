@@ -144,6 +144,13 @@
       "valueHash": null
     },
     {
+      "name": "BoundedQueue.claim_keeps_invariant.witness",
+      "kind": "theorem",
+      "type": "∃ w s t, BoundedQueue.Invariant w s ∧ BoundedQueue.claim w s = some t",
+      "typeHash": "345ce2f56368ae1d973c198de43581007e5a656e2115d3c9101fd3013b3d8430",
+      "valueHash": null
+    },
+    {
       "name": "BoundedQueue.consume",
       "kind": "definition",
       "type": "BoundedQueue.State → Option BoundedQueue.State",
@@ -155,6 +162,13 @@
       "kind": "theorem",
       "type": "∀ (w : Nat) (s t : BoundedQueue.State), BoundedQueue.Invariant w s → BoundedQueue.consume s = some t → BoundedQueue.Invariant w t",
       "typeHash": "8f97727457cdc622aff37bd77a07265ab79e8ad8c1fe7124db33cef3aacc0b3f",
+      "valueHash": null
+    },
+    {
+      "name": "BoundedQueue.consume_keeps_invariant.witness",
+      "kind": "theorem",
+      "type": "∃ w s t, BoundedQueue.Invariant w s ∧ BoundedQueue.consume s = some t",
+      "typeHash": "3667894d6b0a22c93ce6d8dae29d88713eb74e7f218a2f854d4272d41fb160ca",
       "valueHash": null
     },
     {

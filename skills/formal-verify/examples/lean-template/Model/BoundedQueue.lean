@@ -13,6 +13,9 @@ This model checks the counters of a bounded queue with ordered output.
 4. Run `#eval badPairs` to find states where a step violates the invariant
    within the chosen bound, and keep the `#guard` that fails the build on one.
 5. Prove the invariant for every size by cases on the step.
+6. For each theorem with hypotheses, prove `<theorem>.witness` on concrete
+   values that satisfy all of them at once. `lean-check.sh` prints the
+   statement it expects and checks the one it finds.
 
 Name any unfinished proof that uses `sorry`. `lean-check.sh` fails on it, on
 any declaration that rests on a declared axiom, and on a `.lean` file that no
@@ -81,6 +84,9 @@ theorem claim_keeps_invariant (w : Nat) (s t : State) (hs : Invariant w s) (h : 
     omega
   · cases h
 
+private theorem claim_keeps_invariant.witness : ∃ w s t, Invariant w s ∧ claim w s = some t :=
+  ⟨1, ⟨0, 0⟩, ⟨1, 0⟩, by decide, by decide⟩
+
 theorem consume_keeps_invariant (w : Nat) (s t : State) (hs : Invariant w s) (h : consume s = some t) :
     Invariant w t := by
   unfold consume at h
@@ -89,6 +95,9 @@ theorem consume_keeps_invariant (w : Nat) (s t : State) (hs : Invariant w s) (h 
     simp only [Invariant] at *
     omega
   · cases h
+
+private theorem consume_keeps_invariant.witness : ∃ w s t, Invariant w s ∧ consume s = some t :=
+  ⟨1, ⟨1, 0⟩, ⟨1, 1⟩, by decide, by decide⟩
 
 def vectors : List (Nat × State) :=
   [(0, ⟨0, 0⟩), (1, ⟨0, 0⟩), (1, ⟨1, 0⟩), (1, ⟨1, 1⟩),
