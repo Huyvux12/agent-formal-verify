@@ -137,13 +137,20 @@ test("a TLA+ operator with an operator parameter is its own recorded definition"
   assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla Holds");
 });
 
-test("a TLA+ definition header the record cannot read fails the record", () => {
-  const files = models();
-  edit(files.spec, "\nSpec ==", "\na \\prec b == a < b\n\nSpec ==");
-  const result = baseline(files.dir, "record", files.record, files.matrix);
-  assert.equal(result.status, 1);
-  assert.ok(lines(result)[0].startsWith("FAIL baseline:"), result.stdout);
-  assert.ok(result.stdout.includes("a \\prec b =="), result.stdout);
+test("TLA+ definitions with nested brackets or a leading digit are their own recorded definitions", () => {
+  const named = (files) => {
+    edit(files.spec, "InWindow == consumed <= next /\\ next <= consumed + Window", "InWindow == consumed <= next /\\ next <= 1aBound /\\ Pair[[a |-> 0]] = 0");
+    edit(files.spec, "\nSpec ==", "\n1aBound == consumed + Window\nPair[r \\in [a : {0, 1}]] == r.a\n\nSpec ==");
+  };
+  assertChanged(recordedThenEdited(named, "matrix", tla("1aBound == consumed + Window", "1aBound == consumed + Window + 1")), "matrix", "changed definition BoundedQueue.tla 1aBound");
+  assertChanged(recordedThenEdited(named, "matrix", tla("== r.a", "== 0")), "matrix", "changed definition BoundedQueue.tla Pair");
+});
+
+test("a column-0 TLA+ definition the record cannot name is recorded whether or not a property names it", () => {
+  const infix = (files) => edit(files.spec, "\nSpec ==", "\na \\prec b == a < b\n\nSpec ==");
+  assertChanged(recordedThenEdited(infix, "matrix", tla("a \\prec b == a < b", "a \\prec b == a <= b")), "matrix", "changed definition BoundedQueue.tla a \\prec b");
+  const local = tla("InWindow == consumed <= next /\\ next <= consumed + Window", "InWindow ==\nLET d == consumed + Window IN\nconsumed <= next /\\ next <= d");
+  assertChanged(recordedThenEdited(local, "matrix", tla("consumed + Window IN", "consumed + Window + 1 IN")), "matrix", "changed definition BoundedQueue.tla LET d");
 });
 
 test("a TLA+ comment edit and an added run line leave the model unchanged", () => {
@@ -227,6 +234,12 @@ test("a harness and stub written under cfg_attr(kani, ...) are recorded", () => 
 test("an any_where with a nested turbofish is read as an assume", () => {
   const outcome = recordedThenEdited(null, "rust", rust("let window: u16 = kani::any();", "let window: u16 = kani::any_where::<Option<u16>>(|w| w.is_some()).unwrap();"));
   assertChanged(outcome, "rust", "added assume |w| w.is_some()");
+});
+
+test("a Kani path under another crate and a precise capture record", () => {
+  const files = models();
+  edit(files.rust, "#[cfg(kani)]", "use crate::kani::helpers::proof_state;\nfn keep<'a>(x: &'a u8) -> impl Sized + use<'a> { x }\n#[cfg(kani)]");
+  assert.equal(baseline(files.dir, "record", files.record, files.rust).status, 0);
 });
 
 test("a Kani form or import the record cannot read fails the record instead of passing unrecorded", () => {

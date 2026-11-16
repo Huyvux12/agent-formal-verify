@@ -32,6 +32,7 @@ import re
 import sys
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 
 sys.dont_write_bytecode = True
 
@@ -68,7 +69,7 @@ def lean_surface(path):
     return surface
 
 
-def strip_tla_comments(text):
+def blank_tla_comments(text):
     out, i = [], 0
     while i < len(text):
         if text.startswith("(*", i):
@@ -96,30 +97,35 @@ def strip_tla_comments(text):
     return "".join(out)
 
 
-DEFINITION = re.compile(r"(?:LOCAL\s+)?([A-Za-z_]\w*)\s*(?:\((?:[^()]|\([^()]*\))*\)|\[[^\]]*\])?\s*==")
+DEFINITION = re.compile(r"(?:LOCAL\s+)?(\w*[A-Za-z]\w*)\s*(?:\((?:[^()]|\([^()]*\))*\)|\[(?:[^\[\]]|\[[^\[\]]*\])*\])?\s*==")
 MODULE_LEVEL = re.compile(r"-{4,}|={4,}|(?:EXTENDS|VARIABLES?|CONSTANTS?|ASSUME|ASSUMPTION|AXIOM|THEOREM|LEMMA|PROPOSITION|COROLLARY|INSTANCE|RECURSIVE|USE|HIDE)\b")
-IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+IDENTIFIER = re.compile(r"\w*[A-Za-z]\w*")
 SUBSCRIPT = r"_(?:\w+|<<[^>]*>>)"
 SPEC_ACTIONS = re.compile(rf"\[\]\[[^\]]*\]{SUBSCRIPT}|[WS]F{SUBSCRIPT}\s*\([^()]*\)")
 
 
-def tla_definitions(path, text):
-    found, name, lines = {}, None, []
-    for line in strip_tla_comments(text).split("\n"):
-        if line[:1].strip():
+def begins_in_column_zero(line):
+    return line[:1].strip() != ""
+
+
+def tla_definitions(text):
+    found, unreadable, name, lines = {}, set(), None, []
+    for line in blank_tla_comments(text).split("\n"):
+        if begins_in_column_zero(line):
             match = DEFINITION.match(line)
-            if match or MODULE_LEVEL.match(line):
+            header = None if match or MODULE_LEVEL.match(line) or "==" not in line else collapse(line.partition("==")[0])
+            if match or header or MODULE_LEVEL.match(line):
                 if name:
                     found[name] = collapse(" ".join(lines))
-                name, lines = (match[1], [line]) if match else (None, [])
+                name, lines = (match[1] if match else header), ([line] if match or header else [])
+                if header:
+                    unreadable.add(header)
                 continue
-            if "==" in line:
-                raise ValueError(f"{path}: '{collapse(line)}' defines an operator in a form the record cannot read; write Name == ..., Name(a, b) == ... or Name[x \\in S] == ...")
         if name:
             lines.append(line)
     if name:
         found[name] = collapse(" ".join(lines))
-    return found
+    return found, unreadable
 
 
 def tla_closure(definitions, roots):
@@ -162,13 +168,18 @@ def tla_surface(path):
         source = path.parent / spec
         if not source.is_file():
             raise ValueError(f"{path}: spec {spec} not found")
-        definitions = tla_definitions(source, tlc.read_raw(source))
+        definitions, unreadable = tla_definitions(tlc.read_raw(source))
         for name in sorted({"Spec", *operators}):
             if name not in definitions:
                 raise ValueError(f"{path}: {name} is named in the {spec} section but {source} does not define it")
-        for name in sorted(tla_closure(definitions, {"Spec", *operators})):
+        for name in sorted(tla_closure(definitions, {"Spec", *operators, *unreadable})):
             surface[f"definition {spec} {name}"] = definitions[name]
     return surface
+
+
+class RustSource(NamedTuple):
+    uncommented: str
+    without_comments_or_strings: str
 
 
 def rust_masks(source):
@@ -216,10 +227,10 @@ def rust_masks(source):
             i = char.end()
         else:
             i += 1
-    return "".join(text), "".join(mask)
+    return RustSource("".join(text), "".join(mask))
 
 
-def balanced(mask, opener):
+def after_closing(mask, opener):
     closer = {"(": ")", "[": "]"}[mask[opener]]
     depth = 0
     for i in range(opener, len(mask)):
@@ -239,7 +250,7 @@ MACROS = (
 PROOF = re.compile(KANI_ATTRIBUTE + r"proof(?:_for_contract\s*\([^)]*\))?\s*\)?\s*\]")
 FUNCTION = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:async|unsafe|const)\s+)*fn\s+(\w+)")
 KANI_TOKEN = re.compile(r"\bkani\s*::\s*(?:assume|any_where|cover|stub|proof)\w*\b")
-RENAMING_IMPORT = re.compile(r"\buse\b[^;]*?\bkani\b[^;]*?(?:\bas\b|\*|\b(?:assume|any_where|cover|stub|proof)\w*\b)|\bextern\s+crate\s+kani\s+as\b")
+RENAMING_IMPORT = re.compile(r"\buse\s+[^;]*?(?<![\w:])(?:::\s*)?kani\b[^;]*?(?:\bas\b|\*|\b(?:assume|any_where|cover|stub|proof)\w*\b)|\bextern\s+crate\s+kani\s+as\b")
 
 
 def kani_surface(path):
@@ -250,7 +261,7 @@ def kani_surface(path):
     spans, read = [], []
     for kind, pattern in MACROS:
         for match in pattern.finditer(mask):
-            end = balanced(mask, match.end() - 1)
+            end = after_closing(mask, match.end() - 1)
             read.append((match.start(), end))
             spans.append((match.start(), kind, collapse(text[match.end():end - 1])))
     for match in PROOF.finditer(mask):
@@ -259,7 +270,7 @@ def kani_surface(path):
         while True:
             i = len(mask) - len(mask[i:].lstrip())
             if mask.startswith("#", i):
-                i = balanced(mask, mask.index("[", i))
+                i = after_closing(mask, mask.index("[", i))
             else:
                 break
         name = FUNCTION.match(mask, i)
