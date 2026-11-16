@@ -226,18 +226,18 @@ grep '^WITNESS ' "$work/audit.out"
 
 # The build trusts a declaration that a command adds to the environment without
 # a kernel check. leanchecker replays every declaration of the built modules
-# through the kernel and rejects it. It reads each argument as a name prefix,
-# so the count comes from the modules it lists, not from the arguments. A named
-# module rests on the project modules it imports, so those are replayed too.
+# through the kernel and rejects it. Use its exact-module replayer rather than
+# its CLI's prefix search, which also finds deleted sources' cached objects.
+# A named module rests on the project modules it imports, so replay those too.
 replay=unavailable
 if [ -x "$(elan run "$toolchain" lean --print-prefix)/bin/leanchecker" ]; then
-  modules=()
-  while IFS= read -r module; do modules+=("$module"); done < "$work/modules"
+  cp "$work/modules" "$work/replay-modules"
   while IFS= read -r module; do
-    [ ! -f "$dir/.lake/build/lib/lean/${module//.//}.olean" ] || modules+=("$module")
+    [ ! -f "$dir/.lake/build/lib/lean/${module//.//}.olean" ] || printf '%s\n' "$module" >> "$work/replay-modules"
   done < <(sed -n 's/^IMPORTED //p' "$work/audit.out")
+  sort -u "$work/replay-modules" -o "$work/replay-modules"
   replay=passed
-  elan run "$toolchain" lake --dir "$dir" env leanchecker -v "${modules[@]}" > "$work/replay.out" 2>&1 || replay=failed
+  AFV_REPLAY_MODULES="$work/replay-modules" elan run "$toolchain" lake --dir "$dir" env lean "$HERE/lean-replay.lean" > "$work/replay.out" 2>&1 || replay=failed
 fi
 case $replay in
   passed) echo "REPLAYED $(grep -c '^replaying ' "$work/replay.out") modules through the Lean kernel" ;;

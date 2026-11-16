@@ -149,6 +149,20 @@ for files in "" Model/Uses.lean; do
   fi
 done
 
+# A selected parent module must not pull a deleted child's cached object into replay.
+scenario lean-deleted-replay
+mkdir -p "$p/Model/Parent"
+printf 'theorem parent : True := True.intro\n' > "$p/Model/Parent.lean"
+cp "$work/lean-unchecked/Model/Unchecked.lean" "$p/Model/Parent/Ghost.lean"
+elan run "$(cat "$p/lean-toolchain")" lake --dir "$p" build +Model.Parent.Ghost
+rm "$p/Model/Parent/Ghost.lean"
+for files in "" Model/Parent.lean; do
+  bash "$scripts/lean-check.sh" "$p" ${files:+"$files"} | tee "$work/lean.out"
+  count=1
+  [ -n "$files" ] || count=2
+  grep -q "^REPLAYED $count modules through the Lean kernel$" "$work/lean.out"
+done
+
 # A source touched after its build still passes.
 scenario lean-touched
 bash "$scripts/lean-check.sh" "$p"
