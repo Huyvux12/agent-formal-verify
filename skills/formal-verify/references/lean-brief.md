@@ -19,6 +19,7 @@ The row in your task gives the commits since the model was last synced and says 
 3. Write every theorem statement with `sorry` for its proof, then freeze the model with `bash <skill-dir>/scripts/lean-check.sh <absolute-project-path> --freeze Model/<Name>.lean`. This records types and definition bodies even while proofs are unfinished. The FROZEN line confirms the record, not a proof. Added axioms still fail.
 4. Write and evaluate a bounded exhaustive check before proving the theorem. The template's `badPairs` finds states where one step breaks the invariant; evaluating `badPairs 2 6` at top level, as the template does, prints concrete counter-examples and `#guard` fails the build while any exist. Set the bound above the code's slot count, batch size, window and other constants so it includes boundary cases. Add a `#guard` that a bounded search from the initial state reaches the states the property depends on. The template's `reachable` search requires a full window.
 5. Prove one theorem per step or function for every size. Split on the guards, use `simp only [...]` to expose arithmetic, then use `omega` or `decide` for a finite type. If a proof needs a fact about the real code that the model lacks, state it as a theorem hypothesis and name it in a comment. Do not declare it as an `axiom`. Mark each helper lemma `private`; every public theorem is a property whose proof the mutations must be able to break. An unfinished proof may use `sorry`, but the Lean checker reports it as a failure. The checker also fails every declaration that rests on an axiom beyond `propext`, `Classical.choice` and `Quot.sound`, which also rules out `native_decide`.
+6. For each public theorem with hypotheses, prove on concrete values that all of them can hold at once, as `private theorem <Property>.witness` in the same file. The template does this for each of its theorems with hypotheses.
 
 After a proof closes, print differential test vectors by evaluating them at top level, as the template does. Include boundary inputs and a spread of in-range inputs, with each input and the model's output on one line. Write a test in the target repository's own framework that calls the production function on those inputs and compares its output. A mismatch is a bug in the production code or the transcription; establish which before reporting. State how many vectors agree and the integer widths in both implementations. If the production comparison was not run, say so beside the proof verdict.
 
@@ -51,7 +52,17 @@ The mutation runner reads the `.statements` file and uses Lean's elaborated name
 
 A broken proof does not establish that the mutated statement is false. Even a theorem with contradictory hypotheses can have a proof that breaks when the implementation changes. Check that each theorem's hypotheses can hold together, using concrete inputs and Lean-checked witnesses where practical, and report where this was not checked. Keep proof sensitivity, hypothesis satisfiability and a checked counterexample as separate evidence. Do not claim non-vacuity or that a historical bug is ruled out from a DETECTED line alone.
 
-Write a supporting witness as a `private theorem` or an `example`, so it is checked without becoming another mutation-coverage property. A public witness theorem is a property target once frozen. Do not make an existing property private to avoid coverage.
+The checker derives the statement a witness must prove from its property: `∃ (v1 : T1), …, ∃ (vn : Tn), H1 ∧ … ∧ Hk`, with the theorem's variables and hypotheses in binder order. It rebuilds this statement on every run, so a changed property needs a new witness. When the witness is missing or states something else, the checker prints the statement, which can be pasted as the witness's type. Only a `theorem` named `<Property>.witness` in the property's file counts; an `example`, `def` or `axiom` does not. A private witness is not a mutation-coverage property, and adding one needs no re-freeze. Do not make an existing property private to avoid coverage. Each check prints one WITNESS line per public theorem:
+
+| Status | Meaning |
+| --- | --- |
+| `checked` | The witness states the property's hypotheses, and Lean proved it. |
+| `failed` | The witness states something else. The check exits 1 and prints the statement expected. |
+| `absent` | No witness exists. The check passes; report non-vacuity as not checked. |
+| `no-hypotheses` | The theorem has no hypotheses to satisfy. |
+| `unavailable` | A variable's type uses a hypothesis's proof, or deriving the statement failed. The check passes with the reason; report non-vacuity as not checked. |
+
+After these checks the checker replays every built module through the Lean kernel with the pinned toolchain's `leanchecker`. The replay rejects a declaration that a command added to the environment without a kernel check, and the checker then exits 1 with `leanchecker`'s output. A pin without `leanchecker`, such as Lean 4.20.0, prints `UNAVAILABLE kernel replay` and still exits 0; report the kernel replay as not checked. This differs from a missing tool, which exits 3.
 
 Check the reach guard as well as the absence of bad pairs. A search that cannot reach a boundary state does not establish the intended coverage.
 
@@ -65,5 +76,6 @@ Report only after reading the output of both commands. If either exits 3 with `U
 - for each counter-example, concrete inputs to the code's function, the source line of the failing arithmetic, a unit test with those inputs and whether it fails on the production code, whether shipped callers can pass those inputs, and the proposed fix;
 - the `.statements` path and any reason for re-freezing;
 - for a closed proof, its assumptions, including integer widths, bounds and each theorem hypothesis;
-- whether the theorem hypotheses were checked to hold together and the witness used, or that non-vacuity was not checked;
+- each theorem's WITNESS status, with `absent` and `unavailable` reported as non-vacuity not checked;
+- whether the kernel replay passed or was unavailable;
 - the number of differential vectors on which the model and production code agree, their integer widths, or an explicit statement that the comparison was not run.
