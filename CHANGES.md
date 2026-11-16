@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## 0.4.9 - a specification baseline, Lean kernel replay and checked witnesses
 
 The specification baseline now records the checks that apply to each TLA+ run and the inputs selected by each reach check. Moving check lines below a run or changing which run a reach check selects no longer compares unchanged. Kani assumptions, covers and stubs now retain their qualified owning function, and harness names include their modules, so moving a constraint between functions is reported. The Rust reader supports free functions under inline modules and rejects Kani forms in an owner it cannot identify, including macro definitions and implementation or trait bodies. Baseline records use format 2; create a new record after updating rather than reuse a format 1 record.
 
