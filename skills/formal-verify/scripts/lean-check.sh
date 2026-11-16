@@ -127,6 +127,7 @@ open Lean Elab Command in
   let env ← getEnv
   let freezing := (← IO.getEnv "AFV_FREEZE") == some "1"
   let modules := (env.imports.map (·.module)).erase `Lean
+  for module in env.header.moduleNames do IO.println s!"IMPORTED {module.toString (escape := false)}"
   let standard : Array Name := #[``propext, ``Classical.choice, ``Quot.sound]
   let names := env.constants.fold (fun acc name info => if info matches .axiomInfo _ then acc else acc.push name) #[]
   let mut audited := 0
@@ -229,11 +230,15 @@ grep '^WITNESS ' "$work/audit.out"
 # The build trusts a declaration that a command adds to the environment without
 # a kernel check. leanchecker replays every declaration of the built modules
 # through the kernel and rejects it. It reads each argument as a name prefix,
-# so the count comes from the modules it lists, not from the arguments.
+# so the count comes from the modules it lists, not from the arguments. A named
+# module rests on the project modules it imports, so those are replayed too.
 replay=unavailable
 if [ -x "$(elan run "$toolchain" lean --print-prefix)/bin/leanchecker" ]; then
   modules=()
   while IFS= read -r module; do modules+=("$module"); done < "$work/modules"
+  while IFS= read -r module; do
+    [ ! -f "$dir/.lake/build/lib/lean/${module//.//}.olean" ] || modules+=("$module")
+  done < <(sed -n 's/^IMPORTED //p' "$work/audit.out")
   replay=passed
   elan run "$toolchain" lake --dir "$dir" env leanchecker -v "${modules[@]}" > "$work/replay.out" 2>&1 || replay=failed
 fi

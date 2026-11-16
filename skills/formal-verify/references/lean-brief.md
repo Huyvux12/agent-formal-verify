@@ -62,7 +62,7 @@ The checker derives the statement a witness must prove from its property: `∃ (
 | `no-hypotheses` | The theorem has no hypotheses to satisfy. |
 | `unavailable` | A variable's type uses a hypothesis's proof, or deriving the statement failed. The check passes with the reason; report non-vacuity as not checked. |
 
-After these checks the checker replays every built module through the Lean kernel with the pinned toolchain's `leanchecker`. The replay rejects a declaration that a command added to the environment without a kernel check, and the checker then exits 1 with `leanchecker`'s output. A pin without `leanchecker`, such as Lean 4.20.0, prints `UNAVAILABLE kernel replay` and still exits 0; report the kernel replay as not checked. This differs from a missing tool, which exits 3.
+After these checks the checker replays every built module, and every project module it imports, through the Lean kernel with the pinned toolchain's `leanchecker`. The replay rejects a declaration that a command added to the environment without a kernel check, and the checker then exits 1 with `leanchecker`'s output. A pin without `leanchecker`, such as Lean 4.20.0, prints `UNAVAILABLE kernel replay` and still exits 0; report the kernel replay as not checked. This differs from a missing tool, which exits 3.
 
 Check the reach guard as well as the absence of bad pairs. A search that cannot reach a boundary state does not establish the intended coverage.
 

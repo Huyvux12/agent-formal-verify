@@ -129,7 +129,8 @@ rejected bash "$scripts/lean-check.sh" "$p" | tee "$work/lean.out"
 grep -qF "AXIOMS 'bogus' depends on axioms: #[cheat]" "$work/lean.out"
 
 # A theorem that a command adds to the environment without a kernel check
-# builds and rests on no axiom; only the replay rejects it.
+# builds and rests on no axiom; only the replay rejects it, also when the check
+# names only a module that imports it.
 scenario lean-unchecked
 cat > "$p/Model/Unchecked.lean" <<'EOF'
 import Lean
@@ -139,16 +140,18 @@ set_option debug.skipKernelTC true in
 run_cmd liftCoreM do
   let value : TheoremVal := { name := `Unchecked.unsound, levelParams := [], type := mkConst ``False, value := mkConst ``True.intro }
   addDecl (.thmDecl value)
-theorem uses : False := unsound
 end Unchecked
 EOF
-rejected bash "$scripts/lean-check.sh" "$p" | tee "$work/lean.out"
-grep -q '^FAIL .*: kernel replay rejected a built module$' "$work/lean.out"
-grep -q '^leanchecker found a problem in Model.Unchecked$' "$work/lean.out"
-if grep -q 'lake exit' "$work/lean.out"; then
-  echo 'FAIL the unchecked theorem failed the build, not the kernel replay'
-  exit 1
-fi
+printf 'import Model.Unchecked\nnamespace Uses\ntheorem uses : False := Unchecked.unsound\nend Uses\n' > "$p/Model/Uses.lean"
+for files in "" Model/Uses.lean; do
+  rejected bash "$scripts/lean-check.sh" "$p" ${files:+"$files"} | tee "$work/lean.out"
+  grep -q '^FAIL .*: kernel replay rejected a built module$' "$work/lean.out"
+  grep -q '^leanchecker found a problem in Model.Unchecked$' "$work/lean.out"
+  if grep -q 'lake exit' "$work/lean.out"; then
+    echo 'FAIL the unchecked theorem failed the build, not the kernel replay'
+    exit 1
+  fi
+done
 
 # A source touched after its build still passes.
 scenario lean-touched
