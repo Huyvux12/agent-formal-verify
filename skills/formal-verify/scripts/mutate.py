@@ -160,9 +160,8 @@ def check_tla(spec, checker, kinds, section, mutation, work):
         checks = [d for d in section if isinstance(d, tlc.Reach) and f"reach:{d.operator}" == mutation.detects]
     results = []
     runner = tlc.Runner(checker, work, mutation.only, results.append, work)
-    for directive in [tlc.Spec(spec.name), *checks, *(d for d in section if isinstance(d, tlc.Run))]:
-        runner.feed(directive)
-    runner.finish_spec()
+    for task in tlc.execution_plan([tlc.Spec(spec.name), *checks, *(d for d in section if isinstance(d, tlc.Run))]):
+        runner.check(task)
     if runner.runs_total == 0:
         return Result(Verdict.ERROR, f"no run matches '{mutation.only}'")
     if not runner.failed:

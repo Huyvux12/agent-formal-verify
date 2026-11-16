@@ -293,5 +293,6 @@ rejected bash "$scripts/kani-check.sh" "$work/kani" proofs::claim_keeps_invarian
 grep -q '^FAIL proofs::claim_keeps_invariant' "$work/kani.out"
 grep -q 'Concrete playback unit test' "$work/kani.out"
 bash "$ROOT/tests/rust-mutations.sh"
+python3 "$ROOT/tests/baseline-models.py"
 
 echo "ok: the examples pass and detect their mutations, and every broken copy is rejected"

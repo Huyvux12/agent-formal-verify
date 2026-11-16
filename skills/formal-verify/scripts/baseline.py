@@ -9,11 +9,13 @@ change, and so is an added item whose kind narrows what is checked.
 
   .statements  Lean. The toolchain, and each declaration's kind, type hash and value hash.
                Added declarations are allowed.
-  .matrix      TLA+. Each directive of the matrix, and the normalized definitions of Spec,
+  .matrix      TLA+. Each run's effective checks and each reach check's selected inputs,
+               and the normalized definitions of Spec,
                of each operator a check or reach line names, and of the operators those
                reference, in the spec each section names. Spec is not followed into its actions.
-  .rs          Kani. Each harness name, and each kani::assume, kani::any_where, kani::cover! and
-               #[kani::stub] anywhere in the file. Added covers and harnesses are allowed.
+  .rs          Kani. Each qualified harness name, and each kani::assume, kani::any_where,
+               kani::cover! and #[kani::stub] with its owning free function, under inline
+               modules. Unsupported owners fail. Added covers and harnesses are allowed.
                Added assumes and stubs are changes.
 
 Usage:
@@ -39,7 +41,7 @@ sys.dont_write_bytecode = True
 import tlc
 
 HERE = Path(__file__).resolve().parent
-FORMAT = 1
+FORMAT = 2
 NARROWING = {"lean": (), "tla": (), "kani": ("assume", "stub")}
 KINDS = {".statements": "lean", ".matrix": "tla", ".rs": "kani"}
 STRING = re.compile(r'"(?:\\.|[^"\\])*"', re.DOTALL)
@@ -63,6 +65,7 @@ class Surface(dict):
             count += 1
             candidate = f"{name} #{count}"
         self[candidate] = value
+        return candidate
 
 
 def lean_surface(path):
@@ -158,27 +161,30 @@ def tla_closure(definitions, roots):
 
 def tla_surface(path):
     surface = Surface()
-    sections = []
+    specs = {}
     parsed = list(tlc.directives(tlc.read_raw(path).split("\n")))
-    malformed = [directive.message for directive in parsed if isinstance(directive, tlc.Malformed)]
-    if malformed:
-        raise ValueError(f"{path}: {'; '.join(malformed)}")
+    tasks = list(tlc.execution_plan(parsed))
+    errors = ["; ".join(tlc.render(task)) for task in tasks if isinstance(task, tlc.Result)]
+    if errors:
+        raise ValueError(f"{path}: {'; '.join(errors)}")
     for directive in parsed:
         if isinstance(directive, tlc.Spec):
             if not directive.path:
                 raise ValueError(f"{path}: spec line has no path")
             surface.add(f"spec {directive.path}")
-            sections.append((directive.path, set()))
-        elif isinstance(directive, tlc.Check):
-            for name in directive.names:
-                surface.add(f"check {sections[-1][0]} {directive.kind} {name}")
-            sections[-1][1].update(directive.names)
-        elif isinstance(directive, tlc.Reach):
-            surface.add(f"reach {sections[-1][0]} {directive.operator} | {collapse(directive.match)}")
-            sections[-1][1].add(directive.operator)
+            specs.setdefault(directive.path, set())
+    for task in tasks:
+        if task.reach:
+            surface.add(f"reach {task.spec} {task.reach.operator} | {collapse(task.reach.match)}",
+                        {"run": collapse(task.run.label), "constants": collapse(task.run.constants)})
+            specs[task.spec].add(task.reach.operator)
         else:
-            surface.add(f"run {sections[-1][0]} {collapse(directive.label)}", collapse(directive.constants))
-    for spec, operators in sections:
+            run = surface.add(f"run {task.spec} {collapse(task.run.label)}", collapse(task.run.constants))
+            for check in task.checks:
+                for name in check.names:
+                    surface.add(f"check {task.spec} {check.kind} {name} | [{run}]")
+                specs[task.spec].update(check.names)
+    for spec, operators in specs.items():
         source = path.parent / spec
         if not source.is_file():
             raise ValueError(f"{path}: spec {spec} not found")
@@ -251,13 +257,66 @@ def rust_masks(source):
 
 
 def after_closing(mask, opener):
-    closer = {"(": ")", "[": "]"}[mask[opener]]
+    closer = {"(": ")", "[": "]", "{": "}"}[mask[opener]]
     depth = 0
     for i in range(opener, len(mask)):
         depth += (mask[i] == mask[opener]) - (mask[i] == closer)
         if not depth:
             return i + 1
     raise ValueError(f"unbalanced {mask[opener]} at offset {opener}")
+
+
+class RustFunction(NamedTuple):
+    name: str
+    start: int
+    body: int
+    end: int
+
+
+RUST_ITEM = re.compile(r"\b(fn|mod)\s+((?:r#)?\w+)\b")
+
+
+def rust_functions(mask):
+    """Locate free functions under inline modules; leave macro and other item bodies opaque."""
+    functions, opaque, counts = [], [], {}
+
+    def walk(start, end, namespace=(), in_function=False):
+        i, boundary, item = start, start, None
+        while i < end:
+            if match := RUST_ITEM.match(mask, i):
+                item = (match[1], match[2])
+                i = match.end()
+            elif mask[i] in "([":
+                stop = after_closing(mask, i)
+                if mask[boundary:i].rstrip().endswith("!"):
+                    opaque.append((i, stop))
+                i = stop
+            elif mask[i] == "{":
+                stop = after_closing(mask, i)
+                header = mask[boundary:i].rstrip()
+                macro = header.endswith("!") or bool(re.search(r"\bmacro_rules\s*!\s*\w+\s*$", header))
+                if item and not macro:
+                    kind, name = item
+                    qualified = (*namespace, name)
+                    if kind == "fn":
+                        owner = "::".join(qualified)
+                        counts[owner] = counts.get(owner, 0) + 1
+                        suffix = f"[{counts[owner]}]" if counts[owner] > 1 else ""
+                        functions.append(RustFunction(owner + suffix, boundary, i, stop))
+                    walk(i + 1, stop - 1, qualified, kind == "fn")
+                elif in_function and not macro and not re.search(r"\b(?:impl|trait|struct|enum|union|extern|macro)\b", header):
+                    walk(i + 1, stop - 1, namespace, True)
+                else:
+                    opaque.append((i, stop))
+                i = boundary = stop
+                item = None
+            else:
+                if mask[i] == ";":
+                    boundary, item = i + 1, None
+                i += 1
+
+    walk(0, len(mask))
+    return functions, opaque
 
 
 KANI_ATTRIBUTE = r"#\s*\[\s*(?:cfg_attr\s*\(\s*kani\s*,\s*)?kani\s*::\s*"
@@ -268,7 +327,6 @@ MACROS = (
     ("stub", re.compile(KANI_ATTRIBUTE + r"stub\s*\(")),
 )
 PROOF = re.compile(KANI_ATTRIBUTE + r"proof(?:_for_contract\s*\([^)]*\))?\s*\)?\s*\]")
-FUNCTION = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:async|unsafe|const)\s+)*fn\s+(\w+)")
 KANI_TOKEN = re.compile(r"\bkani\s*::\s*(?:assume|any_where|cover|stub|proof)\w*\b")
 RENAMING_IMPORT = re.compile(r"\buse\s+[^;]*?(?<![\w:])(?:::\s*)?kani\b[^;]*?(?:\bas\b|\*|\b(?:assume|any_where|cover|stub|proof)\w*\b)|\bextern\s+crate\s+kani\s+as\b")
 
@@ -278,6 +336,16 @@ def kani_surface(path):
     text, mask = source.uncommented, source.without_comments_or_strings
     if renaming := RENAMING_IMPORT.search(mask):
         raise ValueError(f"{path}: '{collapse(renaming[0])}' brings a Kani assumption, cover, stub or harness attribute in under another name; write each as kani::<name> so the record can read it")
+    functions, opaque = rust_functions(mask)
+
+    def owner_at(position, *, attribute=False):
+        if not any(start <= position < end for start, end in opaque):
+            for function in reversed(functions):
+                if function.start <= position < function.end and (position < function.body if attribute else position > function.body):
+                    return function.name
+        line = mask.count("\n", 0, position) + 1
+        raise ValueError(f"{path}:{line}: cannot identify a function owner; write Kani forms in free functions under inline modules, outside macro definitions and impl or trait bodies")
+
     surface = Surface()
     spans, read = [], []
     for kind, pattern in MACROS:
@@ -285,26 +353,17 @@ def kani_surface(path):
             end = after_closing(mask, match.end() - 1)
             read.append((match.start(), end))
             argument = rust_masks(text[match.end():end - 1])
-            spans.append((match.start(), kind, collapse(argument.uncommented, argument.literals)))
+            owner = owner_at(match.start(), attribute=kind == "stub")
+            spans.append((match.start(), f"{kind} {collapse(argument.uncommented, argument.literals)} in {owner}"))
     for match in PROOF.finditer(mask):
         read.append(match.span())
-        i = match.end()
-        while True:
-            i = len(mask) - len(mask[i:].lstrip())
-            if mask.startswith("#", i):
-                i = after_closing(mask, mask.index("[", i))
-            else:
-                break
-        name = FUNCTION.match(mask, i)
-        if not name:
-            raise ValueError(f"{path}: #[kani::proof] at offset {match.start()} is not followed by a function")
-        spans.append((match.start(), "harness", name[1]))
+        spans.append((match.start(), f"harness {owner_at(match.start(), attribute=True)}"))
     for token in KANI_TOKEN.finditer(mask):
         if not any(start <= token.start() < end for start, end in read):
             line = mask.count("\n", 0, token.start()) + 1
             raise ValueError(f"{path}:{line}: '{collapse(token[0])}' is in a form the record cannot read; write kani::assume(...), kani::any_where(...), kani::cover!(...), #[kani::stub(...)] or #[kani::proof], alone or under #[cfg_attr(kani, ...)]")
-    for _, kind, item in sorted(spans):
-        surface.add(f"{kind} {item}")
+    for _, item in sorted(spans):
+        surface.add(item)
     return surface
 
 
@@ -319,7 +378,7 @@ def read_record(path):
     record = json.loads(path.read_text(encoding="utf-8"))
     models = record.get("models") if isinstance(record, dict) else None
     if not isinstance(models, dict) or record.get("format") != FORMAT:
-        raise ValueError(f"{path}: unsupported record format")
+        raise ValueError(f"{path}: unsupported record format; run record with a new record file")
     for model, entry in models.items():
         if not isinstance(entry, dict) or entry.get("kind") not in SURFACES or not isinstance(entry.get("surface"), dict):
             raise ValueError(f"{path}: malformed entry for {model}")
