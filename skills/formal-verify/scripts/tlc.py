@@ -22,6 +22,8 @@ Usage: tlc-matrix.sh <matrix-file> [label-substring]
   JAVA=<path>        the java binary (default: java on PATH)
   TLC_WORKERS=<n>    TLC worker threads (default auto)
 """
+from __future__ import annotations
+
 import os
 import re
 import subprocess
@@ -162,6 +164,42 @@ class Result:
     lines: tuple = ()
 
 
+@dataclass(frozen=True)
+class Task:
+    spec: str
+    run: Run
+    checks: tuple = ()
+    reach: Reach | None = None
+
+
+def execution_plan(directives):
+    """Snapshot each run's effective checks and resolve each reach to its first matching run."""
+    spec, checks, reaches, runs = "", [], [], []
+
+    def reach_tasks():
+        for reach in reaches:
+            run = next((run for run in runs if reach.match in run.label), None)
+            if run is None:
+                yield Result(Outcome.NO_RUN, Path(spec).name.removesuffix(".tla"), operator=reach.operator, detail=reach.match)
+            else:
+                yield Task(spec, run, reach=reach)
+
+    for directive in directives:
+        if isinstance(directive, Spec):
+            yield from reach_tasks()
+            spec, checks, reaches, runs = directive.path, [], [], []
+        elif isinstance(directive, Check):
+            checks.append(directive)
+        elif isinstance(directive, Reach):
+            reaches.append(directive)
+        elif isinstance(directive, Run):
+            runs.append(directive)
+            yield Task(spec, directive, tuple(checks))
+        else:
+            yield Result(Outcome.MALFORMED, detail=directive.message)
+    yield from reach_tasks()
+
+
 def render(result):
     """Return the lines the matrix runner prints for one result."""
     name, label, operator = result.name, result.label, result.operator
@@ -192,56 +230,37 @@ class Runner:
 
     def __init__(self, tlc, matrix_dir, only, emit, work):
         self.tlc, self.matrix_dir, self.only, self.emit, self.work = tlc, matrix_dir, only, emit, work
-        self.spec, self.checks, self.reaches, self.runs = "", [], [], []
         self.runs_total = self.passed = self.states = self.reach_total = self.reached = 0
         self.failed = False
-
-    def feed(self, directive):
-        if isinstance(directive, Spec):
-            self.finish_spec()
-            self.spec, self.checks, self.reaches, self.runs = directive.path, [], [], []
-        elif isinstance(directive, Check):
-            self.checks.append(directive.line)
-        elif isinstance(directive, Reach):
-            self.reaches.append(directive)
-        elif isinstance(directive, Run):
-            self.runs.append(directive)
-            self.check_run(directive)
-        else:
-            self.report(Result(Outcome.MALFORMED, detail=directive.message))
-
-    def finish_spec(self):
-        """Run each reach check of the current spec in the first run whose label contains its substring."""
-        for reach in self.reaches:
-            run = next((run for run in self.runs if reach.match in run.label), None)
-            if run is None:
-                self.reach_total += 1
-                self.report(Result(Outcome.NO_RUN, Path(self.spec).name.removesuffix(".tla"), operator=reach.operator, detail=reach.match))
-            else:
-                self.check_run(run, reach.operator)
 
     def report(self, result):
         self.failed |= result.outcome not in (Outcome.PASS, Outcome.WITNESS)
         self.emit(result)
 
-    def check_run(self, run, operator=""):
+    def check(self, task):
+        if isinstance(task, Result):
+            self.reach_total += task.outcome is Outcome.NO_RUN
+            self.report(task)
+            return
+        spec, run = task.spec, task.run
+        operator = task.reach.operator if task.reach else ""
         if self.only not in run.label:
             return
         if operator:
             self.reach_total += 1
         else:
             self.runs_total += 1
-        name = Path(self.spec).name.removesuffix(".tla")
-        if not (self.matrix_dir / self.spec).is_file():
-            self.report(Result(Outcome.MISSING, name, run.label, detail=self.spec))
+        name = Path(spec).name.removesuffix(".tla")
+        if not (self.matrix_dir / spec).is_file():
+            self.report(Result(Outcome.MISSING, name, run.label, detail=spec))
             return
         directory = Path(tempfile.mkdtemp(prefix="run.", dir=self.work))
-        for module in (self.matrix_dir / self.spec).parent.glob("*.tla"):
+        for module in (self.matrix_dir / spec).parent.glob("*.tla"):
             (directory / module.name).write_bytes(module.read_bytes())
         constants = "".join(f"  {pair.split('=')[0]} = {pair.split('=', 1)[-1]}\n" for pair in run.constants.split())
         config = f"CONSTANTS\n{constants}SPECIFICATION Spec\n"
         if not operator:
-            status, log = self.tlc.run(directory, name, config + "\n".join(self.checks) + "\n", reach=False)
+            status, log = self.tlc.run(directory, name, config + "\n".join(check.line for check in task.checks) + "\n", reach=False)
             self.report(self.ordinary(name, run, status, log, directory / "tlc.log"))
             return
         wrapper = f"Reach{uuid.uuid4().hex}"
@@ -292,9 +311,8 @@ def main():
         return 3
     with tempfile.TemporaryDirectory() as work:
         runner = Runner(tlc, Path(matrix).resolve().parent, only, lambda result: print("\n".join(render(result)), flush=True), Path(work))
-        for directive in directives(read_raw(matrix).split("\n")):
-            runner.feed(directive)
-        runner.finish_spec()
+        for task in execution_plan(directives(read_raw(matrix).split("\n"))):
+            runner.check(task)
     if runner.runs_total == 0:
         matching = f"matching '{only}' " if only else ""
         print(f"FAIL no run {matching}in {matrix}")

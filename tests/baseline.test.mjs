@@ -102,6 +102,51 @@ test("a TLA+ check line that loses a property is changed", () => {
   assertChanged(outcome, "matrix", "removed check BoundedQueue.tla INVARIANTS InWindow");
 });
 
+test("moving TLA+ checks below their runs loses those runs' guarantees", () => {
+  const outcome = recordedThenEdited(null, "matrix", ({ matrix }) => {
+    const text = readFileSync(matrix, "utf8");
+    const checks = text.split("\n").filter((line) => line.startsWith("check "));
+    writeFileSync(matrix, text.split("\n").filter((line) => !line.startsWith("check ")).join("\n") + checks.join("\n") + "\n");
+  });
+  assertChanged(outcome, "matrix", "removed check BoundedQueue.tla INVARIANTS InWindow");
+});
+
+test("a TLA+ reach check records the first matching run's inputs", () => {
+  const setup = ({ matrix }) => edit(matrix, "reach WindowFull | window=1", "reach WindowFull | window=");
+  const outcome = recordedThenEdited(setup, "matrix", ({ matrix }) => {
+    const text = readFileSync(matrix, "utf8");
+    const runs = text.split("\n").filter((line) => line.startsWith("run "));
+    writeFileSync(matrix, text.split("\n").filter((line) => !line.startsWith("run ")).join("\n") + runs.reverse().join("\n") + "\n");
+  });
+  assertChanged(outcome, "matrix", "changed reach BoundedQueue.tla WindowFull");
+});
+
+test("repeated TLA+ spec sections keep their checks attached to their own runs", () => {
+  const setup = ({ matrix }) => writeFileSync(matrix, [
+    "spec BoundedQueue.tla", "check INVARIANTS TypeOK InWindow", "run first | Window=1 Items=3",
+    "spec BoundedQueue.tla", "check INVARIANTS TypeOK", "run second | Window=2 Items=3", "",
+  ].join("\n"));
+  const outcome = recordedThenEdited(setup, "matrix", ({ matrix }) => {
+    edit(matrix, "check INVARIANTS TypeOK InWindow", "check INVARIANTS TypeOK");
+    edit(matrix, "run second", "check INVARIANTS InWindow\nrun second");
+  });
+  assertChanged(outcome, "matrix", "removed check BoundedQueue.tla INVARIANTS InWindow | [run BoundedQueue.tla first]");
+});
+
+test("adding a TLA+ check strengthens an existing run without changing its baseline", () => {
+  const setup = ({ matrix }) => edit(matrix, "check INVARIANTS TypeOK InWindow", "check INVARIANTS TypeOK");
+  const outcome = recordedThenEdited(setup, "matrix", ({ matrix }) => edit(matrix, "check INVARIANTS TypeOK", "check INVARIANTS TypeOK InWindow"));
+  assertUnchanged(outcome, "matrix");
+});
+
+test("duplicate TLA+ checks cannot stand in for a check on a different occurrence of the same run label", () => {
+  const section = "spec BoundedQueue.tla\ncheck INVARIANTS TypeOK InWindow\nrun same | Window=1 Items=3\n";
+  const setup = ({ matrix }) => writeFileSync(matrix, section + section);
+  const outcome = recordedThenEdited(setup, "matrix", ({ matrix }) => writeFileSync(matrix,
+    section.replace("TypeOK InWindow", "TypeOK InWindow InWindow") + section.replace("TypeOK InWindow", "TypeOK")));
+  assertChanged(outcome, "matrix", "removed check BoundedQueue.tla INVARIANTS InWindow");
+});
+
 test("a TLA+ Spec that loses fairness is changed", () => {
   assertChanged(recordedThenEdited(null, "matrix", tla(" /\\ WF_vars(Consume)", "")), "matrix", "changed definition BoundedQueue.tla Spec");
 });
@@ -199,6 +244,88 @@ test("an added Kani assume is changed", () => {
   assertChanged(outcome, "rust", "added assume state.next == 0");
 });
 
+test("moving a Kani assumption from a helper into a harness changes its owner", () => {
+  const outcome = recordedThenEdited(null, "rust", ({ rust: path }) => {
+    edit(path, "        kani::assume(window > 0 && window <= 2);\n", "");
+    edit(path, "        let (window, state) = inputs();", "        let (window, state) = inputs();\n        kani::assume(window > 0 && window <= 2);");
+  });
+  assertChanged(outcome, "rust", "removed assume window > 0 && window <= 2", "added assume window > 0 && window <= 2");
+});
+
+test("Kani items retain qualified owners when equal function names occur in nested modules", () => {
+  const setup = ({ rust: path }) => writeFileSync(path, [
+    "mod outer { mod a { #[kani::proof] fn same() { kani::assume(true); } }",
+    "mod b { #[kani::proof] fn same() {} } }", "",
+  ].join("\n"));
+  const outcome = recordedThenEdited(setup, "rust", ({ rust: path }) => {
+    edit(path, "fn same() { kani::assume(true); }", "fn same() {}");
+    edit(path, "mod b { #[kani::proof] fn same() {}", "mod b { #[kani::proof] fn same() { kani::assume(true); }");
+  });
+  assertChanged(outcome, "rust", "removed assume true in outer::a::same", "added assume true in outer::b::same");
+});
+
+test("moving a Kani cover or stub between functions changes its owner", () => {
+  for (const [first, second, kind] of [
+    ["fn a() { kani::cover!(true); } fn b() {}", "fn a() {} fn b() { kani::cover!(true); }", "cover true"],
+    ["#[kani::stub(real, fake)] fn a() {} fn b() {}", "fn a() {} #[kani::stub(real, fake)] fn b() {}", "stub real, fake"],
+  ]) {
+    const setup = ({ rust: path }) => writeFileSync(path, first);
+    const outcome = recordedThenEdited(setup, "rust", ({ rust: path }) => writeFileSync(path, second));
+    assertChanged(outcome, "rust", `removed ${kind} in a`);
+  }
+});
+
+test("reordering functions with identical Kani assumptions preserves their owners", () => {
+  const a = "fn a() { kani::assume(true); kani::assume(true); }";
+  const b = "fn b() { kani::assume(true); }";
+  const setup = ({ rust: path }) => writeFileSync(path, `${a}\n${b}\n`);
+  assertUnchanged(recordedThenEdited(setup, "rust", ({ rust: path }) => writeFileSync(path, `${b}\n${a}\n`)), "rust");
+  const removed = recordedThenEdited(setup, "rust", ({ rust: path }) => edit(path, a, "fn a() { kani::assume(true); }"));
+  assertChanged(removed, "rust", "removed assume true in a #2");
+});
+
+test("conditional definitions with the same qualified name retain separate Kani owners", () => {
+  const setup = ({ rust: path }) => writeFileSync(path, "#[cfg(a)] fn same() { kani::assume(true); } #[cfg(b)] fn same() {}");
+  const outcome = recordedThenEdited(setup, "rust", ({ rust: path }) => {
+    edit(path, "{ kani::assume(true); }", "{}");
+    edit(path, "#[cfg(b)] fn same() {}", "#[cfg(b)] fn same() { kani::assume(true); }");
+  });
+  assertChanged(outcome, "rust", "removed assume true in same", "added assume true in same[2]");
+});
+
+test("duplicate assumptions cannot stand in for a constraint on a different function definition", () => {
+  const setup = ({ rust: path }) => writeFileSync(path,
+    "#[cfg(a)] fn same() { kani::assume(true); kani::assume(true); } #[cfg(b)] fn same() { kani::assume(true); }");
+  const outcome = recordedThenEdited(setup, "rust", ({ rust: path }) => writeFileSync(path,
+    "#[cfg(a)] fn same() { kani::assume(true); } #[cfg(b)] fn same() { kani::assume(true); kani::assume(true); }"));
+  assertChanged(outcome, "rust", "added assume true in same");
+});
+
+test("generic free functions and local blocks retain their Kani owner", () => {
+  const setup = ({ rust: path }) => writeFileSync(path, "mod m { pub unsafe fn r#type<'a, const N: usize>(x: &'a [u8; N]) { if N > 0 { kani::assume(x[0] > 0); } } }");
+  const outcome = recordedThenEdited(setup, "rust", ({ rust: path }) => edit(path, "x[0] > 0", "x[0] > 1"));
+  assertChanged(outcome, "rust", "removed assume x[0] > 0 in m::r#type");
+});
+
+test("a Kani form in an unsupported Rust owner fails instead of being recorded without context", () => {
+  for (const source of [
+    "impl State { fn helper() { kani::assume(true); } }",
+    "trait T { fn helper() { kani::assume(true); } }",
+    "macro_rules! body { () => { kani::assume(true); } }",
+    "fn helper() { wrapper! { kani::assume(true); } }",
+    "fn helper() { wrapper!(kani::assume(true)); }",
+    "fn helper() { macro_rules! body { () => { kani::assume(true); } } }",
+    "fn helper() { impl State { fn local() { kani::assume(true); } } }",
+    "kani::assume(true);",
+  ]) {
+    const files = models();
+    writeFileSync(files.rust, source);
+    const result = baseline(files.dir, "record", files.record, files.rust);
+    assert.equal(result.status, 1, source);
+    assert.ok(result.stdout.includes("cannot identify a function owner"), result.stdout);
+  }
+});
+
 const multiline = rust("kani::assume(window > 0 && window <= 2);", "kani::assume(\n            window > 0\n            && window <= 2,\n        );");
 
 test("an edit to one line of a multi-line Kani assume is changed", () => {
@@ -227,7 +354,7 @@ test("a removed Kani cover is changed and an added cover is not", () => {
 
 test("a removed Kani harness is changed", () => {
   const remove = rust("    #[kani::proof]\n    #[kani::unwind(2)]\n    fn consume_keeps_invariant", "    #[kani::unwind(2)]\n    fn consume_keeps_invariant");
-  assertChanged(recordedThenEdited(null, "rust", remove), "rust", "removed harness consume_keeps_invariant");
+  assertChanged(recordedThenEdited(null, "rust", remove), "rust", "removed harness proofs::consume_keeps_invariant");
 });
 
 test("a Kani body edit that touches no assume, cover, stub or harness is unchanged", () => {
@@ -249,7 +376,7 @@ test("an added kani::any_where narrows like an assume and is changed", () => {
 test("a harness and stub written under cfg_attr(kani, ...) are recorded", () => {
   const wrapped = rust("    #[kani::proof]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant", "    #[cfg_attr(kani, kani::proof)]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant");
   const removed = recordedThenEdited(wrapped, "rust", rust("    #[cfg_attr(kani, kani::proof)]\n", ""));
-  assertChanged(removed, "rust", "removed harness claim_keeps_invariant");
+  assertChanged(removed, "rust", "removed harness proofs::claim_keeps_invariant");
   const stubbed = recordedThenEdited(null, "rust", rust("    #[kani::proof]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant", "    #[kani::proof]\n    #[cfg_attr(kani, kani::stub(consume, claim))]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant"));
   assertChanged(stubbed, "rust", "added stub consume, claim");
 });
@@ -315,6 +442,14 @@ test("a malformed record fails", () => {
   const result = baseline(files.dir, "compare", files.record);
   assert.equal(result.status, 1);
   assert.ok(lines(result)[0].startsWith("FAIL baseline:"));
+});
+
+test("records without execution context are rejected rather than compared as current records", () => {
+  const files = models();
+  writeFileSync(files.record, JSON.stringify({ format: 1, models: {} }));
+  const result = baseline(files.dir, "compare", files.record);
+  assert.equal(result.status, 1);
+  assert.ok(result.stdout.includes("unsupported record format"));
 });
 
 test("an unknown extension and a missing record file are usage errors", () => {

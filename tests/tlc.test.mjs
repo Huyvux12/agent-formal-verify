@@ -149,6 +149,20 @@ test("the matrix runner gives each run only its own spec directory's modules", (
   assert.equal(readFileSync(join(dir, "calls"), "utf8"), "Helper.tla One.tla \nTwo.tla \n");
 });
 
+test("matrix checks affect only subsequent runs and reset at the next spec", () => {
+  const { dir, matrix } = matrixFixture([
+    "spec a/One.tla", "check INVARIANTS Early", "run first | N=1",
+    "check PROPERTIES Later", "run second | N=2", "spec a/One.tla", "run third | N=3",
+  ], [
+    "for last; do :; done",
+    'grep -E "^(INVARIANTS|PROPERTIES)" "$(dirname "$last")/MC.cfg" >> "$TASK_TRACE"',
+    'echo END >> "$TASK_TRACE"',
+    'echo "Model checking completed. No error has been found."',
+  ].join("\n"));
+  assert.equal(matrix().status, 0);
+  assert.equal(readFileSync(join(dir, "calls"), "utf8"), "INVARIANTS Early\nEND\nINVARIANTS Early\nPROPERTIES Later\nEND\nEND\n");
+});
+
 test("the matrix runner reports a missing spec in one line without starting TLC", () => {
   const { dir, matrix } = matrixFixture(["spec a/Gone.tla", "run only | N=1"], 'echo started >> "$TASK_TRACE"');
   const result = matrix();

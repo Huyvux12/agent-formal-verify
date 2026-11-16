@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The specification baseline now records the checks that apply to each TLA+ run and the inputs selected by each reach check. Moving check lines below a run or changing which run a reach check selects no longer compares unchanged. Kani assumptions, covers and stubs now retain their qualified owning function, and harness names include their modules, so moving a constraint between functions is reported. The Rust reader supports free functions under inline modules and rejects Kani forms in an owner it cannot identify, including macro definitions and implementation or trait bodies. Baseline records use format 2; create a new record after updating rather than reuse a format 1 record.
+
 The specification baseline now preserves whitespace and comment markers inside string literals, so edits to those parts of TLA+ properties and Kani assumptions are reported as changes. Lean kernel replay now selects exact modules and their project imports, leaving out cached objects from deleted, unimported descendants.
 
 The Lean checker now replays every built module, and every project module it imports, through the Lean kernel with the pinned toolchain's `leanchecker`, after its existing checks. A declaration that a command added to the environment without a kernel check used to pass the build and the audit. The replay rejects it, and the checker exits 1 with `leanchecker`'s output. A pin that ships no `leanchecker`, such as Lean 4.20.0, prints `UNAVAILABLE kernel replay` and still passes. The PASS line says whether the replay passed or was unavailable.
