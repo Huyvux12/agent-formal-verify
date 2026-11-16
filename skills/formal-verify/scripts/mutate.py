@@ -327,7 +327,8 @@ def lean_runner(model, mutations):
     if analysis["errors"]:
         stop(f"unmutated Lean model does not elaborate: {analysis['errors'][0]['data']}")
     targets = {"theorem " + decl["name"] for decl in analysis["declarations"]
-               if decl["theorem"] and not decl["private"] and decl["name"] in frozen}
+               if decl["theorem"] and not decl["private"] and decl["name"] in frozen
+               and not decl["name"].endswith(".witness")}
     statements = {(decl["name"], decl["type"]) for decl in analysis["declarations"] if decl["theorem"]}
     statements |= {(cmd["property"], cmd["statement"]) for cmd in analysis["commands"]
                    if cmd["property"] and cmd["statement"] is not None}
