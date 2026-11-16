@@ -130,6 +130,24 @@ test("an edit on an unindented continuation line of a TLA+ property is changed",
   assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla InWindow");
 });
 
+test("a TLA+ operator with an operator parameter is its own recorded definition", () => {
+  const higherOrder = (files) => {
+    edit(files.spec, "InWindow == consumed <= next /\\ next <= consumed + Window", "InWindow == consumed <= next /\\ next <= consumed + Window /\\ Holds(Bounded)");
+    edit(files.spec, "\nSpec ==", "\nBounded(n) == n >= 0\nHolds(P(_)) == P(next)\n\nSpec ==");
+  };
+  const outcome = recordedThenEdited(higherOrder, "matrix", tla("Holds(P(_)) == P(next)", "Holds(P(_)) == TRUE"));
+  assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla Holds");
+});
+
+test("a TLA+ definition header the record cannot read fails the record", () => {
+  const files = models();
+  edit(files.spec, "\nSpec ==", "\na \\prec b == a < b\n\nSpec ==");
+  const result = baseline(files.dir, "record", files.record, files.matrix);
+  assert.equal(result.status, 1);
+  assert.ok(lines(result)[0].startsWith("FAIL baseline:"), result.stdout);
+  assert.ok(result.stdout.includes("a \\prec b =="), result.stdout);
+});
+
 test("a TLA+ comment edit and an added run line leave the model unchanged", () => {
   assertUnchanged(recordedThenEdited(null, "matrix", tla("\\* Stutter at the end", "\\* Stutters at the very end")), "matrix");
   assertUnchanged(recordedThenEdited(null, "matrix", tla("consumed <= next /\\", "consumed <=   next (* why *) /\\")), "matrix");
@@ -222,6 +240,7 @@ test("a Kani form or import the record cannot read fails the record instead of p
     ["#[cfg(kani)]", "use kani::assume;\n#[cfg(kani)]", "use kani::assume"],
     ["#[cfg(kani)]", "use ::kani::{any, assume as given};\n#[cfg(kani)]", "use ::kani::{any, assume"],
     ["#[cfg(kani)]", "extern crate kani as k;\n#[cfg(kani)]", "extern crate kani as"],
+    ["#[cfg(kani)]", "use {kani as k};\n#[cfg(kani)]", "use {kani as"],
     ["    #[kani::unwind(2)]\n    fn claim_keeps_invariant", "    #[cfg_attr(all(kani, test), kani::stub(consume, claim))]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant", "kani::stub"],
   ];
   for (const [from, to, named] of forms) {

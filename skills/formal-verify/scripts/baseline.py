@@ -12,7 +12,7 @@ change, and so is an added item whose kind narrows what is checked.
   .matrix      TLA+. Each directive of the matrix, and the normalized definitions of Spec,
                of each operator a check or reach line names, and of the operators those
                reference, in the spec each section names. Spec is not followed into its actions.
-  .rs          Kani. Each harness, and each kani::assume, kani::any_where, kani::cover! and
+  .rs          Kani. Each harness name, and each kani::assume, kani::any_where, kani::cover! and
                #[kani::stub] anywhere in the file. Added covers and harnesses are allowed.
                Added assumes and stubs are changes.
 
@@ -100,7 +100,7 @@ def strip_tla_comments(text):
     return "".join(out)
 
 
-DEFINITION = re.compile(r"(?:LOCAL\s+)?([A-Za-z_]\w*)\s*(?:\([^)]*\)|\[[^\]]*\])?\s*==")
+DEFINITION = re.compile(r"(?:LOCAL\s+)?([A-Za-z_]\w*)\s*(?:\((?:[^()]|\([^()]*\))*\)|\[[^\]]*\])?\s*==")
 MODULE_LEVEL = re.compile(r"-{4,}|={4,}|(?:EXTENDS|VARIABLES?|CONSTANTS?|ASSUME|ASSUMPTION|AXIOM|THEOREM|LEMMA|PROPOSITION|COROLLARY|INSTANCE|RECURSIVE|USE|HIDE)\b")
 IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 SUBSCRIPT = r"_(?:\w+|<<[^>]*>>)"
@@ -108,16 +108,19 @@ SUBSCRIPT = r"_(?:\w+|<<[^>]*>>)"
 SPEC_ACTIONS = re.compile(rf"\[\]\[[^\]]*\]{SUBSCRIPT}|[WS]F{SUBSCRIPT}\s*\([^()]*\)")
 
 
-def tla_definitions(text):
+def tla_definitions(path, text):
     """Return each top-level definition's name and its text with whitespace collapsed.
 
     A definition ends at the next definition, module-level keyword or separator in
     column 0. Other column-0 text continues it, so an unindented line is never dropped.
+    A column-0 definition header it cannot read, such as an infix operator, fails.
     """
     found, name, lines = {}, None, []
     for line in strip_tla_comments(text).split("\n"):
         if line[:1].strip():
             match = DEFINITION.match(line)
+            if not match and not MODULE_LEVEL.match(line) and "==" in line:
+                raise ValueError(f"{path}: '{collapse(line)}' defines an operator in a form the record cannot read; write Name == ..., Name(a, b) == ... or Name[x \\in S] == ...")
             if match or MODULE_LEVEL.match(line):
                 if name:
                     found[name] = collapse(" ".join(lines))
@@ -171,7 +174,7 @@ def tla_surface(path):
         source = path.parent / spec
         if not source.is_file():
             raise ValueError(f"{path}: spec {spec} not found")
-        definitions = tla_definitions(tlc.read_raw(source))
+        definitions = tla_definitions(source, tlc.read_raw(source))
         for name in sorted({"Spec", *operators}):
             if name not in definitions:
                 raise ValueError(f"{path}: {name} is named in the {spec} section but {source} does not define it")
@@ -251,7 +254,7 @@ PROOF = re.compile(KANI_ATTRIBUTE + r"proof(?:_for_contract\s*\([^)]*\))?\s*\)?\
 FUNCTION = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:async|unsafe|const)\s+)*fn\s+(\w+)")
 # The record fails closed: each of these tokens must sit in a form read above, and no import may rename one.
 KANI_TOKEN = re.compile(r"\bkani\s*::\s*(?:assume|any_where|cover|stub|proof)\w*\b")
-RENAMING_IMPORT = re.compile(r"\buse\s+(?:::\s*)?kani\b[^;]*(?:\bas\b|\*|\b(?:assume|any_where|cover|stub|proof)\w*\b)|\bextern\s+crate\s+kani\s+as\b")
+RENAMING_IMPORT = re.compile(r"\buse\b[^;]*?\bkani\b[^;]*?(?:\bas\b|\*|\b(?:assume|any_where|cover|stub|proof)\w*\b)|\bextern\s+crate\s+kani\s+as\b")
 
 
 def kani_surface(path):
