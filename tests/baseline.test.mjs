@@ -120,6 +120,16 @@ test("a TLA+ helper that a property references is changed, and an action that no
   assertUnchanged(recordedThenEdited(null, "matrix", tla("next' = next + 1", "next' = next + 2")), "matrix");
 });
 
+test("a TLA+ Init that Spec narrows is changed", () => {
+  assertChanged(recordedThenEdited(null, "matrix", tla("Init == next = 0 /\\ consumed = 0", "Init == next = 0 /\\ consumed = 0 /\\ Items = 0")), "matrix", "changed definition BoundedQueue.tla Init");
+});
+
+test("an edit on an unindented continuation line of a TLA+ property is changed", () => {
+  const unindented = (files) => edit(files.spec, "InWindow == consumed <= next /\\ next <= consumed + Window", "InWindow ==\nconsumed <= next /\\\nnext <= consumed + Window");
+  const outcome = recordedThenEdited(unindented, "matrix", tla("\nnext <= consumed + Window", "\nnext <= consumed + Window + 1"));
+  assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla InWindow");
+});
+
 test("a TLA+ comment edit and an added run line leave the model unchanged", () => {
   assertUnchanged(recordedThenEdited(null, "matrix", tla("\\* Stutter at the end", "\\* Stutters at the very end")), "matrix");
   assertUnchanged(recordedThenEdited(null, "matrix", tla("consumed <= next /\\", "consumed <=   next (* why *) /\\")), "matrix");
@@ -187,6 +197,28 @@ test("a Kani body edit that touches no assume, cover, stub or harness is unchang
 test("an added Kani stub is changed", () => {
   const outcome = recordedThenEdited(null, "rust", rust("    #[kani::proof]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant", "    #[kani::proof]\n    #[kani::stub(consume, claim)]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant"));
   assertChanged(outcome, "rust", "added stub consume, claim");
+});
+
+test("an added kani::any_where narrows like an assume and is changed", () => {
+  const outcome = recordedThenEdited(null, "rust", rust("let window: u16 = kani::any();", "let window: u16 = kani::any_where(|w: &u16| *w == 1);"));
+  assertChanged(outcome, "rust", "added assume |w: &u16| *w == 1");
+});
+
+test("a harness and stub written under cfg_attr(kani, ...) are recorded", () => {
+  const wrapped = (files) => edit(files.rust, "    #[kani::proof]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant", "    #[cfg_attr(kani, kani::proof)]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant");
+  const removed = recordedThenEdited(wrapped, "rust", rust("    #[cfg_attr(kani, kani::proof)]\n", ""));
+  assertChanged(removed, "rust", "removed harness claim_keeps_invariant");
+  const stubbed = recordedThenEdited(null, "rust", rust("    #[kani::proof]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant", "    #[kani::proof]\n    #[cfg_attr(kani, kani::stub(consume, claim))]\n    #[kani::unwind(2)]\n    fn claim_keeps_invariant"));
+  assertChanged(stubbed, "rust", "added stub consume, claim");
+});
+
+test("an import that renames a Kani assumption fails the record", () => {
+  const files = models();
+  edit(files.rust, "#[cfg(kani)]", "use kani::assume;\n#[cfg(kani)]");
+  const result = baseline(files.dir, "record", files.record, files.rust);
+  assert.equal(result.status, 1);
+  assert.ok(lines(result)[0].startsWith("FAIL baseline:"));
+  assert.ok(result.stdout.includes("use kani::assume"));
 });
 
 test("re-recording a changed file prints the previous digest, and compare then passes", () => {

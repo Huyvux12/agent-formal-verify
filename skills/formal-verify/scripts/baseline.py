@@ -12,9 +12,9 @@ change, and so is an added item whose kind narrows what is checked.
   .matrix      TLA+. Each directive of the matrix, and the normalized definitions of Spec,
                of each operator a check or reach line names, and of the operators those
                reference, in the spec each section names. Spec is not followed into its actions.
-  .rs          Kani. Each harness, and each kani::assume, kani::cover! and #[kani::stub]
-               anywhere in the file. Added covers and harnesses are allowed. Added assumes
-               and stubs are changes.
+  .rs          Kani. Each harness, and each kani::assume, kani::any_where, kani::cover! and
+               #[kani::stub] anywhere in the file. Added covers and harnesses are allowed.
+               Added assumes and stubs are changes.
 
 Usage:
   baseline.py record <record-file> <model-file>...   record these files, keep the other entries
@@ -100,20 +100,30 @@ def strip_tla_comments(text):
     return "".join(out)
 
 
-DEFINITION = re.compile(r"([A-Za-z_]\w*)\s*(?:\([^)]*\))?\s*==")
+DEFINITION = re.compile(r"(?:LOCAL\s+)?([A-Za-z_]\w*)\s*(?:\([^)]*\)|\[[^\]]*\])?\s*==")
+MODULE_LEVEL = re.compile(r"-{4,}|={4,}|(?:EXTENDS|VARIABLES?|CONSTANTS?|ASSUME|ASSUMPTION|AXIOM|THEOREM|LEMMA|PROPOSITION|COROLLARY|INSTANCE|RECURSIVE|USE|HIDE)\b")
 IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+SUBSCRIPT = r"_(?:\w+|<<[^>]*>>)"
+# The actions under [][...]_v and WF_v(...) or SF_v(...) change with every correction of the transcription.
+SPEC_ACTIONS = re.compile(rf"\[\]\[[^\]]*\]{SUBSCRIPT}|[WS]F{SUBSCRIPT}\s*\([^()]*\)")
 
 
 def tla_definitions(text):
-    """Return each top-level definition's name and its text with whitespace collapsed."""
+    """Return each top-level definition's name and its text with whitespace collapsed.
+
+    A definition ends at the next definition, module-level keyword or separator in
+    column 0. Other column-0 text continues it, so an unindented line is never dropped.
+    """
     found, name, lines = {}, None, []
     for line in strip_tla_comments(text).split("\n"):
         if line[:1].strip():
-            if name:
-                found[name] = collapse(" ".join(lines))
             match = DEFINITION.match(line)
-            name, lines = (match[1], [line]) if match else (None, [])
-        elif name:
+            if match or MODULE_LEVEL.match(line):
+                if name:
+                    found[name] = collapse(" ".join(lines))
+                name, lines = (match[1], [line]) if match else (None, [])
+                continue
+        if name:
             lines.append(line)
     if name:
         found[name] = collapse(" ".join(lines))
@@ -121,16 +131,17 @@ def tla_definitions(text):
 
 
 def tla_closure(definitions, roots):
-    """Return the roots and the definitions they reference, never following Spec."""
+    """Return the roots and the definitions they reference, following Spec everywhere but into its actions."""
     seen, pending = set(), list(roots)
     while pending:
         name = pending.pop()
         if name in seen:
             continue
         seen.add(name)
-        if name != "Spec":
-            body = definitions[name].partition("==")[2]
-            pending += [word for word in IDENTIFIER.findall(body) if word in definitions and word != name]
+        body = definitions[name].partition("==")[2]
+        if name == "Spec":
+            body = SPEC_ACTIONS.sub(" ", body)
+        pending += [word for word in IDENTIFIER.findall(body) if word in definitions and word != name]
     return seen
 
 
@@ -229,17 +240,23 @@ def balanced(mask, opener):
     raise ValueError(f"unbalanced {mask[opener]} at offset {opener}")
 
 
+KANI_ATTRIBUTE = r"#\s*\[\s*(?:cfg_attr\s*\(\s*kani\s*,\s*)?kani\s*::\s*"
 MACROS = (
     ("assume", re.compile(r"\bkani\s*::\s*assume\s*\(")),
+    ("assume", re.compile(r"\bkani\s*::\s*any_where\s*(?:::\s*<[^>]*>\s*)?\(")),
     ("cover", re.compile(r"\bkani\s*::\s*cover\s*!\s*\(")),
-    ("stub", re.compile(r"#\s*\[\s*kani\s*::\s*stub\s*\(")),
+    ("stub", re.compile(KANI_ATTRIBUTE + r"stub\s*\(")),
 )
-PROOF = re.compile(r"#\s*\[\s*kani\s*::\s*proof(?:_for_contract\s*\([^)]*\))?\s*\]")
+PROOF = re.compile(KANI_ATTRIBUTE + r"proof(?:_for_contract\s*\([^)]*\))?\s*\)?\s*\]")
 FUNCTION = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:async|unsafe|const)\s+)*fn\s+(\w+)")
+# The record reads these calls only by their kani:: path, so an import that renames them would hide one.
+HIDING_IMPORT = re.compile(r"\buse\s+kani\s+as\b|\buse\s+kani\s*::[^;]*\b(?:assume|any_where|cover)\b|\buse\s+kani\s*::[^;]*\*")
 
 
 def kani_surface(path):
     text, mask = rust_masks(path.read_text(encoding="utf-8"))
+    if hiding := HIDING_IMPORT.search(mask):
+        raise ValueError(f"{path}: '{collapse(hiding[0])}' imports a Kani assumption or cover by another name; call it by its kani:: path so the record can read it")
     surface = Surface()
     spans = []
     for kind, pattern in MACROS:
