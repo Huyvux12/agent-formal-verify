@@ -74,12 +74,14 @@ function leanFixture(log, { status = 0, audit = audited, files = [] } = {}) {
   }
   command(dir, "elan", [
     '[ "$4" = "--version" ] && exit 0',
+    `[ "$3" = "lean" ] && { echo "${dir}"; exit 0; }`,
+    'if [ "$7" = "leanchecker" ]; then echo replay >> "$TASK_TRACE"; shift 8; printf "replaying %s\\n" "$@"; [ -z "$TASK_REPLAY" ] || { echo "$TASK_REPLAY"; exit 1; }; exit 0; fi',
     'if [ "$6" = "env" ]; then echo audit >> "$TASK_TRACE"; grep "^import" "$8"; printf "%s\\n" "$TASK_AUDIT"; exit 0; fi',
     'shift 6; printf "%s\\n" "$@" > "$TASK_BUILT"',
     `[ ${status} -ne 0 ] || for target; do target=\${target#"$TASK_PROJECT/"}; echo "/physical/.lake/build/lib/lean/\${target%.lean:olean}.olean"; done`,
     `cat "${join(logs, log)}" >&2; exit ${status}`,
   ].join("\n"));
-  const check = (args = files, output = audit) => run(dir, "lean-check.sh", [project, ...args], { TASK_AUDIT: output, TASK_BUILT: join(dir, "built"), TASK_PROJECT: project });
+  const check = (args = files, output = audit, extra = {}) => run(dir, "lean-check.sh", [project, ...args], { TASK_AUDIT: output, TASK_BUILT: join(dir, "built"), TASK_PROJECT: project, ...extra });
   return { dir, project, check, result: check() };
 }
 
@@ -87,7 +89,7 @@ test("the Lean checker prints multi-line search output whole and ignores error t
   const { result } = leanFixture("lake-search.log");
   assert.equal(result.status, 0);
   includes(result.stdout, " ({ next := 3, consumed := 1 }, { next := 4, consumed := 1 })]\n");
-  includes(result.stdout, "/model: 37 declarations checked, no unfinished proof (sorry), no added axiom\n");
+  includes(result.stdout, "/model: 37 declarations checked, no unfinished proof (sorry), no added axiom, kernel replay unavailable");
 });
 
 test("the Lean checker fails a build that uses sorry", () => {
@@ -163,6 +165,44 @@ test("the Lean checker builds and audits only the files it is given, and says so
   includes(result.stdout, `PASS ${project} (Model/Sub.lean only): 37 declarations checked`);
   const missing = leanFixture("lake-search.log", { files: ["Model/Gone.lean"] });
   assert.equal(missing.result.stdout, `FAIL ${missing.project}/Model/Gone.lean does not exist\n`);
+});
+
+test("the Lean checker replays the built modules through the kernel when the pin ships leanchecker", () => {
+  const { dir, check } = leanFixture("lake-search.log");
+  command(dir, "leanchecker", "exit 0");
+  const result = check();
+  assert.equal(result.status, 0, result.stdout);
+  includes(result.stdout, "REPLAYED 2 modules through the Lean kernel\n");
+  includes(result.stdout, "no added axiom, kernel replay passed");
+  assert.equal(readFileSync(join(dir, "calls"), "utf8"), "audit\naudit\nreplay\n");
+});
+
+test("the Lean checker fails a module that kernel replay rejects, and names it", () => {
+  const { dir, project, check } = leanFixture("lake-search.log");
+  command(dir, "leanchecker", "exit 0");
+  const result = check([], audited, { TASK_REPLAY: "leanchecker found a problem in Model.Sub" });
+  assert.equal(result.status, 1);
+  includes(result.stdout, `FAIL ${project}: kernel replay rejected a built module\n`);
+  includes(result.stdout, "leanchecker found a problem in Model.Sub\n");
+  excludes(result.stdout, "PASS ");
+});
+
+test("the Lean checker passes a pin without leanchecker and reports the replay as unavailable", () => {
+  const { dir, result } = leanFixture("lake-search.log");
+  assert.equal(result.status, 0);
+  includes(result.stdout, `UNAVAILABLE kernel replay: ${leanPin} ships no leanchecker\n`);
+  includes(result.stdout, "no added axiom, kernel replay unavailable");
+  excludes(result.stdout, "REPLAYED");
+  assert.equal(readFileSync(join(dir, "calls"), "utf8"), "audit\n");
+});
+
+test("freezing does not replay", () => {
+  const { dir, check } = leanFixture("lake-search.log", { audit: statementAudit(statement("property")) });
+  command(dir, "leanchecker", "exit 0");
+  const frozen = check(["--freeze", "Model.lean"]);
+  assert.equal(frozen.status, 0, frozen.stdout);
+  excludes(frozen.stdout, "REPLAYED");
+  excludes(readFileSync(join(dir, "calls"), "utf8"), "replay");
 });
 
 const statement = (name, kind = "theorem", typeExpr = "type", valueExpr = null, module = "Model") =>

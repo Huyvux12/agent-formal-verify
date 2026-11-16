@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Builds a Lean 4 model with Lake, then audits every declaration of every built
 # module. Fails when the build fails, a declaration uses sorry or rests on an
-# axiom beyond propext, Classical.choice and Quot.sound, or no Lake library
-# owns a .lean file in the project. Otherwise prints the build output and PASS.
+# axiom beyond propext, Classical.choice and Quot.sound, no Lake library owns a
+# .lean file in the project, or the pin's leanchecker rejects a built module on
+# kernel replay. Otherwise prints the build output and PASS. A pin that ships
+# no leanchecker passes with the replay reported as unavailable.
 # Named files limit the check to those sources, so agents that share a project
 # can each check their own model; a run without them checks the whole project.
 # Needs a pin of Lean 4.20.0 or later, the first whose Lake builds a module by
@@ -170,4 +172,24 @@ cat "$work/statements.out"
 # #eval output arrives as info blocks that can span lines.
 grep -v '^[[:space:]]*$' "$log"
 [ "$freeze" -eq 0 ] || exit 0
-echo "PASS $scope: $(grep '^AUDITED ' "$work/audit.out" | cut -d' ' -f2) declarations checked, no unfinished proof (sorry), no added axiom"
+
+# The build trusts a declaration that a command adds to the environment without
+# a kernel check. leanchecker replays every declaration of the built modules
+# through the kernel and rejects it. It reads each argument as a name prefix,
+# so the count comes from the modules it lists, not from the arguments.
+replay=unavailable
+if [ -x "$(elan run "$toolchain" lean --print-prefix)/bin/leanchecker" ]; then
+  modules=()
+  while IFS= read -r module; do modules+=("$module"); done < "$work/modules"
+  replay=passed
+  elan run "$toolchain" lake --dir "$dir" env leanchecker -v "${modules[@]}" > "$work/replay.out" 2>&1 || replay=failed
+fi
+case $replay in
+  passed) echo "REPLAYED $(grep -c '^replaying ' "$work/replay.out") modules through the Lean kernel" ;;
+  failed)
+    echo "FAIL $scope: kernel replay rejected a built module"
+    cat "$work/replay.out"
+    exit 1 ;;
+  unavailable) echo "UNAVAILABLE kernel replay: $toolchain ships no leanchecker" ;;
+esac
+echo "PASS $scope: $(grep '^AUDITED ' "$work/audit.out" | cut -d' ' -f2) declarations checked, no unfinished proof (sorry), no added axiom, kernel replay $replay"

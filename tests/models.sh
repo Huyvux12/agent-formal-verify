@@ -53,6 +53,8 @@ bash "$scripts/lean-check.sh" "$work/lean" | tee "$work/vectors.out"
 grep -qF "VECTOR w=0 input=0,0 claim=none consume=none" "$work/vectors.out"
 grep -qF "VECTOR w=4 input=4,0 claim=none" "$work/vectors.out"
 grep -qF "VECTOR w=4 input=3,0 claim=some(4,0)" "$work/vectors.out"
+grep -q '^REPLAYED 1 modules through the Lean kernel$' "$work/vectors.out"
+grep -q '^PASS .* kernel replay passed' "$work/vectors.out"
 python3 "$scripts/mutate.py" "$work/lean/Model/BoundedQueue.mutations"
 bash "$ROOT/tests/lean-mutations.sh"
 
@@ -85,6 +87,28 @@ scenario lean-axiom
 printf 'axiom cheat : ∀ n : Nat, n < 3\ntheorem bogus : (10 : Nat) < 3 := cheat 10\n' >> "$p/Model/BoundedQueue.lean"
 rejected bash "$scripts/lean-check.sh" "$p" | tee "$work/lean.out"
 grep -qF "AXIOMS 'bogus' depends on axioms: #[cheat]" "$work/lean.out"
+
+# A theorem that a command adds to the environment without a kernel check
+# builds and rests on no axiom; only the replay rejects it.
+scenario lean-unchecked
+cat > "$p/Model/Unchecked.lean" <<'EOF'
+import Lean
+namespace Unchecked
+open Lean Elab Command in
+set_option debug.skipKernelTC true in
+run_cmd liftCoreM do
+  let value : TheoremVal := { name := `Unchecked.unsound, levelParams := [], type := mkConst ``False, value := mkConst ``True.intro }
+  addDecl (.thmDecl value)
+theorem uses : False := unsound
+end Unchecked
+EOF
+rejected bash "$scripts/lean-check.sh" "$p" | tee "$work/lean.out"
+grep -q '^FAIL .*: kernel replay rejected a built module$' "$work/lean.out"
+grep -q '^leanchecker found a problem in Model.Unchecked$' "$work/lean.out"
+if grep -q 'lake exit' "$work/lean.out"; then
+  echo 'FAIL the unchecked theorem failed the build, not the kernel replay'
+  exit 1
+fi
 
 # A source touched after its build still passes.
 scenario lean-touched
