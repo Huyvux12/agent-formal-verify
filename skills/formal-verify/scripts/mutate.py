@@ -228,6 +228,11 @@ def original_location(model, mutation, position):
     return f"{model}:{line}{suffix}"
 
 
+def is_witness(name, declarations):
+    parent, _, last = name.rpartition(".")
+    return last == "witness" and any(decl["theorem"] and decl["name"] == parent for decl in declarations)
+
+
 def check_lean(model, project, toolchain, unmutated_statements, mutation, work):
     """Attribute every error to an elaborated theorem, or else a guard/example command, whose statement the unmutated model also has; the mutation covers those."""
     copy = work / model.name
@@ -251,7 +256,10 @@ def check_lean(model, project, toolchain, unmutated_statements, mutation, work):
                                              f"so this error does not show its proof or check failing\n{where}")
         if error["fileName"] != str(copy) or not checks:
             return Result(Verdict.ERROR, where)
-        failed.extend(name for name, _ in checks if name not in failed)
+        failed.extend(name for name, (property, _) in checks
+                      if name not in failed and not is_witness(property, analysis["declarations"]))
+    if not failed:
+        return Result(Verdict.MISSED)
     return Result(Verdict.DETECTED, "proof/check fails: " + "; ".join(failed), frozenset(failed))
 
 
@@ -324,7 +332,8 @@ def lean_runner(model, mutations):
     if analysis["errors"]:
         stop(f"unmutated Lean model does not elaborate: {analysis['errors'][0]['data']}")
     targets = {"theorem " + decl["name"] for decl in analysis["declarations"]
-               if decl["theorem"] and not decl["private"] and decl["name"] in frozen}
+               if decl["theorem"] and not decl["private"] and decl["name"] in frozen
+               and not is_witness(decl["name"], analysis["declarations"])}
     statements = {(decl["name"], decl["type"]) for decl in analysis["declarations"] if decl["theorem"]}
     statements |= {(cmd["property"], cmd["statement"]) for cmd in analysis["commands"]
                    if cmd["property"] and cmd["statement"] is not None}

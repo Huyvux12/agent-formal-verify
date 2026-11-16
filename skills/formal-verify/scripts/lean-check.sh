@@ -3,8 +3,13 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Builds a Lean 4 model with Lake, then audits every declaration of every built
 # module. Fails when the build fails, a declaration uses sorry or rests on an
-# axiom beyond propext, Classical.choice and Quot.sound, or no Lake library
-# owns a .lean file in the project. Otherwise prints the build output and PASS.
+# axiom beyond propext, Classical.choice and Quot.sound, no Lake library owns a
+# .lean file in the project, a theorem named <Property>.witness does not state
+# that the hypotheses of <Property> hold together, or the pin's leanchecker
+# rejects a built module on kernel replay. Otherwise prints the build output,
+# a WITNESS line for each property and PASS. A property without a witness
+# passes, and so does a pin that ships no leanchecker; the PASS line counts the
+# first and reports the replay as unavailable for the second.
 # Named files limit the check to those sources, so agents that share a project
 # can each check their own model; a run without them checks the whole project.
 # Needs a pin of Lean 4.20.0 or later, the first whose Lake builds a module by
@@ -86,14 +91,43 @@ private def hasTheoremParent (env : Environment) : Name → Bool
   | .str parent _ | .num parent _ =>
     (match env.find? parent with | some (.thmInfo _) => true | _ => false) || hasTheoremParent env parent
 
+private def oneLine (s : String) : String :=
+  (s.foldl (fun (acc, gap) c =>
+    if c.isWhitespace then (acc, true) else ((if gap then acc.push ' ' else acc).push c, false)) ("", false)).1
+
+open Lean Meta in
+private def witnessLine (property : ConstantInfo) (witness? : Option ConstantInfo) : MetaM String :=
+  forallTelescope property.type fun xs _ => do
+    let name := property.name
+    let binders ← xs.mapM fun x => return (x, ← inferType x)
+    let hyps ← binders.filterM fun (_, type) => isProp type
+    if hyps.isEmpty then return s!"WITNESS no-hypotheses {name}"
+    let proofs := hyps.map (·.1.fvarId!)
+    for (x, type) in binders do
+      if type.hasAnyFVar proofs.contains then
+        return s!"WITNESS unavailable {name}: the type of {← ppExpr x} uses the proof of a hypothesis"
+    let vars := binders.filter fun (x, _) => !proofs.contains x.fvarId!
+    let all := hyps.pop.foldr (fun (_, hyp) rest => mkAnd hyp rest) hyps.back!.2
+    -- Explicit binders printed with their types let the statement be copied into the model.
+    let expected ← vars.foldrM (fun (x, type) body => do
+      mkAppM ``Exists #[.lam (← x.fvarId!.getUserName) type (body.abstract #[x]) .default]) all
+    let shown := oneLine (← withOptions (·.setBool `pp.funBinderTypes true) (ppExpr expected)).pretty
+    let some witness := witness? | return s!"WITNESS absent {name}: no theorem {name}.witness states {shown}"
+    let levels ← mkFreshLevelMVars property.levelParams.length
+    if ← isDefEq witness.type (expected.instantiateLevelParams property.levelParams levels) then
+      return s!"WITNESS checked {name}"
+    return s!"WITNESS failed {name}: {name}.witness must state {shown}"
+
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
   let env ← getEnv
   let freezing := (← IO.getEnv "AFV_FREEZE") == some "1"
   let modules := (env.imports.map (·.module)).erase `Lean
+  for module in env.header.moduleNames do IO.println s!"IMPORTED {module.toString (escape := false)}"
   let standard : Array Name := #[``propext, ``Classical.choice, ``Quot.sound]
   let names := env.constants.fold (fun acc name info => if info matches .axiomInfo _ then acc else acc.push name) #[]
   let mut audited := 0
+  let mut theorems : Array (Name × Name × ModuleIdx) := #[]
   for name in names do
     let some idx := env.getModuleIdxFor? name | continue
     unless modules.contains env.header.moduleNames[idx.toNat]! do continue
@@ -124,6 +158,19 @@ open Lean Elab Command in
       ("typeExpr", toJson (reprStr (info.levelParams, info.type))),
       ("valueExpr", value), ("type", toJson pp.pretty)]
     IO.println s!"STATEMENT {record.compress}"
+    if info matches .thmInfo _ then theorems := theorems.push (name, userName, idx)
+  for (name, userName, idx) in theorems.qsort (·.1.toString < ·.1.toString) do
+    let pairedWitness := match userName with
+      | .str parent "witness" => theorems.any fun (_, user, owner) => owner == idx && user == parent
+      | _ => false
+    if name != userName || pairedWitness then continue
+    if env.isProjectionFn name || Meta.isInstanceCore env name then continue
+    if (← findDeclarationRanges? name).isNone then continue
+    let witness? := theorems.find? fun (_, user, owner) => owner == idx && user == userName ++ `witness
+    let line ← liftTermElabM <| tryCatchRuntimeEx
+      (witnessLine (env.find? name).get! (witness?.bind (env.find? ·.1)))
+      fun error => return s!"WITNESS unavailable {name}: {oneLine (← error.toMessageData.toString)}"
+    IO.println line
   IO.println s!"AUDITED {audited} declarations"
 EOF
   } > "$work/Audit.lean"
@@ -151,7 +198,7 @@ if [ "$status" -ne 0 ] || { [ "$freeze" -eq 0 ] && [ "$sorries" -ne 0 ]; } || [ 
     || echo "$toolchain cannot build a module by its source path; pin Lean 4.20.0 or later"
   if [ "$audit_status" -ne 0 ]; then
     echo "the axiom audit did not run or found no declarations:"
-    grep -v '^[[:space:]]*$' "$work/audit.out" | tail -40
+    grep -v -e '^[[:space:]]*$' -e '^IMPORTED ' "$work/audit.out" | tail -40
     ! grep -q 'environment already contains' "$work/audit.out" \
       || echo "two modules declare the same name; put each model in a namespace of its own"
   fi
@@ -170,4 +217,34 @@ cat "$work/statements.out"
 # #eval output arrives as info blocks that can span lines.
 grep -v '^[[:space:]]*$' "$log"
 [ "$freeze" -eq 0 ] || exit 0
-echo "PASS $scope: $(grep '^AUDITED ' "$work/audit.out" | cut -d' ' -f2) declarations checked, no unfinished proof (sorry), no added axiom"
+
+witnesses() { grep -c "^WITNESS $1 " "$work/audit.out"; }
+failed=$(witnesses failed)
+[ "$failed" -eq 0 ] || echo "FAIL $scope: $failed witnesses do not state their property's hypotheses"
+grep '^WITNESS ' "$work/audit.out"
+[ "$failed" -eq 0 ] || exit 1
+
+# The build trusts a declaration that a command adds to the environment without
+# a kernel check. leanchecker replays every declaration of the built modules
+# through the kernel and rejects it. It reads each argument as a name prefix,
+# so the count comes from the modules it lists, not from the arguments. A named
+# module rests on the project modules it imports, so those are replayed too.
+replay=unavailable
+if [ -x "$(elan run "$toolchain" lean --print-prefix)/bin/leanchecker" ]; then
+  modules=()
+  while IFS= read -r module; do modules+=("$module"); done < "$work/modules"
+  while IFS= read -r module; do
+    [ ! -f "$dir/.lake/build/lib/lean/${module//.//}.olean" ] || modules+=("$module")
+  done < <(sed -n 's/^IMPORTED //p' "$work/audit.out")
+  replay=passed
+  elan run "$toolchain" lake --dir "$dir" env leanchecker -v "${modules[@]}" > "$work/replay.out" 2>&1 || replay=failed
+fi
+case $replay in
+  passed) echo "REPLAYED $(grep -c '^replaying ' "$work/replay.out") modules through the Lean kernel" ;;
+  failed)
+    echo "FAIL $scope: kernel replay rejected a built module"
+    cat "$work/replay.out"
+    exit 1 ;;
+  unavailable) echo "UNAVAILABLE kernel replay: $toolchain ships no leanchecker" ;;
+esac
+echo "PASS $scope: $(grep '^AUDITED ' "$work/audit.out" | cut -d' ' -f2) declarations checked, no unfinished proof (sorry), no added axiom, kernel replay $replay, $(witnesses checked) witnesses checked, $(witnesses absent) absent, $(witnesses unavailable) unavailable, $(witnesses no-hypotheses) properties without hypotheses"
