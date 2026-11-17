@@ -28,7 +28,6 @@ model file that fails to parse, 2 usage error.
 """
 import argparse
 import hashlib
-import importlib.util
 import json
 import re
 import sys
@@ -39,8 +38,8 @@ from typing import NamedTuple
 sys.dont_write_bytecode = True
 
 import tlc
+from lean_records import read_record as read_lean_record
 
-HERE = Path(__file__).resolve().parent
 FORMAT = 2
 NARROWING = {"lean": (), "tla": (), "kani": ("assume", "stub")}
 KINDS = {".statements": "lean", ".matrix": "tla", ".rs": "kani"}
@@ -69,10 +68,7 @@ class Surface(dict):
 
 
 def lean_surface(path):
-    spec = importlib.util.spec_from_file_location("lean_statements", HERE / "lean-statements.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    record = module.read_record(path)
+    record = read_lean_record(path)
     surface = Surface()
     surface.add("toolchain", record["toolchain"])
     for entry in record["declarations"]:

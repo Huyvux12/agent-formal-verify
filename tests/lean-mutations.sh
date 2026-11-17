@@ -41,6 +41,20 @@ if grep -q '^UNCOVERED theorem Step.helper$' "$work/result"; then
   exit 1
 fi
 
+# Removing a frozen theorem must not turn incomplete mutation coverage green.
+sed -i.orig '/(h : n < 0)/d' "$work/Model/Step.lean"
+if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
+  echo 'FAIL deleted frozen theorem disappeared from mutation coverage'
+  exit 1
+fi
+grep -Fq 'FROZEN Step.Vacuous.property: statement changed' "$work/result"
+printf '{"declarations":[]}\n' > "$work/Model/Step.statements"
+if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
+  echo 'FAIL malformed freeze record allowed mutation credit'
+  exit 1
+fi
+grep -q 'unsupported statements format' "$work/result"
+
 # Proposition-valued projections and instances are not property declarations.
 # A theorem with an anonymous instance binder keeps its statement when the
 # mutation shifts the hygiene numbers that Lean 4.20 gives such binders.

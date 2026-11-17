@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Michael Denyer
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { command, excludes, fakeTlc, fixture, includes, logs, removeFixtures, run, writeLeanProject } from "./helpers.mjs";
+import { command, excludes, fakeTlc, fixture, includes, leanPin, logs, removeFixtures, run, writeLeanProject } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
@@ -141,8 +142,14 @@ test("the mutation runner checks every mutation's lines before it runs any model
 });
 
 function freezeRecord(path, theorems) {
-  const declarations = theorems.map((name) => ({ name, kind: "theorem" }));
-  writeFileSync(path, JSON.stringify({ declarations }));
+  const names = [["Step.step", "definition"], ...theorems.map((name) => [name, "theorem"])];
+  const audit = names.map(([name, kind]) => ({
+    module: "Model.Step", name, kind, type: "Prop", typeExpr: "Prop", valueExpr: null,
+  }));
+  const typeHash = createHash("sha256").update("Prop").digest("hex");
+  const declarations = audit.map(({ name, kind, type }) => ({ name, kind, type, typeHash, valueHash: null }));
+  writeFileSync(path, JSON.stringify({ format: 1, module: "Model.Step", toolchain: leanPin, declarations }));
+  return audit.map((entry) => "STATEMENT " + JSON.stringify(entry)).join("\n");
 }
 
 function leanProject() {
@@ -168,16 +175,21 @@ const leanAnalysis = (declarations, errors = [], commands = []) => ({ declaratio
 function leanMutations(model, frozen, baseline, mutations, outcomes) {
   const { dir, project } = leanProject();
   writeFileSync(join(project, "Model/Step.lean"), model);
-  freezeRecord(join(project, "Model/Step.statements"), frozen);
+  const audit = freezeRecord(join(project, "Model/Step.statements"), frozen);
   writeFileSync(join(project, "Model/Step.mutations"), mutations);
   const config = join(dir, "analysis.json");
   writeFileSync(config, JSON.stringify({ baseline, mutations: outcomes }));
   command(dir, "elan", [
     '[ "$4" = "--version" ] && { echo version >> "$TASK_TRACE"; exit 0; }',
+    '[ "$6" = query ] && { echo "$TASK_PROJECT/.lake/build/lib/lean/Model/Step.olean"; exit 0; }',
+    '[[ "$8" == */Audit.lean ]] && { echo "$TASK_AUDIT"; echo "AUDITED 1 declarations"; exit 0; }',
+    '[ "$4" = --print-prefix ] && { echo "$TASK_PROJECT"; exit 0; }',
+    '[ "$6" = env ] && [ "$7" != lean ] && { shift 6; exec "$@"; }',
     'echo analyse >> "$TASK_TRACE"',
     'python3 "$TASK_LEAN_DRIVER" "$TASK_LEAN_CONFIG" "${@: -1}"',
   ].join("\n"));
   const result = run(dir, "mutate.py", [join(project, "Model/Step.mutations")], {
+    TASK_PROJECT: project, TASK_AUDIT: audit, LEAN_PATH: join(project, ".lake/build/lib/lean"),
     TASK_LEAN_DRIVER: join(logs, "lean-analysis.py"), TASK_LEAN_CONFIG: config,
   });
   assert.equal(readFileSync(join(project, "Model/Step.lean"), "utf8"), model);
