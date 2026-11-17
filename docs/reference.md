@@ -13,12 +13,21 @@ In Pi, use `/skill:setup` and `/skill:formal-verify`, or request a skill by name
 
 In OpenCode, request `setup` or `formal-verify` by name; the agent loads it through the `skill` tool. The plugin's `opencode.mjs` registers the two skills from `skills/` and leaves any existing skill with the same name in place. It adds no tools, commands, agents or MCP servers. It needs OpenCode 2.2 or later; with an older version, use a skills-only installation.
 
+In Antigravity, request `setup` or `formal-verify` by name. The `.antigravity-plugin/plugin.json` manifest exposes both skills from `skills/` and uses `assets/icon.png` without hooks or MCP servers.
+
 ## Shared installation
 
 To test a local checkout in Claude Code:
 
 ```shell
 claude --plugin-dir /absolute/path/to/agent-formal-verify
+```
+
+To test a local checkout in Antigravity:
+
+```shell
+agy plugin validate /absolute/path/to/agent-formal-verify
+agy plugin install /absolute/path/to/agent-formal-verify
 ```
 
 To test a local checkout in Pi:
