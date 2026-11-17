@@ -56,6 +56,7 @@ class Kani:
 
     def __init__(self):
         home = Path(os.environ.get("KANI_HOME", Path.home() / ".kani")).resolve()
+        self.timeout = os.environ.get("KANI_HARNESS_TIMEOUT") or "5m"
         bundle = home / f"kani-{self.version}"
         remedy = (f"run cargo install --locked kani-verifier --version {self.version} "
                   "then cargo kani setup")
@@ -194,6 +195,10 @@ def harness_result(report, kani, name, returncode):
     """Return the one harness result in report after checking it agrees with itself and the process."""
     if report.get("metadata", {}).get("version") != "1.0" or report["metadata"].get("kani_version") != kani.version:
         raise CheckError("unsupported Kani result schema or version")
+    if any(detail.get("harness_id") == name and detail.get("exit_status") == "timeout"
+           for detail in report.get("error_details", [])):
+        raise CheckError(f"the solver did not finish within KANI_HARNESS_TIMEOUT={kani.timeout}; "
+                         "narrow the harness or raise the limit")
     verification = report["verification_results"]
     summary, results = verification["summary"], verification["results"]
     if summary["status"] != "completed" or summary["executed"] != 1 or summary["total_harnesses"] != 1:
@@ -234,7 +239,8 @@ def verify(crate, work, kani, name, bound):
     result_file.unlink(missing_ok=True)
     try:
         done = invoke(crate, work, kani, "--harness", name, "--exact", "--unwind", str(bound),
-                      "-Z", "unstable-options", "--export-json", str(result_file),
+                      "-Z", "unstable-options", "--harness-timeout", kani.timeout,
+                      "--export-json", str(result_file),
                       "-Z", "concrete-playback", "--concrete-playback", "print",
                       "--output-format", "regular")
     except CheckError as error:

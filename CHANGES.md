@@ -6,6 +6,8 @@ The plugin now installs in Antigravity with `agy plugin install`. The `.antigrav
 
 When a crate uses a standard library feature that is newer than the toolchain bundled with Kani 0.68.0, Kani discovery fails with E0658. The Rust checker and the mutation runner now add a note to that failure. The note names the bundled toolchain and says to rewrite harness code that uses the feature. When every error is in production code or a dependency, it says to report the target as not checked, because the feature attribute that the compiler suggests would change the production crate. The Rust brief says the same.
 
+The Rust checker and the mutation runner now stop each Kani harness after five minutes, through Kani's own harness timeout, which also stops the CBMC solver. Set `KANI_HARNESS_TIMEOUT` to change the limit, for example to `90s` or `20m`. A harness that reaches the limit fails with a message that names the setting, and a mutation that reaches it gets no verdict, so it never counts as detected. Before this change, a harness whose symbolic inputs reached message-formatting error paths or a wide symbolic division could run with no output until something else stopped it.
+
 The repository now tells Git to check out text files with LF line endings on every platform. A Windows clone with `core.autocrlf=true` used to get CRLF line endings in the Bash helpers.
 
 ## 0.4.10 - baselines keep each check's run and each Kani constraint's function
