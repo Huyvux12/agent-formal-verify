@@ -1,5 +1,9 @@
 # Changes
 
+## Unreleased
+
+The Rust checker, the mutation runner and `setup.sh rust` now check `KANI_HARNESS_TIMEOUT` before Kani runs. The setting takes a whole number from 1 to 4294967295 with an optional unit `s`, `m` or `h`, as Kani 0.68.0 reads it, and spaces around the value are ignored. For any other value, including `0`, the helpers print `UNAVAILABLE` and check no harness. Before this change, `0` stopped every harness at once, and a value that Kani rejects failed every harness with a message about a missing result file. The limit cannot be turned off, so set a long one, such as `24h`, instead. A harness that reaches the limit fails with a message that names the limit with its unit, such as `90s` for a value of `90`, and the setting that changes it. The setup guide says that each harness check can take up to the limit, so run the Rust checker and the mutation runner in the background or with a command timeout longer than the total.
+
 ## 0.4.11 - Antigravity install, stricter verdicts and a Kani harness time limit
 
 Kani now checks the configured crate and requires a satisfied cover witness for each passing harness. Each Rust mutation starts from a passing harness. Coverage is checked per harness source file, and the checker supports Kani stubs. A missing toolchain version file no longer hides the original compiler error.
@@ -10,7 +14,7 @@ The plugin now installs in Antigravity with `agy plugin install`. The `.antigrav
 
 When a crate uses a standard library feature that is newer than the toolchain bundled with Kani 0.68.0, Kani discovery fails with E0658. The Rust checker and the mutation runner now add a note to that failure. The note names the bundled toolchain and says to rewrite harness code that uses the feature. When every error is in production code or a dependency, it says to report the target as not checked, because the feature attribute that the compiler suggests would change the production crate. The Rust brief says the same.
 
-The Rust checker and the mutation runner now stop each Kani harness after five minutes, through Kani's own harness timeout, which also stops the CBMC solver. Set `KANI_HARNESS_TIMEOUT` to change the limit, for example to `90s` or `20m`. The setting takes a whole number from 1 to 4294967295 with an optional unit `s`, `m` or `h`, and the limit cannot be turned off. For any other value, the helpers print `UNAVAILABLE` and check no harness. A harness that reaches the limit fails with a message that names the limit and the setting, and a mutation that reaches it gets no verdict, so it never counts as detected. Before this change, a harness whose symbolic inputs reached message-formatting error paths or a wide symbolic division could run with no output until something else stopped it.
+The Rust checker and the mutation runner now stop each Kani harness after five minutes, through Kani's own harness timeout, which also stops the CBMC solver. Set `KANI_HARNESS_TIMEOUT` to change the limit, for example to `90s` or `20m`. A harness that reaches the limit fails with a message that names the setting, and a mutation that reaches it gets no verdict, so it never counts as detected. Before this change, a harness whose symbolic inputs reached message-formatting error paths or a wide symbolic division could run with no output until something else stopped it.
 
 The repository now tells Git to check out text files with LF line endings on every platform. A Windows clone with `core.autocrlf=true` used to get CRLF line endings in the Bash helpers.
 
