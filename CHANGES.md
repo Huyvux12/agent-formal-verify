@@ -1,5 +1,9 @@
 # Changes
 
+## Unreleased
+
+The plugin now installs in Antigravity with `agy plugin install`. The `.antigravity-plugin/plugin.json` manifest exposes the `setup` and `formal-verify` skills from `skills/` and adds no hooks or MCP servers. Antigravity loads only the first 24,000 bytes of a skill body, which cut off most of the formal-verify reply instructions. The helper reference and the table of evidence meanings moved from `SKILL.md` to `references/helpers.md` and `references/evidence.md`, which the skill tells the agent to read, and a test keeps each skill body within that limit.
+
 ## 0.4.10 - baselines keep each check's run and each Kani constraint's function
 
 The specification baseline now records the checks that apply to each TLA+ run and the inputs selected by each reach check. Moving check lines below a run or changing which run a reach check selects no longer compares unchanged. Kani assumptions, covers and stubs now retain their qualified owning function, and harness names include their modules, so moving a constraint between functions is reported. The Rust reader supports free functions under inline modules and rejects Kani forms in an owner it cannot identify, including macro definitions and implementation or trait bodies. Baseline records use format 2; create a new record after updating rather than reuse a format 1 record.

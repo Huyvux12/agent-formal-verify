@@ -1,0 +1,30 @@
+{
+  "name": "agent-formal-verify",
+  "displayName": "Agent formal verify",
+  "version": "0.4.10",
+  "description": "Model-check protocols with TLA+, prove invariants with Lean 4, and check bounded Rust functions with Kani.",
+  "author": {
+    "name": "Michael Denyer",
+    "url": "https://github.com/michael-denyer"
+  },
+  "homepage": "https://github.com/michael-denyer/agent-formal-verify",
+  "repository": "https://github.com/michael-denyer/agent-formal-verify",
+  "license": "GPL-3.0-only",
+  "keywords": [
+    "agent-formal-verify",
+    "tla-plus",
+    "tlc",
+    "lean",
+    "kani",
+    "rust",
+    "model-checking",
+    "proofs",
+    "skills"
+  ],
+  "logo": "assets/icon.png",
+  "suggestedPrompts": [
+    "Use formal-verify to check this queue's shutdown protocol and window arithmetic.",
+    "Prepare TLA+, Lean 4, and Kani verification tools with setup.",
+    "Recheck existing formal models against recent commits."
+  ]
+}
