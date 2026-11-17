@@ -64,8 +64,8 @@ class Kani:
     def __init__(self):
         home = Path(os.environ.get("KANI_HOME", Path.home() / ".kani")).resolve()
         self.timeout = os.environ.get("KANI_HARNESS_TIMEOUT", "").strip() or "5m"
-        limit = re.fullmatch(r"([0-9]+)[smh]?", self.timeout)
-        if not limit or not 0 < int(limit[1]) < 2**32:
+        limit = re.fullmatch(r"\+?0*([1-9][0-9]{0,9})[smh]?", self.timeout)
+        if not limit or int(limit[1]) >= 2**32:
             raise Unavailable(f"KANI_HARNESS_TIMEOUT={self.timeout!r} is not a harness time limit; set a whole "
                               "number from 1 to 4294967295 with an optional unit s, m or h, such as 90s or 20m, "
                               "or unset it for five minutes")

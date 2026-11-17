@@ -346,16 +346,17 @@ test("Kani limits each harness to five minutes unless KANI_HARNESS_TIMEOUT sets 
   includes(calls(dir), "--harness-timeout 5m");
   assert.equal(runKani(dir, "kani-check.sh", [dir], { KANI_HARNESS_TIMEOUT: "90s" }).status, 0);
   includes(calls(dir), "--harness-timeout 90s");
-  for (const [value, limit] of [["", "5m"], ["  ", "5m"], [" 2h\n", "2h"]]) {
+  const zeros = `${"0".repeat(4300)}5m`;
+  for (const [value, limit] of [["", "5m"], ["  ", "5m"], [" 2h\n", "2h"], ["+90", "+90"], [zeros, zeros]]) {
     const { dir: fresh } = kaniFixture();
     assert.equal(runKani(fresh, "kani-check.sh", [fresh], { KANI_HARNESS_TIMEOUT: value }).status, 0);
     includes(calls(fresh), `--harness-timeout ${limit} --export-json`);
   }
 });
 
-test("Kani reports a KANI_HARNESS_TIMEOUT that Kani would reject as unavailable before checking", () => {
+test("Kani reports a KANI_HARNESS_TIMEOUT that is not a positive Kani limit as unavailable before checking", () => {
   const { dir } = kaniFixture();
-  for (const value of ["0", "0s", "1.5m", "-1s", "10min", "4294967296", "１０s"]) {
+  for (const value of ["0", "0s", "+00", "1.5m", "-1s", "10min", "4294967296", "004294967296", "１０s"]) {
     const result = runKani(dir, "kani-check.sh", [dir], { KANI_HARNESS_TIMEOUT: value });
     assert.equal(result.status, 3, `${value}: ${result.stdout}${result.stderr}`);
     includes(result.stdout, `UNAVAILABLE KANI_HARNESS_TIMEOUT='${value}'`);
