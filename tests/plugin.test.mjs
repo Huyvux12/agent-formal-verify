@@ -240,3 +240,40 @@ test("skills declare their names and link only to files inside the skills tree",
     }
   }
 });
+
+const trackedSkillFiles = execFileSync("git", ["ls-files", "skills"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean);
+
+test("skills use names and descriptions that every Agent Skills runtime accepts", async () => {
+  for (const [id, { name, description }] of await register(opencode)) {
+    assert.match(name, /^[a-z0-9]+(?:-[a-z0-9]+)*$/, `${id}: use lowercase letters and digits joined by single hyphens`);
+    assert.ok(name.length <= 64, `${id}: the name is longer than 64 characters`);
+    assert.ok(description.length <= 1024, `${id}: the description has ${description.length} characters; the limit is 1024`);
+  }
+});
+
+// The skill docs write helper and template paths relative to the formal-verify skill, often as <skill-dir>/scripts/...
+test("helper, reference and template paths in skill code spans name tracked files in the formal-verify skill", () => {
+  const missing = [];
+  for (const path of trackedSkillFiles.filter((file) => file.endsWith(".md"))) {
+    for (const [, , code] of read(path).matchAll(/(`+|~{3,})([\s\S]*?)\1/g)) {
+      for (const [, target] of code.matchAll(/(?:^|[^\w.-])((?:scripts|references|examples)\/[\w./-]*)/g)) {
+        const named = join("skills", "formal-verify", target).replace(/\/$/, "");
+        if (!trackedSkillFiles.some((file) => file === named || file.startsWith(`${named}/`))) missing.push(`${path}: ${target}`);
+      }
+    }
+  }
+  assert.deepEqual(missing, []);
+});
+
+test("shipped skill files name no web host other than github.com", () => {
+  const hosts = new Set(["github.com"]);
+  const found = [];
+  for (const path of [...trackedSkillFiles, "opencode.mjs"]) {
+    for (const [index, line] of read(path).split("\n").entries()) {
+      for (const [, host] of line.matchAll(/\bhttps?:\/\/([^/\s"'`<>)\]]+)/g)) {
+        if (!hosts.has(host)) found.push(`${path}:${index + 1}: ${host}`);
+      }
+    }
+  }
+  assert.deepEqual(found, [], "a new host is a new place the skill sends users or fetches from; review it, then add it to this test");
+});
