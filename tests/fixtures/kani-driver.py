@@ -12,7 +12,7 @@ with open(trace, "a") as log:
 if args[0] == "metadata":
     manifest = pathlib.Path(args[args.index("--manifest-path") + 1])
     print(json.dumps(config.get("cargoMetadata", {
-        "version": 1, "workspace_root": str(manifest.parent),
+        "version": 1, "workspace_root": str(manifest.parent), "target_directory": str(manifest.parent / "target"),
         "packages": [{"source": None, "manifest_path": str(manifest), "dependencies": []}],
     })))
     sys.exit(config.get("cargoMetadataStatus", 0))
@@ -44,6 +44,8 @@ else:
     if config.get("compileError") and mutated:
         print("error: compilation failed")
         sys.exit(1)
+    if mutated and any((crate / path).exists() for path in config.get("excludedCrateFiles", [])):
+        sys.exit("Cargo build output was copied")
     for relative, contents in (config.get("requiredCrateFiles", {}) if mutated else {}).items():
         path = crate / relative
         if not path.is_file() or path.read_text() != contents:

@@ -50,7 +50,7 @@ function kaniFixture(outcome = "success", config = {}) {
 
 function rustMutation(dir, name, label = "guard") {
   writeFileSync(join(dir, "baseline.json"), readFileSync(join(logs, "kani-success.json")));
-  mkdirSync(join(dir, "src"));
+  mkdirSync(join(dir, "src"), { recursive: true });
   writeFileSync(join(dir, "src/lib.rs"), "old\n");
   const mutations = join(dir, "src/lib.mutations");
   writeFileSync(mutations, `mutation ${label}\ndetects ${name}\n- old\n+ new\n`);
@@ -220,6 +220,8 @@ for (const workspace of [false, true]) {
     const shared = join(dir, "shared");
     const files = {
       "proof/Cargo.toml": '[package]\nname="proof"\nversion="0.1.0"\n[dependencies]\nlogic={path="../logic"}\n',
+      "proof/src/target/mod.rs": "pub const STEP: u8 = 1;\n",
+      "proof/custom-output/stale": "prior build\n",
       "logic/Cargo.toml": '[package]\nname="logic"\nversion="0.1.0"\n[dependencies]\nshared={path="../../shared"}\n',
       "logic/src/lib.rs": "pub fn step(n: u8) -> u8 { shared::step(n) }\n",
     };
@@ -240,14 +242,16 @@ for (const workspace of [false, true]) {
     writeJson(join(dir, "driver.json"), {
       version: KANI, harnesses: { [name]: 3 },
       cargoMetadata: {
-        version: 1, workspace_root: workspace ? root : crate,
+        version: 1, workspace_root: workspace ? root : crate, target_directory: join(crate, "custom-output"),
         packages: [
           { source: null, manifest_path: join(crate, "Cargo.toml"), dependencies: [{ path: join(root, "logic") }] },
           { source: null, manifest_path: join(root, "logic/Cargo.toml"), dependencies: [{ path: shared }] },
           { source: null, manifest_path: join(shared, "Cargo.toml"), dependencies: [] },
         ],
       },
+      excludedCrateFiles: ["custom-output/stale"],
       requiredCrateFiles: {
+        "src/target/mod.rs": files["proof/src/target/mod.rs"],
         "src/lib.rs": "new\n",
         "../logic/src/lib.rs": files["logic/src/lib.rs"],
         "../../shared/src/lib.rs": "pub fn step(n: u8) -> u8 { n + 1 }\n",
@@ -266,7 +270,7 @@ for (const [label, config, error] of [
   ["failed", { cargoMetadataStatus: 1 }, "Cargo metadata failed"],
   ["malformed", { cargoMetadata: [] }, "malformed Cargo metadata"],
   ["unsupported", { cargoMetadata: { version: 2 } }, "unsupported Cargo metadata version"],
-  ["relative", { cargoMetadata: { version: 1, workspace_root: "relative", packages: [] } }, "Cargo metadata returned a relative source path"],
+  ["relative", { cargoMetadata: { version: 1, workspace_root: "relative", target_directory: "/build", packages: [] } }, "Cargo metadata returned a relative source path"],
 ]) {
   test(`Rust mutations reject ${label} Cargo metadata before checking a mutation`, () => {
     const { dir, name } = kaniFixture("failure", config);

@@ -59,13 +59,16 @@ EOF
   printf '[package]\nname="optional"\nversion="0.1.0"\n' > "$p/../optional/Cargo.toml"
   touch "$p/../optional/src/lib.rs"
   printf 'pub fn step(n: u8) -> u8 { shared::step(n) }\n' > "$p/logic/src/lib.rs"
+  mkdir -p "$p/proof/src/target"
+  printf 'pub use logic::step;\n' > "$p/proof/src/target/mod.rs"
   cat > "$p/proof/src/lib.rs" <<'EOF'
 const _: &str = env!("AFV_WORKSPACE_CONFIG");
 const _: &str = env!("AFV_CRATE_CONFIG");
 const _: &str = include_str!(env!("AFV_CONFIG_FILE"));
 #[cfg(kani)]
 mod unrelated;
-pub fn step(n: u8) -> u8 { logic::step(n) }
+mod target;
+pub fn step(n: u8) -> u8 { target::step(n) }
 #[cfg(kani)]
 mod proofs {
     #[kani::proof]
@@ -88,7 +91,7 @@ fn another_file() {
     kani::cover!(n == 254);
 }
 EOF
-  printf 'mutation no increment\ndetects proofs::increments\n- logic::step(n)\n+ n\n' > "$p/proof/src/lib.mutations"
+  printf 'mutation no increment\ndetects proofs::increments\n- target::step(n)\n+ n\n' > "$p/proof/src/lib.mutations"
   printf 'existing list report\n' > "$p/proof/kani-list.json"
   bash "$scripts/kani-check.sh" "$p/proof" > "$work/check-one" &
   first=$!
@@ -101,7 +104,7 @@ EOF
   python3 "$scripts/mutate.py" "$p/proof/src/lib.mutations" | tee "$work/result"
   grep -q '^DETECTED no increment: assertion Failure:' "$work/result"
   grep -q '^SUMMARY 1 of 1 mutations detected$' "$work/result"
-  grep -qF 'logic::step(n)' "$p/proof/src/lib.rs"
+  grep -qF 'target::step(n)' "$p/proof/src/lib.rs"
   grep -qx 'existing list report' "$p/proof/kani-list.json"
   if [ -f "$p/../shared/Cargo.lock" ] || [ -f "$p/../optional/Cargo.lock" ]; then
     echo 'FAIL mutation discovery wrote a lockfile into a dependency'
