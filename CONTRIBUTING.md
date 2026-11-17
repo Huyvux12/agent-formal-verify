@@ -55,7 +55,7 @@ For a credential or download-and-run finding, expand the hold in the portal: its
 
 Dependabot opens weekly update PRs for GitHub Actions, the pinned lint hooks, prek and the isolated-installation `skills` CLI. Updates wait seven days after release and must pass CI before review; they are not merged automatically.
 
-Update the lychee and OSV-Scanner image tags and digests, the Bash 3.2 job's Node image digest and Bash checksum, zizmor tool version, and elan version and checksum manually in CI. Lean pins and TLC's version and checksum also need deliberate updates: run a valid model and a failing property with the new tools before changing their pins.
+Update the lychee and OSV-Scanner image tags and digests, the Bash 3.2 job's Node image digest, Bash checksum and bison version, zizmor tool version, and elan version and checksum manually in CI. Lean pins and TLC's version and checksum also need deliberate updates: run a valid model and a failing property with the new tools before changing their pins.
 
 ## License
 
