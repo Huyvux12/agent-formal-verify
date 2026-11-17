@@ -49,6 +49,7 @@ function kaniFixture(outcome = "success", config = {}) {
 }
 
 function rustMutation(dir, name, label = "guard") {
+  writeFileSync(join(dir, "baseline.json"), readFileSync(join(logs, "kani-success.json")));
   mkdirSync(join(dir, "src"));
   writeFileSync(join(dir, "src/lib.rs"), "old\n");
   const mutations = join(dir, "src/lib.mutations");
@@ -235,6 +236,7 @@ for (const workspace of [false, true]) {
     writeFileSync(join(shared, "Cargo.toml"), '[package]\nname="shared"\nversion="0.1.0"\n');
     writeFileSync(join(shared, "src/lib.rs"), "pub fn step(n: u8) -> u8 { n + 1 }\n");
     const mutations = rustMutation(crate, name);
+    writeFileSync(join(dir, "baseline.json"), readFileSync(join(logs, "kani-success.json")));
     writeJson(join(dir, "driver.json"), {
       version: KANI, harnesses: { [name]: 3 },
       cargoMetadata: {
@@ -432,4 +434,123 @@ test("the Rust checker does not treat a crate argument as a readiness command", 
   includes(result.stdout, "Cargo.toml is missing");
   excludes(result.stdout, "READY");
   excludes(result.stdout, "SUMMARY");
+});
+
+for (const reachable of [false, true]) {
+  test(`Kani requires a cover even with ${reachable ? "successful" : "unreachable"} assertions`, () => {
+    const { dir, report } = kaniFixture();
+    report.verification_results.results[0].checks = report.verification_results.results[0].checks
+      .filter((check) => check.category !== "cover")
+      .map((check) => ({ ...check, status: reachable ? "Success" : "Unreachable" }));
+    writeJson(join(dir, "report.json"), report);
+    const result = runKani(dir, "kani-check.sh", [dir]);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    includes(result.stdout, "no satisfied kani::cover! witness");
+  });
+}
+
+for (const script of ["kani-check.sh", "mutate.py"]) {
+  test(`Kani ${script} rejects safety success before an unreachable property without a cover`, () => {
+    const { dir, name, report } = kaniFixture();
+    const checks = report.verification_results.results[0].checks;
+    report.verification_results.results[0].checks = [
+      { ...checks[0], status: "Success", category: "assertion", description: "attempt to add with overflow" },
+      { ...checks[0], id: 2, status: "Unreachable", category: "assertion", description: "assertion failed: next > 0" },
+    ];
+    writeJson(join(dir, "report.json"), report);
+    const result = runKani(dir, script, [script === "mutate.py" ? rustMutation(dir, name) : dir]);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    includes(result.stdout, "no satisfied kani::cover! witness");
+    excludes(result.stdout, "DETECTED");
+  });
+}
+
+for (const outcome of ["unsat", "unreachable"]) {
+  test(`an existing cover becoming ${outcome} detects a mutation only after the original passes`, () => {
+    const { dir, name } = kaniFixture(outcome);
+    const result = runKani(dir, "mutate.py", [rustMutation(dir, name)]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    includes(result.stdout, "DETECTED guard");
+    assert.equal(calls(dir).split("--export-json").length - 1, 2);
+  });
+}
+
+for (const outcome of ["failure", "unwind", "timeout"]) {
+  test(`Rust mutations reject an original harness with ${outcome} before mutating`, () => {
+    const { dir, name } = kaniFixture("failure");
+    const mutations = rustMutation(dir, name);
+    writeFileSync(join(dir, "baseline.json"), readFileSync(join(logs, `kani-${outcome}.json`)));
+    const result = runKani(dir, "mutate.py", [mutations]);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    includes(result.stdout, `unmutated Rust harness '${name}' did not pass`);
+    excludes(result.stdout, "DETECTED");
+    assert.equal(calls(dir).split("--export-json").length - 1, 1);
+  });
+}
+
+test("Rust mutation coverage includes all harnesses in its file and excludes unrelated files", () => {
+  const { dir, name } = kaniFixture("failure");
+  const mutations = rustMutation(dir, name);
+  writeJson(join(dir, "driver.json"), {
+    version: KANI,
+    harnesses: { [name]: 3, "same_file::other": 3, "another_file::proof": 3 },
+    harnessSources: { "another_file::proof": "src/other.rs" },
+  });
+  const result = runKani(dir, "mutate.py", [mutations]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  includes(result.stdout, "UNCOVERED same_file::other");
+  excludes(result.stdout, "UNCOVERED another_file::proof");
+});
+
+test("Rust mutations may explicitly target a harness declared in another file", () => {
+  const { dir, name } = kaniFixture("failure");
+  const mutations = rustMutation(dir, name);
+  writeJson(join(dir, "driver.json"), {
+    version: KANI, harnesses: { [name]: 3, "unrelated::proof": 3 },
+    harnessSources: { [name]: "src/proofs.rs", "unrelated::proof": "src/other.rs" },
+  });
+  const result = runKani(dir, "mutate.py", [mutations]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  includes(result.stdout, "DETECTED guard");
+  excludes(result.stdout, "UNCOVERED");
+});
+
+for (const script of ["kani-check.sh", "mutate.py"]) {
+  test(`Kani ${script} keeps E0658 diagnostics when toolchain metadata is missing`, () => {
+    const { dir, name } = kaniFixture("success", { listError: "error[E0658]: use of unstable feature at src/lib.rs:7" });
+    rmSync(join(bundle(dir), "rust-toolchain-version"));
+    const result = runKani(dir, script, [script === "mutate.py" ? rustMutation(dir, name) : dir]);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    includes(result.stdout, "error[E0658]");
+    includes(result.stdout, "src/lib.rs:7");
+    includes(result.stdout, "version metadata unavailable");
+    excludes(result.stderr, "Traceback");
+  });
+}
+
+test("Kani codegen discovery and verification enable stubs and leave list reports untouched", () => {
+  const { dir } = kaniFixture();
+  writeFileSync(join(dir, "kani-list.json"), "existing report\n");
+  const result = runKani(dir, "kani-check.sh", [dir]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const invocations = calls(dir).trim().split("\n").filter((line) => line.includes("--target-dir"));
+  assert.equal(invocations.length, 2);
+  for (const invocation of invocations) includes(invocation, "-Z stubbing");
+  includes(invocations[0], "--only-codegen");
+  assert.equal(readFileSync(join(dir, "kani-list.json"), "utf8"), "existing report\n");
+});
+
+test("Kani metadata discovery preserves the standard-harness filter", () => {
+  const { dir, name } = kaniFixture();
+  writeJson(join(dir, "driver.json"), {
+    version: KANI, harnesses: { [name]: 3 },
+    metadata: { proof_harnesses: [
+      { pretty_name: name, original_file: "src/lib.rs", attributes: { kind: "Proof", unwind_value: 3 } },
+      { pretty_name: "contract", original_file: "src/lib.rs", attributes: { kind: { ProofForContract: { target_fn: "target" } } } },
+    ] },
+  });
+  const result = runKani(dir, "kani-check.sh", [dir]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  includes(result.stdout, "SUMMARY 1 of 1 harnesses passed");
+  excludes(calls(dir), "--harness contract");
 });

@@ -281,7 +281,8 @@ def check_rust(model, project, verifier, bounds, sources, mutation, work):
             shutil.copytree(source, work / "source" / source.relative_to(anchor), ignore=shutil.ignore_patterns("target", ".git"))
     copy, covers = work / "source" / project.relative_to(anchor), frozenset({mutation.detects})
     (copy / model.relative_to(project)).write_text(mutation.source, encoding="utf-8")
-    outcome = kani.verify(copy, work, verifier, mutation.detects, bounds[mutation.detects])
+    # Cargo resolves configuration from cwd, including paths outside the copied packages.
+    outcome = kani.verify(copy, work, verifier, mutation.detects, bounds[mutation.detects].unwind, cwd=project)
     if outcome.verdict is kani.Verdict.PASS:
         return Result(Verdict.MISSED, covers=covers)
     if outcome.verdict is kani.Verdict.REFUTED:
@@ -362,15 +363,23 @@ def rust_runner(model, mutations):
         print(f"UNAVAILABLE {error}")
         sys.exit(3)
     with tempfile.TemporaryDirectory(prefix="formal-kani-discover-") as temporary:
+        work = Path(temporary)
         try:
-            bounds = kani.discover(project, Path(temporary), verifier)
-            sources = verifier.source_roots(project, Path(temporary))
+            bounds = kani.discover(project, work, verifier)
+            sources = verifier.source_roots(project)
+            for mutation in mutations:
+                if mutation.detects not in bounds:
+                    stop(f"mutation '{mutation.label}': unknown harness '{mutation.detects}'")
+            selected = {mutation.detects for mutation in mutations}
+            for name in sorted(selected):
+                outcome = kani.verify(project, work, verifier, name, bounds[name].unwind)
+                if outcome.verdict is not kani.Verdict.PASS:
+                    stop(f"unmutated Rust harness '{name}' did not pass: "
+                         + "; ".join(outcome.failures) + "\n" + outcome.output)
         except kani.CheckError as error:
             stop(str(error))
-    for mutation in mutations:
-        if mutation.detects not in bounds:
-            stop(f"mutation '{mutation.label}': unknown harness '{mutation.detects}'")
-    return set(bounds), partial(check_rust, model, project, verifier, bounds, sources)
+    targets = {name for name, harness in bounds.items() if harness.source == model} | selected
+    return targets, partial(check_rust, model, project, verifier, bounds, sources)
 
 
 # Each runner checks the names the mutations detect, then returns the names they must cover and a check for one mutation.

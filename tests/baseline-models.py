@@ -56,12 +56,14 @@ mod proofs {
         let n: u8 = kani::any();
         kani::assume(n < 10);
         assert!(u16::from(n) < 256);
+        kani::cover!(n == 9);
     }
     #[kani::proof]
     #[kani::unwind(2)]
     fn target_preserves_input() {
         let n: u8 = kani::any();
         assert!(super::target(n) == n);
+        kani::cover!(n == 9);
     }
 }
 """
