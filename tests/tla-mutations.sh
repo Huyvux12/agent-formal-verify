@@ -109,3 +109,26 @@ detects NoSkip
 MUTATIONS
 python3 "$scripts/mutate.py" "$work/Stall.mutations" | tee "$work/action.out"
 grep -q "^DETECTED advance past goal: NoSkip fails in run 'default' (Action property NoSkip is violated)$" "$work/action.out"
+
+# A harmless edit cannot claim an existing invariant failure or an already absent reach witness.
+cat > "$work/Scope.mutations" <<'MUTATIONS'
+mutation parenthesize initial value
+detects Within
+- Init == x = 0
++ Init == x = (0)
+MUTATIONS
+sed -i.orig 's/Within == x = 0/Within == x = 1/' "$work/Scope.tla"
+for detector in Within reach:Within; do
+  if [ "$detector" = Within ]; then
+    check='check INVARIANT Within'
+  else
+    check='reach Within | small'
+    sed -i.orig 's/detects Within/detects reach:Within/' "$work/Scope.mutations"
+  fi
+  printf 'spec Scope.tla\n%s\nrun small | Large=FALSE\n' "$check" > "$work/Scope.matrix"
+  if python3 "$scripts/mutate.py" "$work/Scope.mutations" > "$work/original.out"; then
+    echo "FAIL credited a pre-existing failure of $detector"
+    exit 1
+  fi
+  grep -q "unmutated.*$detector" "$work/original.out"
+done
