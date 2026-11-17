@@ -49,6 +49,21 @@ run small | Large=FALSE
 MATRIX
 missed Scope
 
+cat > "$work/Scope.matrix" <<'MATRIX'
+spec Scope.tla
+run shared small | Large=FALSE
+spec ./Scope.tla
+reach Within | shared
+run shared large | Large=TRUE
+MATRIX
+cat > "$work/Scope.mutations" <<'MUTATIONS'
+mutation miss the state only in the first section
+detects reach:Within
+- Init == x = 0
++ Init == x = 1
+MUTATIONS
+missed Scope
+
 cat > "$work/Stall.tla" <<'MODEL'
 ---- MODULE Stall ----
 VARIABLE x
