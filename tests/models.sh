@@ -164,6 +164,15 @@ for files in "" Model/Parent.lean; do
   grep -q "^REPLAYED $count modules through the Lean kernel$" "$work/lean.out"
 done
 
+# Lake owns both the source-to-module mapping and the library output directory.
+scenario lean-layout
+{ printf 'buildDir = "custom build"\nleanLibDir = "objects"\n'; cat "$work/lean/lakefile.toml"; } > "$p/lakefile.toml"
+printf 'theorem layout_dependency : True := trivial\n' > "$p/Model/Dependency.lean"
+printf 'import Model.Dependency\ntheorem layout_ok : True := layout_dependency\n' > "$p/Model/Uses.lean"
+bash "$scripts/lean-check.sh" "$p" Model/Uses.lean | tee "$work/layout.out"
+grep -q '^REPLAYED 2 modules through the Lean kernel$' "$work/layout.out"
+grep -q '^PASS ' "$work/layout.out"
+
 # A source touched after its build still passes.
 scenario lean-touched
 bash "$scripts/lean-check.sh" "$p"

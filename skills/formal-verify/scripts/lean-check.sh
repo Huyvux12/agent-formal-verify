@@ -78,9 +78,12 @@ audit_status=0
 : > "$work/audit.out"
 if [ "$status" -eq 0 ]; then
   # The module of each source, in source order, for the audit's imports and the frozen records.
-  unexpected=$(grep -v '/\.lake/build/lib/lean/.*\.olean$' "$work/oleans")
-  [ -z "$unexpected" ] || { echo "FAIL $scope: cannot identify the module of $unexpected"; exit 1; }
-  sed -e 's|^.*/\.lake/build/lib/lean/||' -e 's|\.olean$||' -e 's|/|.|g' "$work/oleans" > "$work/modules"
+  if ! elan run "$toolchain" lake --dir "$dir" env python3 "$HERE/lean-layout.py" \
+      "$work/oleans" "$work/modules" "$work/libraries" > "$work/layout.log" 2>&1; then
+    echo "FAIL $scope: cannot resolve Lake's module layout"
+    cat "$work/layout.log"
+    exit 1
+  fi
   {
     echo "import Lean"
     sed 's|^|import |' "$work/modules"
@@ -234,7 +237,12 @@ replay=unavailable
 if [ -x "$(elan run "$toolchain" lean --print-prefix)/bin/leanchecker" ]; then
   cp "$work/modules" "$work/replay-modules"
   while IFS= read -r module; do
-    [ ! -f "$dir/.lake/build/lib/lean/${module//.//}.olean" ] || printf '%s\n' "$module" >> "$work/replay-modules"
+    while IFS= read -r library; do
+      if [ -f "$library/${module//.//}.olean" ]; then
+        printf '%s\n' "$module" >> "$work/replay-modules"
+        break
+      fi
+    done < "$work/libraries"
   done < <(sed -n 's/^IMPORTED //p' "$work/audit.out")
   sort -u "$work/replay-modules" -o "$work/replay-modules"
   replay=passed
