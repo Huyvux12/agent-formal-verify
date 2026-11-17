@@ -186,8 +186,8 @@ test("documentation does not present bundled images or fonts as code", () => {
     const text = readFileSync(file, "utf8");
     for (const [, , code] of text.matchAll(/(`+|~{3,})([\s\S]*?)\1/g)) {
       for (const [target] of code.matchAll(/[\w./-]+\.(?:png|jpe?g|gif|webp|woff2?|ttf|otf)\b/gi)) {
-        const asset = resolve(dirname(file), target);
-        assert.ok(!existsSync(asset), `${relative(root, file)}: use a Markdown image instead of code for ${target}`);
+        const found = [dirname(file), root].some((base) => existsSync(resolve(base, target)));
+        assert.ok(!found, `${relative(root, file)}: use a Markdown image instead of code for ${target}`);
       }
     }
   }
