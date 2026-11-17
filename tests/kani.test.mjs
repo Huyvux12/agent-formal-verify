@@ -15,7 +15,7 @@ const bundle = (dir) => join(dir, `kani/kani-${KANI}`);
 const python = spawnSync("python3", ["-c", "import sys; print(sys.executable)"], { encoding: "utf8" }).stdout.trim();
 const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value));
 const calls = (dir) => (existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8") : "");
-const runKani = (dir, script, args = [], extra = {}) => run(dir, script, args, { KANI_HOME: join(dir, "kani"), ...extra });
+const runKani = (dir, script, args = [], extra = {}) => run(dir, script, args, { KANI_HOME: join(dir, "kani"), KANI_HARNESS_TIMEOUT: undefined, ...extra });
 
 // Behaves as the pinned kani-driver, configured by driver.json and report.json in the fixture directory.
 const DRIVER = readFileSync(join(logs, "kani-driver.py"), "utf8");
@@ -344,6 +344,9 @@ test("Kani limits each harness to five minutes unless KANI_HARNESS_TIMEOUT sets 
   includes(calls(dir), "--harness-timeout 5m");
   assert.equal(runKani(dir, "kani-check.sh", [dir], { KANI_HARNESS_TIMEOUT: "90s" }).status, 0);
   includes(calls(dir), "--harness-timeout 90s");
+  const { dir: empty } = kaniFixture();
+  assert.equal(runKani(empty, "kani-check.sh", [empty], { KANI_HARNESS_TIMEOUT: "" }).status, 0);
+  includes(calls(empty), "--harness-timeout 5m");
 });
 
 test("Kani reports a harness that reaches its timeout by name", () => {

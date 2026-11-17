@@ -56,7 +56,7 @@ class Kani:
 
     def __init__(self):
         home = Path(os.environ.get("KANI_HOME", Path.home() / ".kani")).resolve()
-        self.timeout = os.environ.get("KANI_HARNESS_TIMEOUT", "5m")
+        self.timeout = os.environ.get("KANI_HARNESS_TIMEOUT") or "5m"
         bundle = home / f"kani-{self.version}"
         remedy = (f"run cargo install --locked kani-verifier --version {self.version} "
                   "then cargo kani setup")

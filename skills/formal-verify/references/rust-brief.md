@@ -42,7 +42,7 @@ means the bound is too low and fails the check.
 
 Kani stops a harness at `KANI_HARNESS_TIMEOUT`, five minutes by default. Symbolic
 inputs that reach an error constructor that builds a message with `format!`, or
-a wide division by a symbolic divisor, can keep the solver running past it. Give
+a wide division by a symbolic divisor, can stop the solver finishing within it. Give
 those parameters concrete values or write one harness per variant, and keep the
 symbolic inputs on the arithmetic the property is about.
 
