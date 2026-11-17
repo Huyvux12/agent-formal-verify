@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,31 @@ def search_path(inherited, *directories):
     if inherited is not None:
         entries.append(inherited)
     return os.pathsep.join(entries)
+
+
+@dataclass(frozen=True)
+class CargoMetadata:
+    workspace: Path
+    target: Path
+    packages: tuple
+
+
+@dataclass
+class CrateSources:
+    roots: set
+    outputs: set
+
+    def stage(self, crate, destination):
+        """Copy local packages in their relative layout, omitting Cargo's build directories."""
+        anchor = Path(os.path.commonpath(self.roots))
+
+        def ignore(directory, names):
+            return [name for name in names if name == ".git" or Path(directory) / name in self.outputs]
+
+        for root in self.roots:
+            if self.roots.isdisjoint(root.parents):
+                shutil.copytree(root, destination / root.relative_to(anchor), ignore=ignore)
+        return destination / crate.relative_to(anchor)
 
 
 class Kani:
@@ -127,29 +153,33 @@ class Kani:
             report = json.loads(done.stdout)
             if report["version"] != 1:
                 raise CheckError("unsupported Cargo metadata version")
-            paths = [Path(report["workspace_root"])]
+            workspace = Path(report["workspace_root"])
+            target = Path(report["target_directory"])
+            packages = []
             for package in report["packages"]:
                 if package["source"] is None:
-                    paths.append(Path(package["manifest_path"]).parent)
-                    paths.extend(Path(dep["path"]) for dep in package["dependencies"] if "path" in dep)
-            if not all(path.is_absolute() for path in paths):
+                    packages.append(Path(package["manifest_path"]).parent)
+                    packages.extend(Path(dep["path"]) for dep in package["dependencies"] if "path" in dep)
+            if not all(path.is_absolute() for path in (workspace, target, *packages)):
                 raise CheckError("Cargo metadata returned a relative source path")
-            return paths
+            return CargoMetadata(workspace, target, tuple(packages))
         except (ValueError, KeyError, TypeError) as error:
             raise CheckError(f"malformed Cargo metadata: {error}") from error
 
-    def source_roots(self, crate):
+    def crate_sources(self, crate):
         """Find local workspaces, including transitive and optional path dependencies."""
-        pending, visited, roots = {crate}, set(), set()
+        pending, visited = {crate}, set()
+        sources = CrateSources(set(), set())
         while pending:
             directory = pending.pop()
             if directory in visited:
                 continue
             visited.add(directory)
-            paths = self.cargo_metadata(directory, resolve=directory == crate)
-            roots.update((paths[0].resolve(), directory))
-            pending.update(path.resolve() for path in paths[1:])
-        return roots
+            metadata = self.cargo_metadata(directory, resolve=directory == crate)
+            sources.roots.update((metadata.workspace.resolve(), directory))
+            sources.outputs.add(metadata.target.parent.resolve() / metadata.target.name)
+            pending.update(path.resolve() for path in metadata.packages)
+        return sources
 
 
 def invoke(crate, work, kani, *arguments, cwd=None):
@@ -168,7 +198,7 @@ def discover(crate, work, kani):
     """Compile current harness metadata without `list`, which writes into the source directory."""
     if not (crate / "Cargo.toml").is_file():
         raise CheckError(f"{crate}/Cargo.toml is missing")
-    workspace = kani.cargo_metadata(crate)[0]
+    workspace = kani.cargo_metadata(crate).workspace
     done = invoke(crate, work, kani, "--only-codegen")
     if done.returncode:
         output = done.stdout + done.stderr

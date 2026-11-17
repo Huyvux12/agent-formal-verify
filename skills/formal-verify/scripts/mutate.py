@@ -45,14 +45,12 @@ before it runs any tool, so a malformed mutation stops the run first.
 Usage: mutate.py <Name.mutations>
   The environment settings of tlc-matrix.sh apply to TLA+ mutations.
 """
-import shutil
 import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from functools import partial
-from os.path import commonpath
 from pathlib import Path
 
 # Copied skills can be read-only. Keep imported helpers from writing __pycache__ there.
@@ -170,11 +168,8 @@ def check_lean(broken_checks, mutation, work):
 
 def check_rust(model, project, verifier, bounds, sources, mutation, work):
     """Run Kani on the named harness in a mutated copy of the crate; the mutation covers that harness."""
-    anchor = Path(commonpath(sources))
-    for source in sources:
-        if not any(parent in sources for parent in source.parents):
-            shutil.copytree(source, work / "source" / source.relative_to(anchor), ignore=shutil.ignore_patterns("target", ".git"))
-    copy, covers = work / "source" / project.relative_to(anchor), frozenset({mutation.detects})
+    copy = sources.stage(project, work / "source")
+    covers = frozenset({mutation.detects})
     (copy / model.relative_to(project)).write_text(mutation.source, encoding="utf-8")
     # Cargo resolves configuration from cwd, including paths outside the copied packages.
     outcome = kani.verify(copy, work, verifier, mutation.detects, bounds[mutation.detects].unwind, cwd=project)
@@ -231,7 +226,7 @@ def rust_runner(model, mutations):
         work = Path(temporary)
         try:
             bounds = kani.discover(project, work, verifier)
-            sources = verifier.source_roots(project)
+            sources = verifier.crate_sources(project)
             for mutation in mutations:
                 if mutation.detects not in bounds:
                     stop(f"mutation '{mutation.label}': unknown harness '{mutation.detects}'")
