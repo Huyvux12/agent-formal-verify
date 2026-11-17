@@ -66,7 +66,7 @@ Require a successful exit and a `READY` line from each command. A helper that ca
 
 If a system prerequisite such as Java or elan is missing, use the [setup skill](../setup/SKILL.md) to prepare it within the user's installation constraints and existing authorization. Report any prerequisite that cannot be prepared. If `java` on PATH has no runtime, set `JAVA` to a working JDK's `java` binary for the setup helper and the matrix runner.
 
-The helpers (see [helper reference](references/helpers.md) for full semantics, flags and guarantees):
+Read the [helper reference](references/helpers.md) before you interpret a helper's output. The helpers:
 
 - [`scripts/setup.sh`](scripts/setup.sh): verifies the pinned TLC JAR (`tla`), checks Kani (`rust`), and installs a missing Lean toolchain (`lean`).
 - [`scripts/tlc-matrix.sh`](scripts/tlc-matrix.sh) and [`scripts/tlc-trace.py`](scripts/tlc-trace.py): run TLC across a `.matrix` of constants and reduce failing traces. Template: [`examples/tla-template/`](examples/tla-template/BoundedQueue.tla).
@@ -139,7 +139,7 @@ Write the reply, and any pull request or document, for a reader who knows the co
 
 1. Start with what was found, in the code's terms. For each bug, say what goes wrong for a caller or user, the code events in order with `file:line`, whether the shipped settings can reach it, how to reproduce it, and the fix or proposed fix, with a PR link when one was opened.
 2. Give a table with one row per target: what was checked, as a sentence about the code, and the verdict. Label each counter-example `reproduced`, `reachable at shipped settings`, or `model-only`. State each property as what it guarantees, such as "the bar never shows 100% before the work finishes". Add the model's name for it in backticks only so the reader can find it. For a model from an earlier run, add whether it was unchanged or updated, or is proposed for retirement, with its sync commit and the commits read for it. For each model, say whether its properties were reviewed, how many of the reviewer's mutations were detected and missed, and the reviewer's open questions.
-3. Read [evidence meanings](references/reply.md) and state the matching meaning where each kind of evidence first appears.
+3. Read [evidence meanings](references/evidence.md) and state the matching meaning where each kind of evidence first appears.
 
 4. Give a term of any tool its meaning beside it: an invariant is always true, a liveness property says something eventually happens, fairness assumes a thread that can run does run, an axiom is taken without proof, and `sorry` marks an unfinished proof.
 5. Say what a pass leaves open: the sizes TLC checked, the code constraints the model omits, each theorem's hypotheses and integer widths, and the properties that could not be expressed.

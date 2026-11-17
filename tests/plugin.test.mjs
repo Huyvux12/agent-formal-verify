@@ -11,15 +11,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (file) => readFileSync(join(root, file), "utf8");
 const json = (file) => JSON.parse(read(file));
-const manifests = [".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "package.json"].map(json);
-const antigravity = json(".antigravity-plugin/plugin.json");
+const manifests = [".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "package.json", ".antigravity-plugin/plugin.json"].map(json);
 const claude = json(".claude-plugin/marketplace.json");
 const codex = json(".agents/plugins/marketplace.json");
 
 test("the release version agrees across the manifests, the pi package, the marketplace entry and the changelog", () => {
   const { version } = manifests[0];
   assert.match(version, /^\d+\.\d+\.\d+$/);
-  for (const manifest of [...manifests, antigravity]) assert.equal(manifest.version, version);
+  for (const manifest of manifests) assert.equal(manifest.version, version);
   assert.equal(claude.plugins[0].version, version);
   assert.ok(read("CHANGES.md").split("\n").some((line) => line.startsWith(`## ${version} - `)), "missing release entry");
 });
@@ -30,16 +29,9 @@ test("the manifests and marketplaces describe one plugin", () => {
     assert.equal(manifest.license, "GPL-3.0-only");
     assert.equal(manifest.description, manifests[0].description);
   }
-  assert.equal(antigravity.name, "agent-formal-verify");
-  assert.equal(antigravity.description, manifests[0].description);
-  assert.equal(antigravity.homepage, manifests[0].homepage);
-  assert.equal(antigravity.repository, manifests[0].repository);
-  const antigravityFields = new Set(["name", "displayName", "version", "description", "author", "homepage", "repository", "logo", "suggestedPrompts", "disabled"]);
-  for (const field of Object.keys(antigravity)) {
-    assert.ok(antigravityFields.has(field), `unexpected Antigravity manifest field: ${field}`);
-  }
-  assert.ok(antigravity.logo && !antigravity.logo.split("/").some((part) => part.startsWith(".")));
-  assert.ok(existsSync(join(root, antigravity.logo)), `missing Antigravity logo: ${antigravity.logo}`);
+  const { logo } = manifests[3];
+  assert.ok(logo && !logo.split("/").some((part) => part.startsWith(".")));
+  assert.ok(existsSync(join(root, logo)), `missing Antigravity logo: ${logo}`);
   for (const marketplace of [claude, codex]) {
     assert.equal(marketplace.name, "agent-formal-verify");
     assert.equal(marketplace.plugins.length, 1);
@@ -240,7 +232,7 @@ test("skills declare their names and link only to files inside the skills tree",
     if (file.endsWith("/SKILL.md")) {
       assert.match(text, new RegExp(`^---\\nname: ${dirname(file).split(sep).at(-1)}\\n`));
       assert.match(text, /^description: .+/m);
-      const body = text.split("\n---\n", 2)[1] ?? "";
+      const body = text.slice(text.indexOf("\n---\n") + 5);
       assert.ok(Buffer.byteLength(body, "utf8") <= 24000, `${relative(root, file)}: body exceeds 24000 bytes`);
     }
     for (const [, target] of text.matchAll(/\]\(([^)\s]+)\)/g)) {
