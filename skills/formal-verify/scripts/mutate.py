@@ -18,9 +18,9 @@ using the matrix runs. A Lean mutation is elaborated in the project, the mutated
 module alone, and reported with the theorems, lemmas, examples and #guard
 lines that fail. Every public theorem recorded in the model's .statements file
 must have its proof fail on some mutation; a failing #guard does not cover it.
-Errors in a theorem, example or #guard count only when the unmutated model has
-the same statement as Lean elaborates it; renaming a definition that a statement
-names, for example, changes that statement and gives the mutation no verdict.
+An error counts only for an original theorem, example or #guard with the same
+elaborated statement. A new example cannot count by repeating an existing one's
+statement. A changed statement gives the mutation no verdict.
 Lean reports fully qualified theorem names from elaborated declarations.
 This measures proof sensitivity, not whether a mutated statement is false or
 its hypotheses can hold. Private theorems are proof helpers and need no mutation. Exits 1 on a MISSED or
@@ -50,6 +50,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -86,6 +87,7 @@ class Mutation:
     only: str
     old: str
     new: str
+    original: str
     source: str
 
 
@@ -145,7 +147,7 @@ def make_mutation(label, directives, model, text, language):
         stop(f"mutation '{label}': its - text occurs {count} times in {model}, want 1")
     detects, only = (lines[keyword][0].strip() if lines[keyword] else "" for keyword in SINGLE)
     new = "\n".join(lines["+"])
-    return Mutation(label, detects, only, old, new, text.replace(old, new))
+    return Mutation(label, detects, only, old, new, text, text.replace(old, new))
 
 
 def check_tla(spec, checker, plan, mutation, work):
@@ -223,19 +225,49 @@ def contains(item, position):
     return item["start"] <= position < item["end"]
 
 
-def original_location(model, mutation, position):
-    """Map an unchanged command back across the one replacement; label inserted commands explicitly."""
-    original, old, new = model.read_text(encoding="utf-8"), mutation.old, mutation.new
-    start = original.index(old)
-    offset = sum(len(line) + 1 for line in mutation.source.split("\n")[:position[0] - 1]) + position[1]
-    if offset < start:
-        original_offset, suffix = offset, ""
-    elif offset >= start + len(new):
-        original_offset, suffix = offset + len(old) - len(new), ""
-    else:
-        original_offset, suffix = start, " (mutation replacement)"
-    line = original.count("\n", 0, original_offset) + 1
-    return f"{model}:{line}{suffix}"
+def command_sites(source, commands, edit_start, edit_end):
+    """Identify anonymous checks by the source that survives the edit on either side."""
+    line_starts = [0]
+    for line in source.split("\n"):
+        line_starts.append(line_starts[-1] + len(line) + 1)
+    for cmd in commands:
+        if not cmd["property"]:
+            continue
+        first, last = (line_starts[line - 1] + column for line, column in (cmd["start"], cmd["end"]))
+        if last <= edit_start:
+            site = ("before", first)
+        elif first >= edit_end:
+            site = ("after", first - edit_end)
+        else:
+            # An edit can split a check in two. Either surviving endpoint alone could name the new check.
+            site = ("restated", source[first:last])
+        yield (cmd["property"], site), cmd, first
+
+
+def compare_commands(model, before, mutation, after):
+    start = mutation.original.index(mutation.old)
+    end = start + len(mutation.new)
+    originals = {}
+    for site, cmd, _ in command_sites(mutation.original, before, start, start + len(mutation.old)):
+        originals.setdefault(site, []).append(cmd["statement"])
+    commands = list(command_sites(mutation.source, after, start, end))
+    counts = Counter(site for site, _, _ in commands)
+    line_shift = mutation.old.count("\n") - mutation.new.count("\n")
+    edit_line = mutation.original.count("\n", 0, start) + 1
+    for site, cmd, offset in commands:
+        candidates = originals.get(site, [])
+        if len(candidates) != 1 or counts[site] != 1:
+            reason = f"cannot match this {cmd['property']} to a single original check"
+        elif cmd["statement"] is None or candidates[0] != cmd["statement"]:
+            reason = "the mutation changes its statement"
+        else:
+            reason = ""
+        line = cmd["start"][0]
+        if start <= offset < end:
+            location = f"{edit_line} (mutation replacement)"
+        else:
+            location = str(line + line_shift if offset >= end else line)
+        yield cmd, f"{cmd['property']} at {model}:{location}", reason
 
 
 def is_witness(name, declarations):
@@ -243,30 +275,29 @@ def is_witness(name, declarations):
     return last == "witness" and any(decl["theorem"] and decl["name"] == parent for decl in declarations)
 
 
-def check_lean(model, project, toolchain, unmutated_statements, mutation, work):
-    """Attribute every error to an elaborated theorem, or else a guard/example command, whose statement the unmutated model also has; the mutation covers those."""
+def check_lean(model, project, toolchain, theorems, commands, mutation, work):
+    """Credit errors only to an original theorem or check with the same elaborated statement."""
     copy = work / model.name
     copy.write_text(mutation.source, encoding="utf-8")
     analysis = lean_analysis(copy, project, toolchain)
     if not analysis["errors"]:
         return Result(Verdict.MISSED)
+    compared = list(compare_commands(model, commands, mutation, analysis["commands"]))
     failed = []
     for error in analysis["errors"]:
         position = [error["pos"]["line"], error["pos"]["column"]]
         where = f"{error['fileName']}:{position[0]}:{position[1]}: {error['data']}"
-        checks = [("theorem " + decl["name"], (decl["name"], decl["type"]))
+        checks = [("theorem " + decl["name"], decl["name"],
+                   "" if (decl["name"], decl["type"]) in theorems else "the mutation changes its statement")
                   for decl in analysis["declarations"] if decl["theorem"] and contains(decl, position)]
         if not checks:
-            checks = [(f"{cmd['property']} at {original_location(model, mutation, cmd['start'])}",
-                       (cmd["property"], cmd["statement"]))
-                      for cmd in analysis["commands"] if cmd["property"] and contains(cmd, position)]
-        for name, key in checks:
-            if key not in unmutated_statements:
-                return Result(Verdict.ERROR, f"{name}: the mutation changes its statement, "
-                                             f"so this error does not show its proof or check failing\n{where}")
+            checks = [(name, cmd["property"], reason) for cmd, name, reason in compared if contains(cmd, position)]
+        for name, _, reason in checks:
+            if reason:
+                return Result(Verdict.ERROR, f"{name}: {reason}, so this error does not show its proof or check failing\n{where}")
         if error["fileName"] != str(copy) or not checks:
             return Result(Verdict.ERROR, where)
-        failed.extend(name for name, (property, _) in checks
+        failed.extend(name for name, property, _ in checks
                       if name not in failed and not is_witness(property, analysis["declarations"]))
     if not failed:
         return Result(Verdict.MISSED)
@@ -347,10 +378,8 @@ def lean_runner(model, mutations):
     targets = {"theorem " + decl["name"] for decl in analysis["declarations"]
                if decl["theorem"] and not decl["private"] and decl["name"] in frozen
                and not is_witness(decl["name"], analysis["declarations"])}
-    statements = {(decl["name"], decl["type"]) for decl in analysis["declarations"] if decl["theorem"]}
-    statements |= {(cmd["property"], cmd["statement"]) for cmd in analysis["commands"]
-                   if cmd["property"] and cmd["statement"] is not None}
-    return targets, partial(check_lean, model, project, toolchain, statements)
+    theorems = {(decl["name"], decl["type"]) for decl in analysis["declarations"] if decl["theorem"]}
+    return targets, partial(check_lean, model, project, toolchain, theorems, analysis["commands"])
 
 
 def rust_runner(model, mutations):

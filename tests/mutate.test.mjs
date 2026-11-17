@@ -270,13 +270,35 @@ test("Lean command locations refer to the original model after lines are inserte
   }
 });
 
-test("Lean locations label commands created inside a mutation replacement", () => {
-  const commands = [leanCommand("#guard", 2)];
-  const result = leanMutations("def step (n : Nat) : Nat := n + 1\n#guard step 0 == 1\n", [],
-    leanAnalysis([], [], commands), "mutation restate guard\n- n + 1\n- #guard step 0 == 1\n+ n\n+ #guard step 0 == 1\n",
-    [{ text: ":= n\n", analysis: leanAnalysis([], [leanError(2)], commands) }]);
-  assert.equal(result.status, 0, result.stdout);
-  includes(result.stdout, `#guard at ${result.modelPath}:1 (mutation replacement)\n`);
+test("a guard restated inside the edit must identify a single original occurrence", () => {
+  const guard = "#guard step 0 == 1";
+  const commandAt = line => ({ ...leanCommand("#guard", line), end: [line, guard.length] });
+  const source = "def step (n : Nat) : Nat := n + 1\n" + guard + "\n";
+  const edit = `mutation restate guard\n- n + 1\n- ${guard}\n+ n\n+ ${guard}\n`;
+  for (const duplicate of [false, true]) {
+    const commands = duplicate ? [commandAt(2), commandAt(3)] : [commandAt(2)];
+    const result = leanMutations(source, [], leanAnalysis([], [], [commandAt(2)]), edit + (duplicate ? `+ ${guard}\n` : ""),
+      [{ text: ":= n\n", analysis: leanAnalysis([], [leanError(2)], commands) }]);
+    if (duplicate) {
+      assert.equal(result.status, 1, result.stdout);
+      includes(result.stdout, "cannot match this #guard to a single original check");
+    } else {
+      assert.equal(result.status, 0, result.stdout);
+      includes(result.stdout, `#guard at ${result.modelPath}:1 (mutation replacement)\n`);
+    }
+  }
+});
+
+test("an inserted Lean example cannot borrow another example's statement inside the same edit", () => {
+  const original = "def one := 1\nexample : True := trivial";
+  const mutation = ["mutation duplicate", "- def one := 1", "- example : True := trivial",
+    "+ def one := 1", "+ example : True := by exact 0", "+ example : True := trivial", ""].join("\n");
+  const result = leanMutations(original + "\n", [], leanAnalysis([], [], [leanCommand("example", 2)]),
+    mutation,
+    [{ text: "by exact 0", analysis: leanAnalysis([], [leanError(2)], [leanCommand("example", 2), leanCommand("example", 3)]) }]);
+  assert.equal(result.status, 1, result.stdout);
+  includes(result.stdout, "cannot match this example to a single original check");
+  excludes(result.stdout, "DETECTED");
 });
 
 test("a Lean mutation with no error remains missed and its theorem remains uncovered", () => {
@@ -312,14 +334,15 @@ test("a Lean theorem whose statement the mutation changes or adds cannot count a
 
 test("a Lean example or guard whose statement the mutation changes, adds or hides cannot count as a failing check", () => {
   const model = "def step (n : Nat) : Nat := n + 1\nexample : step 0 = 1 := rfl\n";
-  for (const [unmutated, mutated] of [[[leanCommand("example", 2)], leanCommand("example", 2, "sorry")],
-    [[], leanCommand("#guard", 2)],
-    [[leanCommand("example", 2, null)], leanCommand("example", 2, null)]]) {
+  for (const [unmutated, mutated, reason] of [
+    [[leanCommand("example", 2)], leanCommand("example", 2, "sorry"), "the mutation changes its statement"],
+    [[], leanCommand("#guard", 2), "cannot match this #guard to a single original check"],
+    [[leanCommand("example", 2, null)], leanCommand("example", 2, null), "the mutation changes its statement"],
+  ]) {
     const result = leanMutations(model, [], leanAnalysis([], [], unmutated), noStep,
       [{ text: ":= n\n", analysis: leanAnalysis([], [leanError(2)], [mutated]) }]);
     assert.equal(result.status, 1);
-    includes(result.stdout, `FAIL mutation 'no step' did not reach a verdict:\n${mutated.property} at ${result.modelPath}:2: `
-      + "the mutation changes its statement");
+    includes(result.stdout, `FAIL mutation 'no step' did not reach a verdict:\n${mutated.property} at ${result.modelPath}:2: ${reason}`);
     excludes(result.stdout, "DETECTED");
   }
 });
