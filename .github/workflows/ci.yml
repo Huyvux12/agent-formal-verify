@@ -92,3 +92,23 @@ jobs:
           annotations: true
           persona: pedantic
           min-severity: low
+
+  macos:
+    name: Helper tests on macOS
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A Mac without a newer Bash runs the helpers with the system Bash 3.2.
+      - name: Put the system Bash first on PATH
+        run: |
+          mkdir -p "$RUNNER_TEMP/system-bash"
+          ln -s /bin/bash "$RUNNER_TEMP/system-bash/bash"
+          echo "$RUNNER_TEMP/system-bash" >> "$GITHUB_PATH"
+      - name: Run the helper and metadata tests
+        run: |
+          bash -c 'test "${BASH_VERSINFO[0]}" = 3' || { echo "::error::bash on PATH is not Bash 3"; exit 1; }
+          node --version
+          node --test 'tests/*.test.mjs'
