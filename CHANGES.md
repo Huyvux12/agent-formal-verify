@@ -1,8 +1,10 @@
 # Changes
 
-## 0.4.11 - Antigravity install, stricter verdicts and a Kani harness time limit
+## Unreleased
 
 Lean mutations now match a failing example or guard to its original occurrence. Previously, inserting a broken example with the same statement as a passing one could count as a detection. A failure in a new check or one whose origin is ambiguous now gives the mutation no verdict.
+
+## 0.4.11 - Antigravity install, stricter verdicts and a Kani harness time limit
 
 Kani now checks the configured crate and requires a satisfied cover witness for each passing harness. Each Rust mutation starts from a passing harness. Coverage is checked per harness source file, and the checker supports Kani stubs. A missing toolchain version file no longer hides the original compiler error.
 

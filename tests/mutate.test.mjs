@@ -490,6 +490,13 @@ test("a detected reach mutation cannot hide an incomplete run in another spec se
   excludes(result.stdout, "DETECTED");
 });
 
+test("a reach planning error belongs to its spec even when two specs share a filename", () => {
+  const result = reachMutation('echo "Model checking completed. No error has been found."',
+    "spec nested/One.tla\nreach Full | missing\nspec ./One.tla\nreach Full | chosen\nrun chosen | N=4\n");
+  assert.equal(result.status, 0, result.stdout);
+  includes(result.stdout, "DETECTED never full: reach:Full fails in run 'chosen'");
+});
+
 test("malformed mutation matrix checks fail before running a model", () => {
   for (const check of ["check", "check INVARIANTS", "check UNKNOWN Small"]) {
     const { dir, result } = tlaMutations([check], ["mutation one", "detects Small", "- x + 1", "+ x"]);

@@ -30,7 +30,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 
@@ -74,7 +74,7 @@ class Malformed:
     message: str
 
 
-def directives(lines):
+def _directives(lines):
     """Yield each directive of a matrix in file order, with a Malformed in place of a line it rejects."""
     seen_spec = False
     for raw in lines:
@@ -173,32 +173,133 @@ class Task:
     check_deadlock: bool = True
 
 
-def execution_plan(directives):
-    """Snapshot each run's effective checks and resolve each reach to its first matching run."""
-    spec, checks, reaches, runs = "", [], [], []
+class _Section:
+    """A spec occurrence owns its declared checks and the runs to which each applies."""
 
-    def reach_tasks():
+    def __init__(self, spec, directives):
+        self.spec = spec
+        self.properties = set()
+        self.reaches = set()
+        self.tasks = []
+        checks, reaches, runs = [], [], []
+        for directive in directives:
+            if isinstance(directive, Check):
+                checks.append(directive)
+                self.properties.update(directive.names)
+            elif isinstance(directive, Reach):
+                reaches.append(directive)
+                self.reaches.add(f"reach:{directive.operator}")
+            elif isinstance(directive, Run):
+                runs.append(directive)
+                self.tasks.append(Task(spec, directive, tuple(checks)))
+            else:
+                self.tasks.append(Result(Outcome.MALFORMED, detail=directive.message))
         for reach in reaches:
             run = next((run for run in runs if reach.match in run.label), None)
             if run is None:
-                yield Result(Outcome.NO_RUN, Path(spec).name.removesuffix(".tla"), operator=reach.operator, detail=reach.match)
+                self.tasks.append(Result(Outcome.NO_RUN, Path(spec).name.removesuffix(".tla"), operator=reach.operator, detail=reach.match))
             else:
-                yield Task(spec, run, reach=reach)
+                self.tasks.append(Task(spec, run, reach=reach))
 
-    for directive in directives:
-        if isinstance(directive, Spec):
-            yield from reach_tasks()
-            spec, checks, reaches, runs = directive.path, [], [], []
-        elif isinstance(directive, Check):
-            checks.append(directive)
-        elif isinstance(directive, Reach):
-            reaches.append(directive)
-        elif isinstance(directive, Run):
-            runs.append(directive)
-            yield Task(spec, directive, tuple(checks))
-        else:
-            yield Result(Outcome.MALFORMED, detail=directive.message)
-    yield from reach_tasks()
+
+class MatrixPlan:
+    """Compile a matrix once for execution, specification recording or mutation selection."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self._sections = []
+        spec, body = None, []
+        for directive in _directives(read_raw(self.path).split("\n")):
+            if isinstance(directive, Spec):
+                self._sections.append(_Section(spec, body))
+                spec, body = directive.path, []
+            else:
+                body.append(directive)
+        self._sections.append(_Section(spec, body))
+
+    def __iter__(self):
+        for section in self._sections:
+            yield from section.tasks
+
+    @property
+    def specs(self):
+        return [section.spec for section in self._sections if section.spec is not None]
+
+    def checked_tasks(self):
+        """A baseline needs every task to be resolved, including every reach."""
+        errors = ["; ".join(render(task)) for task in self if isinstance(task, Result)]
+        if errors:
+            raise ValueError(f"{self.path}: {'; '.join(errors)}")
+        if "" in self.specs:
+            raise ValueError(f"{self.path}: spec line has no path")
+        return iter(self)
+
+    def mutations_for(self, spec):
+        spec = Path(spec).resolve()
+        for task in self:
+            if isinstance(task, Result) and task.outcome is Outcome.MALFORMED:
+                raise ValueError(f"{self.path}: {task.detail}")
+        sections = [section for section in self._sections
+                    if section.spec and (self.path.parent / section.spec).resolve() == spec]
+        return MutationPlan(spec, sections)
+
+
+class MutationPlan:
+    """Run a named detector on exactly the tasks selected for a copied spec."""
+
+    def __init__(self, spec, sections):
+        self._spec = spec
+        self.properties = {name for section in sections for name in section.properties}
+        self.detectors = self.properties | {name for section in sections for name in section.reaches}
+        self._tasks = [task for section in sections for task in section.tasks]
+
+    def _select(self, detector):
+        for task in self._tasks:
+            if isinstance(task, Result):
+                if f"reach:{task.operator}" == detector:
+                    yield task
+            elif task.reach:
+                if f"reach:{task.reach.operator}" == detector:
+                    yield replace(task, spec=self._spec.name)
+            else:
+                checks = tuple(Check(f"{check.kind} {detector}", check.kind, (detector,))
+                               for check in task.checks if detector in check.names)
+                if checks:
+                    yield Task(self._spec.name, task.run, checks,
+                               check_deadlock=not any(check.kind.startswith("PROPERT") for check in checks))
+
+    def check(self, checker, detector, only, source, work):
+        """Return the first confirmed detection, None for a miss, or raise on inconclusive evidence."""
+        for module in self._spec.parent.glob("*.tla"):
+            (work / module.name).write_text(module.read_text(encoding="utf-8"), encoding="utf-8")
+        (work / self._spec.name).write_text(source, encoding="utf-8")
+        results = []
+        runner = Runner(checker, work, only, results.append, work)
+        for task in self._select(detector):
+            runner.check(task)
+        if not results:
+            raise ValueError(f"no run matches '{only}' for '{detector}'")
+        violations = {
+            f"Error: Invariant {detector} is violated.",
+            f"Error: Invariant {detector} is violated by the initial state:",
+            f"Error: Property {detector} is violated by the initial state:",
+            f"Error: Action property {detector} is violated.",
+            "Error: Temporal properties were violated.",
+        }
+        detections, errors = [], []
+        for result in results:
+            if result.outcome is Outcome.UNREACHED:
+                detections.append((result.label, "the model never reaches this state"))
+            elif result.outcome is Outcome.FAIL and result.detail in violations:
+                detections.append((result.label, result.detail.removeprefix("Error: ").rstrip(".")))
+            elif result.outcome not in (Outcome.PASS, Outcome.WITNESS):
+                errors.extend(render(result))
+        if errors:
+            raise ValueError("\n".join(errors))
+        if detections:
+            label, reason = detections[0]
+            return f"{detector} fails in run '{label}' ({reason})"
+        return None
 
 
 def render(result):
@@ -227,7 +328,7 @@ def reduced_trace(log_path, log):
 
 
 class Runner:
-    """Runs a matrix's directives in order, as tlc-matrix.sh reads them, and reports each result to emit."""
+    """Run the selected tasks and report each result to emit."""
 
     def __init__(self, tlc, matrix_dir, only, emit, work):
         self.tlc, self.matrix_dir, self.only, self.emit, self.work = tlc, matrix_dir, only, emit, work
@@ -314,7 +415,7 @@ def main():
         return 3
     with tempfile.TemporaryDirectory() as work:
         runner = Runner(tlc, Path(matrix).resolve().parent, only, lambda result: print("\n".join(render(result)), flush=True), Path(work))
-        for task in execution_plan(directives(read_raw(matrix).split("\n"))):
+        for task in MatrixPlan(matrix):
             runner.check(task)
     if runner.runs_total == 0:
         matching = f"matching '{only}' " if only else ""
