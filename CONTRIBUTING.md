@@ -11,7 +11,7 @@ prek install
 prek run --all-files
 ```
 
-prek prepares the pinned lint tools in its own cache. The hooks check plugin metadata, skill references, helper tests, shell scripts, Python, Markdown, JSON, YAML and GitHub Actions workflows. CI runs the same checks and also copies the skills into an isolated installation to check that their files match. Keep every skill reference, helper and template within `skills/` so copied installations work.
+prek prepares the pinned lint tools in its own cache. The hooks check plugin metadata, skill references, helper tests, shell scripts, Python, Markdown, JSON, YAML and GitHub Actions workflows. CI runs the same checks and also copies the skills into an isolated installation to check that their files match. It runs the helper and metadata tests again with GNU Bash 3.2, the version a Mac runs for the helpers' `#!/bin/bash`, so keep the shell helpers to Bash 3.2 features. Keep every skill reference, helper and template within `skills/` so copied installations work.
 
 CI also checks local documentation links and heading anchors with lychee in offline mode and audits workflow security with zizmor. A separate workflow scans the lockfiles for known vulnerabilities with OSV-Scanner on every pull request, on every push to `main` and once a week. To run the link and workflow checks locally, install lychee 0.24.2 and zizmor 1.29.0, then run:
 
@@ -55,7 +55,7 @@ For a credential or download-and-run finding, expand the hold in the portal: its
 
 Dependabot opens weekly update PRs for GitHub Actions, the pinned lint hooks, prek and the isolated-installation `skills` CLI. Updates wait seven days after release and must pass CI before review; they are not merged automatically.
 
-Update the lychee and OSV-Scanner image tags and digests, zizmor tool version, and elan version and checksum manually in CI. Lean pins and TLC's version and checksum also need deliberate updates: run a valid model and a failing property with the new tools before changing their pins.
+Update the lychee and OSV-Scanner image tags and digests, the Bash 3.2 job's Node image digest, Bash checksum and bison version, zizmor tool version, and elan version and checksum manually in CI. Lean pins and TLC's version and checksum also need deliberate updates: run a valid model and a failing property with the new tools before changing their pins.
 
 ## License
 

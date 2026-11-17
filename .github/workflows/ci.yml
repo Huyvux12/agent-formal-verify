@@ -39,6 +39,37 @@ jobs:
       - run: .github/skills-cli/node_modules/.bin/skills add ./skills --skill '*' --agent codex --yes --copy
       - run: diff -qr skills .agents/skills
 
+  # A Mac runs the helpers' #!/bin/bash with Bash 3.2. The container swaps its
+  # own Bash for GNU Bash 3.2.57, so the runner's Bash stays untouched.
+  bash-3:
+    name: Helper tests with Bash 3.2
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container: node:24-bookworm@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build GNU Bash 3.2.57 and install it as the container's Bash
+        run: |
+          cd "$RUNNER_TEMP"
+          # The release's y.tab.c predates its parse.y patches, so make regenerates it with bison.
+          { apt-get update && apt-get install -y --no-install-recommends bison=2:3.8.2+dfsg-1+b1; } > apt.log 2>&1 || { tail -n 40 apt.log; exit 1; }
+          curl -fL --no-progress-meter --retry 3 -O https://ftp.gnu.org/gnu/bash/bash-3.2.57.tar.gz
+          echo "3fa9daf85ebf35068f090ce51283ddeeb3c75eb5bc70b1a4a7cb05868bfe06a4  bash-3.2.57.tar.gz" | sha256sum -c -
+          tar -xzf bash-3.2.57.tar.gz
+          cd bash-3.2.57
+          ./configure --without-bash-malloc --disable-nls > configure.log 2>&1 || { tail -n 40 configure.log; exit 1; }
+          make -j"$(nproc)" > make.log 2>&1 || { tail -n 60 make.log; exit 1; }
+          install -m 755 bash /usr/bin/bash
+      - name: Run the helper and metadata tests as an unprivileged user
+        run: |
+          for shell in bash /bin/bash; do
+            "$shell" --version | grep "GNU bash, version 3\.2\." || { echo "::error::$shell is not Bash 3.2"; exit 1; }
+          done
+          chown -R node:node .
+          su node -c "node --test 'tests/*.test.mjs'"
+
   models:
     name: Example models
     runs-on: ubuntu-latest
