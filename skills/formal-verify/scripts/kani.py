@@ -5,6 +5,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -62,7 +63,12 @@ class Kani:
 
     def __init__(self):
         home = Path(os.environ.get("KANI_HOME", Path.home() / ".kani")).resolve()
-        self.timeout = os.environ.get("KANI_HARNESS_TIMEOUT") or "5m"
+        self.timeout = os.environ.get("KANI_HARNESS_TIMEOUT", "").strip() or "5m"
+        limit = re.fullmatch(r"\+?0*([1-9][0-9]{0,9})[smh]?", self.timeout)
+        if not limit or int(limit[1]) >= 2**32:
+            raise Unavailable(f"KANI_HARNESS_TIMEOUT={self.timeout!r} is not a harness time limit; set a whole "
+                              "number from 1 to 4294967295 with an optional unit s, m or h, such as 90s or 20m, "
+                              "or unset it for five minutes")
         bundle = home / f"kani-{self.version}"
         remedy = (f"run cargo install --locked kani-verifier --version {self.version} "
                   "then cargo kani setup")
@@ -203,8 +209,8 @@ def harness_result(report, kani, name, returncode):
         raise CheckError("unsupported Kani result schema or version")
     if any(detail.get("harness_id") == name and detail.get("exit_status") == "timeout"
            for detail in report.get("error_details", [])):
-        raise CheckError(f"the solver did not finish within KANI_HARNESS_TIMEOUT={kani.timeout}; "
-                         "narrow the harness or raise the limit")
+        raise CheckError(f"the solver did not finish within the {kani.timeout} harness limit; "
+                         "narrow the harness or set KANI_HARNESS_TIMEOUT to a longer limit")
     verification = report["verification_results"]
     summary, results = verification["summary"], verification["results"]
     if summary["status"] != "completed" or summary["executed"] != 1 or summary["total_harnesses"] != 1:
