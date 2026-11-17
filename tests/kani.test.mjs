@@ -338,6 +338,31 @@ test("Rust mutation coverage reports harnesses no mutation targets", () => {
   includes(result.stdout, "UNCOVERED proofs::other");
 });
 
+test("Kani limits each harness to five minutes unless KANI_HARNESS_TIMEOUT sets another limit", () => {
+  const { dir } = kaniFixture();
+  assert.equal(runKani(dir, "kani-check.sh", [dir]).status, 0);
+  includes(calls(dir), "--harness-timeout 5m");
+  assert.equal(runKani(dir, "kani-check.sh", [dir], { KANI_HARNESS_TIMEOUT: "90s" }).status, 0);
+  includes(calls(dir), "--harness-timeout 90s");
+});
+
+test("Kani reports a harness that reaches its timeout by name", () => {
+  const { dir, name } = kaniFixture("timeout");
+  const result = runKani(dir, "kani-check.sh", [dir]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  includes(result.stdout, `FAIL ${name}`);
+  includes(result.stdout, "KANI_HARNESS_TIMEOUT=5m");
+  excludes(result.stdout, "no property checks");
+});
+
+test("a Rust mutation that reaches the harness timeout never counts as detected", () => {
+  const { dir, name } = kaniFixture("timeout");
+  const result = runKani(dir, "mutate.py", [rustMutation(dir, name)]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  includes(result.stdout, "KANI_HARNESS_TIMEOUT=5m");
+  excludes(result.stdout, "DETECTED");
+});
+
 test("an insufficient Rust unwind bound never counts as a detected mutation", () => {
   const { dir, name } = kaniFixture("unwind");
   const mutations = rustMutation(dir, name, "loop");

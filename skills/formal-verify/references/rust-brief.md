@@ -40,6 +40,12 @@ Put `#[kani::unwind(N)]` on every harness, above its real loop bounds. The check
 requires this explicit bound and passes it to Kani. A failed unwinding assertion
 means the bound is too low and fails the check.
 
+Kani stops a harness at `KANI_HARNESS_TIMEOUT`, five minutes by default. Symbolic
+inputs that reach an error constructor that builds a message with `format!`, or
+a wide division by a symbolic divisor, can keep the solver running past it. Give
+those parameters concrete values or write one harness per variant, and keep the
+symbolic inputs on the arithmetic the property is about.
+
 Add `kani::cover!` witnesses for the boundary or blocking states each property
 depends on, such as a full window or an empty queue. The checker rejects
 unsatisfiable, unreachable and undetermined covers, even when Kani exits
