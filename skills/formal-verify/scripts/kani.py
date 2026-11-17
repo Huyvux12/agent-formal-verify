@@ -37,6 +37,12 @@ class Verdict(IntEnum):
 
 
 @dataclass(frozen=True)
+class Harness:
+    unwind: int
+    source: Path
+
+
+@dataclass(frozen=True)
 class Outcome:
     verdict: Verdict
     checks: int
@@ -98,46 +104,49 @@ class Kani:
         except OSError as error:
             raise CheckError(f"cannot execute Kani: {error}") from error
 
-    def source_roots(self, crate, work):
-        """Find each local package's workspace, including transitive and optional path dependencies."""
+    def cargo_metadata(self, crate, resolve=False):
+        """Read package declarations; resolve only when finding the full local source graph."""
+        try:
+            done = subprocess.run(
+                [str(self.cargo), "metadata", *([] if resolve else ["--no-deps"]), "--format-version", "1",
+                 "--manifest-path", str(crate / "Cargo.toml")],
+                cwd=crate, env=self.env, capture_output=True, text=True, check=False)
+        except OSError as error:
+            raise CheckError(f"cannot read Cargo metadata: {error}") from error
+        if done.returncode:
+            raise CheckError(f"Cargo metadata failed for {crate}:\n{done.stdout}{done.stderr}")
+        try:
+            report = json.loads(done.stdout)
+            if report["version"] != 1:
+                raise CheckError("unsupported Cargo metadata version")
+            paths = [Path(report["workspace_root"])]
+            for package in report["packages"]:
+                if package["source"] is None:
+                    paths.append(Path(package["manifest_path"]).parent)
+                    paths.extend(Path(dep["path"]) for dep in package["dependencies"] if "path" in dep)
+            if not all(path.is_absolute() for path in paths):
+                raise CheckError("Cargo metadata returned a relative source path")
+            return paths
+        except (ValueError, KeyError, TypeError) as error:
+            raise CheckError(f"malformed Cargo metadata: {error}") from error
+
+    def source_roots(self, crate):
+        """Find local workspaces, including transitive and optional path dependencies."""
         pending, visited, roots = {crate}, set(), set()
         while pending:
             directory = pending.pop()
             if directory in visited:
                 continue
             visited.add(directory)
-            try:
-                done = subprocess.run(
-                    [str(self.cargo), "metadata", *(["--no-deps"] if directory != crate else []),
-                     "--format-version", "1", "--manifest-path", str(directory / "Cargo.toml")],
-                    cwd=work, env=self.env, capture_output=True, text=True, check=False)
-            except OSError as error:
-                raise CheckError(f"cannot read Cargo metadata: {error}") from error
-            if done.returncode:
-                raise CheckError(f"Cargo metadata failed for {directory}:\n{done.stdout}{done.stderr}")
-            try:
-                report = json.loads(done.stdout)
-                if report["version"] != 1:
-                    raise CheckError("unsupported Cargo metadata version")
-                paths = [Path(report["workspace_root"]), directory]
-                for package in report["packages"]:
-                    if package["source"] is not None:
-                        continue
-                    paths.append(Path(package["manifest_path"]).parent)
-                    paths.extend(Path(dependency["path"]) for dependency in package["dependencies"] if "path" in dependency)
-                if not all(path.is_absolute() for path in paths):
-                    raise CheckError("Cargo metadata returned a relative source path")
-                roots.add(paths[0].resolve())
-                roots.add(directory)
-                pending.update(path.resolve() for path in paths[2:])
-            except (ValueError, KeyError, TypeError) as error:
-                raise CheckError(f"malformed Cargo metadata: {error}") from error
+            paths = self.cargo_metadata(directory, resolve=directory == crate)
+            roots.update((paths[0].resolve(), directory))
+            pending.update(path.resolve() for path in paths[1:])
         return roots
 
 
-def invoke(crate, work, kani, *arguments):
+def invoke(crate, work, kani, *arguments, cwd=None):
     return kani.run("--manifest-path", str(crate / "Cargo.toml"),
-                    "--target-dir", str(work / "target"), *arguments, cwd=work)
+                    "--target-dir", str(work / "target"), "-Z", "stubbing", *arguments, cwd=cwd or crate)
 
 
 def read_json(path):
@@ -148,47 +157,44 @@ def read_json(path):
 
 
 def discover(crate, work, kani):
-    """Return the unwind bound of every proof harness in crate, by fully qualified name."""
+    """Compile current harness metadata without `list`, which writes into the source directory."""
     if not (crate / "Cargo.toml").is_file():
         raise CheckError(f"{crate}/Cargo.toml is missing")
-    done = invoke(crate, work, kani, "list", "--format", "json")
+    workspace = kani.cargo_metadata(crate)[0]
+    done = invoke(crate, work, kani, "--only-codegen")
     if done.returncode:
         output = done.stdout + done.stderr
         if "error[E0658]" in output:
-            toolchain = (kani.bundle / "rust-toolchain-version").read_text(encoding="utf-8").strip()
+            try:
+                toolchain = (kani.bundle / "rust-toolchain-version").read_text(encoding="utf-8").strip()
+            except OSError:
+                toolchain = "Rust toolchain (version metadata unavailable)"
             output += (f"\nKani {kani.version} compiles with its bundled {toolchain}, which lacks a feature "
                        "used at the locations above. Rewrite harness code that uses it. If every location is "
                        "in production code or a dependency, report the Kani target as not checked; a feature "
                        "attribute would change the production crate.")
         raise CheckError(f"Kani discovery failed:\n{output}")
+    harnesses = {}
     try:
-        report = read_json(work / "kani-list.json")
-        if report.get("kani-version") != kani.version or report.get("file-version") != "0.1":
-            raise CheckError("unsupported Kani discovery schema or version")
-        groups = report.get("standard-harnesses")
-        if not isinstance(groups, dict) or not all(
-                isinstance(names, list) and all(isinstance(name, str) and name for name in names)
-                for names in groups.values()):
-            raise CheckError("malformed Kani harness list")
-        names = [name for group in groups.values() for name in group]
-        if not names:
-            raise CheckError("no proof harnesses found")
-        if len(set(names)) != len(names):
-            raise CheckError("duplicate harness names; select a single crate")
-        bounds = {}
         for metadata in (work / "target").rglob("*.kani-metadata.json"):
-            for harness in read_json(metadata).get("proof_harnesses", []):
-                name = harness.get("pretty_name")
-                if name in names:
-                    bound = harness.get("attributes", {}).get("unwind_value")
-                    if type(bound) is not int or bound < 1:
-                        raise CheckError(f"{name} needs #[kani::unwind(N)] with N greater than zero")
-                    bounds[name] = bound
-    except (TypeError, AttributeError) as error:
+            for harness in read_json(metadata)["proof_harnesses"]:
+                if harness["attributes"]["kind"] != "Proof":
+                    continue
+                name = harness["pretty_name"]
+                bound = harness["attributes"].get("unwind_value")
+                source = harness["original_file"]
+                if not isinstance(name, str) or not name or not isinstance(source, str) or not source:
+                    raise CheckError("malformed Kani harness name or source")
+                if name in harnesses:
+                    raise CheckError("duplicate harness names; select a single crate")
+                if type(bound) is not int or bound < 1:
+                    raise CheckError(f"{name} needs #[kani::unwind(N)] with N greater than zero")
+                harnesses[name] = Harness(bound, (workspace / source).resolve())
+    except (KeyError, TypeError, AttributeError) as error:
         raise CheckError(f"malformed Kani discovery record: {error!r}") from error
-    if set(bounds) != set(names):
-        raise CheckError("Kani did not report unwind metadata for every harness")
-    return bounds
+    if not harnesses:
+        raise CheckError("no proof harnesses found")
+    return harnesses
 
 
 def harness_result(report, kani, name, returncode):
@@ -233,7 +239,7 @@ def describe(check):
             f"{location['file']}:{location['line']}:{location['column']}")
 
 
-def verify(crate, work, kani, name, bound):
+def verify(crate, work, kani, name, bound, *, cwd=None):
     """Check one harness; a report that is malformed or disagrees with the process is inconclusive."""
     result_file = work / "result.json"
     result_file.unlink(missing_ok=True)
@@ -242,7 +248,7 @@ def verify(crate, work, kani, name, bound):
                       "-Z", "unstable-options", "--harness-timeout", kani.timeout,
                       "--export-json", str(result_file),
                       "-Z", "concrete-playback", "--concrete-playback", "print",
-                      "--output-format", "regular")
+                      "--output-format", "regular", cwd=cwd)
     except CheckError as error:
         return Outcome(Verdict.INCONCLUSIVE, 0, [str(error)], "")
     output = done.stdout + done.stderr
@@ -252,6 +258,12 @@ def verify(crate, work, kani, name, bound):
         verdict = max(verdict for _, verdict in verdicts)
         if verdict is Verdict.PASS and result["status"] != "Success":
             raise CheckError("Kani reports a harness failure that no check explains")
+        if verdict is Verdict.PASS and not any(
+                check["status"] == "Satisfied" and check["category"] == "cover"
+                for check, _ in verdicts):
+            # Kani labels compiler safety checks as assertions too: an overflow check
+            # before contradictory assumptions can succeed while the property is unreachable.
+            raise CheckError("no satisfied kani::cover! witness; cover a boundary after the assumptions")
         failures = [describe(check) for check, verdict in verdicts if verdict is not Verdict.PASS]
     except (KeyError, TypeError, AttributeError, CheckError) as error:
         return Outcome(Verdict.INCONCLUSIVE, 0, [f"verification did not complete: {error}"], output)
@@ -288,10 +300,10 @@ def main():
             return 1
         passed = 0
         for name in names:
-            outcome = verify(crate, work, kani, name, bounds[name])
+            outcome = verify(crate, work, kani, name, bounds[name].unwind)
             ok = outcome.verdict is Verdict.PASS
             passed += ok
-            print(f"{'PASS' if ok else 'FAIL'} {name} unwind={bounds[name]} checks={outcome.checks}"
+            print(f"{'PASS' if ok else 'FAIL'} {name} unwind={bounds[name].unwind} checks={outcome.checks}"
                   + (": " + "; ".join(outcome.failures) if outcome.failures else ""))
             if not ok:
                 print(outcome.output.rstrip())

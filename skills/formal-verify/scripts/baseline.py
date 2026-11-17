@@ -12,7 +12,7 @@ change, and so is an added item whose kind narrows what is checked.
   .matrix      TLA+. Each run's effective checks and each reach check's selected inputs,
                and the normalized definitions of Spec,
                of each operator a check or reach line names, and of the operators those
-               reference, in the spec each section names. Spec is not followed into its actions.
+               reference through local EXTENDS. Local INSTANCE substitutions retain their whole module tree.
   .rs          Kani. Each qualified harness name, and each kani::assume, kani::any_where,
                kani::cover! and #[kani::stub] with its owning free function, under inline
                modules. Unsupported owners fail. Added covers and harnesses are allowed.
@@ -127,7 +127,7 @@ def begins_in_column_zero(line):
 
 def tla_definitions(text):
     found, unreadable, name, lines = {}, set(), None, []
-    for line in blank_tla_comments(text).split("\n"):
+    for line in text.split("\n"):
         if begins_in_column_zero(line):
             match = DEFINITION.match(line)
             header = None if match or MODULE_LEVEL.match(line) or "==" not in line else collapse(line.partition("==")[0])
@@ -145,18 +145,82 @@ def tla_definitions(text):
     return found, unreadable
 
 
-def tla_closure(definitions, roots):
-    seen, pending = set(), list(roots)
-    while pending:
-        name = pending.pop()
-        if name in seen:
+EXTENDS = re.compile(r"\bEXTENDS\s+(\w+(?:\s*,\s*\w+)*)")
+INSTANCE = re.compile(r"\bINSTANCE\s+(\w+)")
+INDENTED_DEFINITION = re.compile(r"^[ \t]*" + DEFINITION.pattern, re.MULTILINE)
+
+
+def tla_module_surface(directory, spec, operators):
+    """Resolve operator references in the module that defines them, including sibling imports."""
+    root = Path(spec)
+    texts, bodies, scopes, exports = {}, {}, {}, {}
+    required, visiting = set(), set()
+    whole_modules = False
+
+    def load(path):
+        nonlocal whole_modules
+        if path in exports:
+            return exports[path]
+        if path in visiting:
+            raise ValueError(f"cyclic TLA+ import at {path}")
+        visiting.add(path)
+        text = blank_tla_comments(tlc.read_raw(directory / path))
+        texts[path] = text
+        code = STRING.sub('""', text)
+        # Indented or multiline headers cannot always be separated from a local LET definition.
+        if path != root and re.search(r"(?m)^(?:[ \t].*)?(?<!=)==(?!=)", code):
+            whole_modules = True
+        scope = {}
+        for group in EXTENDS.findall(code):
+            for name in IDENTIFIER.findall(group):
+                sibling = path.with_name(f"{name}.tla")
+                if (directory / sibling).is_file():
+                    scope.update(load(sibling))
+        for name in INSTANCE.findall(code):
+            sibling = path.with_name(f"{name}.tla")
+            if (directory / sibling).is_file():
+                whole_modules = True
+                load(sibling)
+        definitions, unreadable = tla_definitions(text)
+        for name, body in definitions.items():
+            key = (path, name)
+            bodies[key] = body
+            scope[name] = key
+        required.update((path, name) for name in unreadable)
+        scopes[path] = scope
+        exports[path] = {name: key for name, key in scope.items() if not bodies[key].startswith("LOCAL ")}
+        visiting.remove(path)
+        return exports[path]
+
+    load(root)
+    surface = {f"imports {spec}": sorted(str(path) for path in texts if path != root)}
+    fallback_names = set()
+    if whole_modules:
+        fallback_names = {match[1] for text in texts.values() for match in INDENTED_DEFINITION.finditer(text)}
+    for name in sorted({"Spec", *operators}):
+        if name in scopes[root]:
+            required.add(scopes[root][name])
+        elif name.rpartition("!")[2] not in fallback_names:
+            raise ValueError(f"{name} is named in the {spec} section but no definition was found in it or its local imports")
+    if whole_modules:
+        # Preserve substitutions and dependencies whose operator scope cannot be resolved.
+        for path, text in texts.items():
+            surface[f"module text {spec} | {path}"] = collapse(text)
+        return surface
+
+    seen = set()
+    while required:
+        key = required.pop()
+        if key in seen:
             continue
-        seen.add(name)
-        body = definitions[name].partition("==")[2]
-        if name == "Spec":
+        seen.add(key)
+        owner, name = key
+        surface[f"definition {owner} {name}"] = bodies[key]
+        body = STRING.sub('""', bodies[key].partition("==")[2])
+        if key == scopes[root]["Spec"]:
             body = SPEC_ACTIONS.sub(" ", body)
-        pending += [word for word in IDENTIFIER.findall(body) if word in definitions and word != name]
-    return seen
+        required.update(scopes[owner][word] for word in IDENTIFIER.findall(body) if word in scopes[owner])
+    return surface
 
 
 def tla_surface(path):
@@ -188,12 +252,7 @@ def tla_surface(path):
         source = path.parent / spec
         if not source.is_file():
             raise ValueError(f"{path}: spec {spec} not found")
-        definitions, unreadable = tla_definitions(tlc.read_raw(source))
-        for name in sorted({"Spec", *operators}):
-            if name not in definitions:
-                raise ValueError(f"{path}: {name} is named in the {spec} section but {source} does not define it")
-        for name in sorted(tla_closure(definitions, {"Spec", *operators, *unreadable})):
-            surface[f"definition {spec} {name}"] = definitions[name]
+        surface.update(tla_module_surface(path.parent, spec, operators))
     return surface
 
 
@@ -420,6 +479,8 @@ def record(record_path, files):
 
 def differences(kind, old, new):
     lines = []
+    if kind == "tla" and not any(name.startswith("imports ") for name in old):
+        lines.append("  previous baseline did not track imported modules; review and record this matrix again")
     for name in old:
         if name not in new:
             lines.append(f"  removed {name}")

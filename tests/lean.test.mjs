@@ -281,6 +281,26 @@ for (const [label, changed] of [
   });
 }
 
+test("legacy opaque records require review and explicit re-freezing", () => {
+  const audit = statementAudit(statement("step", "opaque", "Nat", "one"));
+  const { project, check } = leanFixture("lake-search.log", { audit });
+  assert.equal(check(["--freeze", "Model.lean"]).status, 0);
+  const path = join(project, "Model.statements");
+  const legacy = JSON.parse(readFileSync(path, "utf8"));
+  legacy.declarations[0].valueHash = null;
+  const contents = JSON.stringify(legacy);
+  writeFileSync(path, contents);
+  for (const value of ["one", "two"]) {
+    const result = check(["Model.lean"], statementAudit(statement("step", "opaque", "Nat", value)));
+    assert.equal(result.status, 1, result.stdout);
+    includes(result.stdout, "FROZEN step: opaque body was not recorded; review the definition and run --freeze");
+    excludes(result.stdout, "PASS ");
+    assert.equal(readFileSync(path, "utf8"), contents);
+  }
+  assert.equal(check(["--freeze", "Model.lean"]).status, 0);
+  assert.equal(check(["Model.lean"]).status, 0);
+});
+
 test("the Lean checker allows added declarations and checks only selected frozen modules", () => {
   const audit = statementAudit(statement("property"), statement("other", "theorem", "type", null, "Model.Sub"));
   const { check, project } = leanFixture("lake-search.log", { audit });

@@ -38,7 +38,8 @@ integer widths, input bounds and each assumption beside the harness. If a callee
 needs a stub or a function contract, name that assumption in the header comment.
 Put `#[kani::unwind(N)]` on every harness, above its real loop bounds. The checker
 requires this explicit bound and passes it to Kani. A failed unwinding assertion
-means the bound is too low and fails the check.
+means the bound is too low and fails the check. Discovery and verification both
+enable `-Z stubbing`, so documented `#[kani::stub]` attributes work in either step.
 
 Kani stops a harness at `KANI_HARNESS_TIMEOUT`, five minutes by default. Symbolic
 inputs that reach an error constructor that builds a message with `format!`, or
@@ -50,7 +51,12 @@ Add `kani::cover!` witnesses for the boundary or blocking states each property
 depends on, such as a full window or an empty queue. The checker rejects
 unsatisfiable, unreachable and undetermined covers, even when Kani exits
 successfully. Ordinary unreachable assertions are allowed because they describe
-impossible panic branches. Every cover must have status `Satisfied`.
+impossible panic branches. Every passing harness must have at least one
+`Satisfied` cover after its assumptions. Successful assertions alone do not
+establish reachability: Kani also labels compiler safety checks as assertions,
+and one before contradictory assumptions can pass while the property is
+unreachable. Existing coverless harnesses must add an explicit boundary
+witness. Every cover must have status `Satisfied`.
 
 ## Check
 
@@ -82,8 +88,20 @@ code, so report it as a model and name the copied source and commit.
 Put `<Name>.mutations` beside the assigned `<Name>.rs`. Use
 `detects <fully-qualified-harness>` for each mutation. The mutation runner uses
 the bundled Cargo to find the crate's workspace and local dependencies, copies
-them to temporary storage with their relative paths intact, and checks the named harness. A compiler
-error never counts as detection. Every discovered harness needs a mutation.
+them to temporary storage with their relative paths intact, and checks the
+copied manifest from the original crate directory so Cargo retains configuration
+and relative paths to external files. Each selected harness must first pass on
+the unmutated source; a compiler error or inconclusive check never counts as
+detection. Every harness declared in the adjacent Rust file needs a mutation.
+An explicit property failure or a lost cover witness can detect a mutation;
+missing covers and unreachable assertions alone are inconclusive.
+An explicit `detects` may also name a harness in another file; unrelated
+harnesses in other files do not contribute to this file’s coverage requirement.
+
+Direct checks and discovery run from the crate directory so Cargo reads crate
+and ancestor configuration. Discovery uses code generation metadata in an
+isolated target directory and does not write a `kani-list.json` into the source
+tree. Cargo may create or update its normal lockfile.
 
 For each fix commit in your row whose fixed code is in the file beside the
 mutations file, add a mutation that restores the code before the fix, with the

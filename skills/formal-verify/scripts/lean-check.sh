@@ -150,6 +150,7 @@ open Lean Elab Command in
       | .axiomInfo _ => "axiom"
     let value := match info with
       | .defnInfo v => toJson (reprStr v.value)
+      | .opaqueInfo v => toJson (reprStr v.value)
       | _ => Json.null
     let pp ← liftTermElabM <| Meta.ppExpr info.type
     let record := Json.mkObj [
