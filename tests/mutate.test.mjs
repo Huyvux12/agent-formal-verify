@@ -44,7 +44,7 @@ test("the mutation runner checks each TLA+ mutation against its one property and
     "",
   ].join("\n"));
   assert.equal(result.status, 1);
-  assert.equal(readFileSync(join(dir, "calls"), "utf8"), "SPECIFICATION Spec\nINVARIANTS Small\n");
+  assert.equal(readFileSync(join(dir, "calls"), "utf8"), "SPECIFICATION Spec\nINVARIANTS Small\n".repeat(2));
 });
 
 test("the mutation runner finds its spec's matrix section however the spec line writes the path", () => {
@@ -97,7 +97,7 @@ test("TLA mutation plans keep check order and reset checks at repeated spec sect
   ]) {
     const { dir, result } = tlaMutations([], ["mutation harmless", "detects Small", "- x + 1", "+ 1 + x"], undefined, undefined, matrix);
     assert.equal(result.stdout, "MISSED harmless\nSUMMARY 0 of 1 mutations detected\n");
-    assert.equal(readFileSync(join(dir, "calls"), "utf8"), "SPECIFICATION Spec\nINVARIANT Small\n");
+    assert.equal(readFileSync(join(dir, "calls"), "utf8"), "SPECIFICATION Spec\nINVARIANT Small\n".repeat(2));
   }
 });
 
@@ -433,7 +433,13 @@ function reachMutation(java, matrix = "spec One.tla\nreach Full | n=4\nrun n=4 |
   writeFileSync(join(dir, "One.mutations"), `mutation never full\ndetects reach:Full\n${only ? `only ${only}\n` : ""}- x + 1\n+ x \\* BUG\n`);
   writeFileSync(join(dir, "tools.jar"), "user supplied");
   return run(dir, "mutate.py", [join(dir, "One.mutations")], {
-    JAVA: fakeTlc(dir, java),
+    JAVA: fakeTlc(dir, [
+      'for last; do :; done',
+      'if ! grep -q BUG "$(dirname "$last")/One.tla"; then',
+      '  invariant=$(sed -n "s/^INVARIANT //p" "$(dirname "$last")/MC.cfg")',
+      '  echo "Error: Invariant $invariant is violated by the initial state:"; exit 12',
+      'fi', java,
+    ].join("\n")),
     TLC_JAR: join(dir, "tools.jar"),
   });
 }

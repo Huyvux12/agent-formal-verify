@@ -249,6 +249,7 @@ class MutationPlan:
 
     def __init__(self, spec, sections):
         self._spec = spec
+        self._passing_originals = set()
         self.properties = {name for section in sections for name in section.properties}
         self.detectors = self.properties | {name for section in sections for name in section.reaches}
         self._tasks = [task for section in sections for task in section.tasks]
@@ -270,13 +271,19 @@ class MutationPlan:
 
     def check(self, checker, detector, only, source, work):
         """Return the first confirmed detection, None for a miss, or raise on inconclusive evidence."""
-        for module in self._spec.parent.glob("*.tla"):
-            (work / module.name).write_text(module.read_text(encoding="utf-8"), encoding="utf-8")
-        (work / self._spec.name).write_text(source, encoding="utf-8")
         results = []
-        runner = Runner(checker, work, only, results.append, work)
         for task in self._select(detector):
-            runner.check(task)
+            if isinstance(task, Result):
+                results.append(task)
+                continue
+            if only not in task.run.label:
+                continue
+            if task not in self._passing_originals:
+                original = run_task(checker, self._spec.parent, task, work)
+                if original.outcome not in (Outcome.PASS, Outcome.WITNESS):
+                    raise ValueError(f"unmutated model did not pass {detector}: " + "\n".join(render(original)))
+                self._passing_originals.add(task)
+            results.append(run_task(checker, self._spec.parent, task, work, source))
         if not results:
             raise ValueError(f"no run matches '{only}' for '{detector}'")
         violations = {
@@ -327,6 +334,59 @@ def reduced_trace(log_path, log):
     return lines
 
 
+def run_task(checker, matrix_dir, task, work, source=None):
+    """Execute a resolved matrix task, optionally replacing its spec in the private run directory."""
+    spec, run = task.spec, task.run
+    operator = task.reach.operator if task.reach else ""
+    name = Path(spec).name.removesuffix(".tla")
+    if not (matrix_dir / spec).is_file():
+        return Result(Outcome.MISSING, name, run.label, detail=spec)
+    directory = Path(tempfile.mkdtemp(prefix="run.", dir=work))
+    for module in (matrix_dir / spec).parent.glob("*.tla"):
+        dest = directory / module.name
+        if source is not None and module.name == Path(spec).name:
+            dest.write_text(source, encoding="utf-8")
+        else:
+            dest.write_bytes(module.read_bytes())
+    constants = "".join(f"  {pair.split('=')[0]} = {pair.split('=', 1)[-1]}\n" for pair in run.constants.split())
+    config = f"CONSTANTS\n{constants}SPECIFICATION Spec\n"
+    if not task.check_deadlock:
+        config += "CHECK_DEADLOCK FALSE\n"
+    if not operator:
+        status, log = checker.run(directory, name, config + "\n".join(check.line for check in task.checks) + "\n", reach=False)
+        return ordinary(name, run, status, log, directory / "tlc.log")
+    wrapper = f"Reach{uuid.uuid4().hex}"
+    invariant = f"{wrapper}Negated"
+    (directory / f"{wrapper}.tla").write_text(f"---- MODULE {wrapper} ----\nEXTENDS {name}\n{invariant} == ~{operator}\n====\n", encoding="utf-8")
+    status, log = checker.run(directory, wrapper, config + f"INVARIANT {invariant}\n", reach=True)
+    return witness(name, run, operator, invariant, status, log)
+
+
+
+def ordinary(name, run, status, log, log_path):
+    if status == 0 and "No error has been found" in log:
+        found = re.findall(r"[0-9,]* distinct states found", log)
+        states = found[-1] if found else ""
+        return Result(Outcome.PASS, name, run.label, detail=states)
+    errors = [line for line in log.split("\n") if line.startswith("Error:")]
+    return Result(Outcome.FAIL, name, run.label, detail=errors[0] if errors else "",
+                  lines=(*errors[1:5], *reduced_trace(log_path, log)))
+
+
+def witness(name, run, operator, invariant, status, log):
+    lines = log.split("\n")
+    length = 0
+    if status == 12 and f"Error: Invariant {invariant} is violated by the initial state:" in lines:
+        length = 1
+    elif status == 12 and f"Error: Invariant {invariant} is violated." in lines:
+        length = sum(1 for line in lines if re.match(r"State [0-9]+:", line))
+    if length:
+        return Result(Outcome.WITNESS, name, run.label, operator, f"{length} states ({length - 1} transitions)")
+    if status == 0 and "No error has been found" in log:
+        return Result(Outcome.UNREACHED, name, run.label, operator)
+    return Result(Outcome.INCOMPLETE, name, run.label, operator, lines=tuple(log.removesuffix("\n").split("\n")) if log else ())
+
+
 class Runner:
     """Run the selected tasks and report each result to emit."""
 
@@ -344,60 +404,19 @@ class Runner:
             self.reach_total += task.outcome is Outcome.NO_RUN
             self.report(task)
             return
-        spec, run = task.spec, task.run
-        operator = task.reach.operator if task.reach else ""
-        if self.only not in run.label:
+        if self.only not in task.run.label:
             return
-        if operator:
+        if task.reach:
             self.reach_total += 1
         else:
             self.runs_total += 1
-        name = Path(spec).name.removesuffix(".tla")
-        if not (self.matrix_dir / spec).is_file():
-            self.report(Result(Outcome.MISSING, name, run.label, detail=spec))
-            return
-        directory = Path(tempfile.mkdtemp(prefix="run.", dir=self.work))
-        for module in (self.matrix_dir / spec).parent.glob("*.tla"):
-            (directory / module.name).write_bytes(module.read_bytes())
-        constants = "".join(f"  {pair.split('=')[0]} = {pair.split('=', 1)[-1]}\n" for pair in run.constants.split())
-        config = f"CONSTANTS\n{constants}SPECIFICATION Spec\n"
-        if not task.check_deadlock:
-            config += "CHECK_DEADLOCK FALSE\n"
-        if not operator:
-            status, log = self.tlc.run(directory, name, config + "\n".join(check.line for check in task.checks) + "\n", reach=False)
-            self.report(self.ordinary(name, run, status, log, directory / "tlc.log"))
-            return
-        wrapper = f"Reach{uuid.uuid4().hex}"
-        invariant = f"{wrapper}Negated"
-        (directory / f"{wrapper}.tla").write_text(f"---- MODULE {wrapper} ----\nEXTENDS {name}\n{invariant} == ~{operator}\n====\n", encoding="utf-8")
-        status, log = self.tlc.run(directory, wrapper, config + f"INVARIANT {invariant}\n", reach=True)
-        self.report(self.witness(name, run, operator, invariant, status, log))
-
-    def ordinary(self, name, run, status, log, log_path):
-        if status == 0 and "No error has been found" in log:
-            found = re.findall(r"[0-9,]* distinct states found", log)
-            states = found[-1] if found else ""
+        result = run_task(self.tlc, self.matrix_dir, task, self.work)
+        if result.outcome is Outcome.PASS:
             self.passed += 1
-            count = states.partition(" ")[0].replace(",", "")
-            self.states += int(count or 0)
-            return Result(Outcome.PASS, name, run.label, detail=states)
-        errors = [line for line in log.split("\n") if line.startswith("Error:")]
-        return Result(Outcome.FAIL, name, run.label, detail=errors[0] if errors else "",
-                      lines=(*errors[1:5], *reduced_trace(log_path, log)))
-
-    def witness(self, name, run, operator, invariant, status, log):
-        lines = log.split("\n")
-        length = 0
-        if status == 12 and f"Error: Invariant {invariant} is violated by the initial state:" in lines:
-            length = 1
-        elif status == 12 and f"Error: Invariant {invariant} is violated." in lines:
-            length = sum(1 for line in lines if re.match(r"State [0-9]+:", line))
-        if length:
+            self.states += int(result.detail.partition(" ")[0].replace(",", "") or 0)
+        elif result.outcome is Outcome.WITNESS:
             self.reached += 1
-            return Result(Outcome.WITNESS, name, run.label, operator, f"{length} states ({length - 1} transitions)")
-        if status == 0 and "No error has been found" in log:
-            return Result(Outcome.UNREACHED, name, run.label, operator)
-        return Result(Outcome.INCOMPLETE, name, run.label, operator, lines=tuple(log.removesuffix("\n").split("\n")) if log else ())
+        self.report(result)
 
 
 def main():
