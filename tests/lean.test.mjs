@@ -75,13 +75,14 @@ function leanFixture(log, { status = 0, audit = audited, files = [] } = {}) {
   command(dir, "elan", [
     '[ "$4" = "--version" ] && exit 0',
     `[ "$3" = "lean" ] && { echo "${dir}"; exit 0; }`,
+    '[ "$7" = python3 ] && { shift 6; exec "$@"; }',
     'if [[ "$8" == */lean-replay.lean ]]; then echo replay >> "$TASK_TRACE"; sed "s/^/replaying /" "$AFV_REPLAY_MODULES"; [ -z "$TASK_REPLAY" ] || { echo "$TASK_REPLAY"; exit 1; }; exit 0; fi',
     'if [ "$6" = "env" ]; then echo audit >> "$TASK_TRACE"; grep "^import" "$8"; printf "%s\\n" "$TASK_AUDIT"; exit 0; fi',
     'shift 6; printf "%s\\n" "$@" > "$TASK_BUILT"',
-    `[ ${status} -ne 0 ] || for target; do target=\${target#"$TASK_PROJECT/"}; echo "/physical/.lake/build/lib/lean/\${target%.lean:olean}.olean"; done`,
+    `[ ${status} -ne 0 ] || for target; do target=\${target#"$TASK_PROJECT/"}; echo "$TASK_PROJECT/.lake/build/lib/lean/\${target%.lean:olean}.olean"; done`,
     `cat "${join(logs, log)}" >&2; exit ${status}`,
   ].join("\n"));
-  const check = (args = files, output = audit, extra = {}) => run(dir, "lean-check.sh", [project, ...args], { TASK_AUDIT: output, TASK_BUILT: join(dir, "built"), TASK_PROJECT: project, ...extra });
+  const check = (args = files, output = audit, extra = {}) => run(dir, "lean-check.sh", [project, ...args], { LEAN_PATH: join(project, lib), TASK_AUDIT: output, TASK_BUILT: join(dir, "built"), TASK_PROJECT: project, ...extra });
   return { dir, project, check, result: check() };
 }
 
@@ -143,6 +144,7 @@ test("the Lean checker names a module path outside Lake's build layout instead o
   command(dir, "elan", [
     '[ "$4" = "--version" ] && exit 0',
     '[ "$6" = "query" ] && { echo "/elsewhere/out/Model.olean"; exit 0; }',
+    '[ "$7" = python3 ] && { shift 6; exec "$@"; }',
     'echo audit >> "$TASK_TRACE"; exit 1',
   ].join("\n"));
   const result = run(dir, "lean-check.sh", [project]);
