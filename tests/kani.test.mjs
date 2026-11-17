@@ -10,6 +10,7 @@ import { command, excludes, fixture, includes, logs, removeFixtures, run } from 
 afterEach(removeFixtures);
 
 const KANI = "0.68.0";
+const TOOLCHAIN = "nightly-2026-08-21-aarch64-apple-darwin";
 const bundle = (dir) => join(dir, `kani/kani-${KANI}`);
 const python = spawnSync("python3", ["-c", "import sys; print(sys.executable)"], { encoding: "utf8" }).stdout.trim();
 const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value));
@@ -32,6 +33,7 @@ function kaniBundle(config = {}) {
     writeFileSync(path, `#!${python}\n${DRIVER}`);
     chmodSync(path, 0o755);
   }
+  writeFileSync(join(bundle(dir), "rust-toolchain-version"), `${TOOLCHAIN}\n`);
   writeJson(join(dir, "driver.json"), { version: KANI, harnesses: {}, ...config });
   return dir;
 }
@@ -134,6 +136,25 @@ for (const script of ["kani-check.sh", "mutate.py"]) {
     excludes(result.stderr, "Traceback");
   });
 }
+
+for (const script of ["kani-check.sh", "mutate.py"]) {
+  test(`Kani ${script} names its bundled toolchain when the crate needs a newer library feature`, () => {
+    const { dir, name } = kaniFixture("success", { listError: "error[E0658]: use of unstable library feature `drop_guard`" });
+    const result = runKani(dir, script, [script === "mutate.py" ? rustMutation(dir, name) : dir]);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    includes(result.stdout, "error[E0658]");
+    includes(result.stdout, `bundled ${TOOLCHAIN}`);
+    excludes(result.stderr, "Traceback");
+  });
+}
+
+test("Kani adds no toolchain note to other discovery failures", () => {
+  const { dir } = kaniFixture("success", { listError: "error[E0425]: cannot find value `x` in this scope" });
+  const result = runKani(dir, "kani-check.sh", [dir]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  includes(result.stdout, "Kani discovery failed");
+  excludes(result.stdout, TOOLCHAIN);
+});
 
 test("Kani distinguishes malformed projects from unavailable tools", () => {
   const { dir } = kaniFixture();

@@ -11,7 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (file) => readFileSync(join(root, file), "utf8");
 const json = (file) => JSON.parse(read(file));
-const manifests = [".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "package.json"].map(json);
+const manifests = [".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "package.json", ".antigravity-plugin/plugin.json"].map(json);
 const claude = json(".claude-plugin/marketplace.json");
 const codex = json(".agents/plugins/marketplace.json");
 
@@ -29,6 +29,9 @@ test("the manifests and marketplaces describe one plugin", () => {
     assert.equal(manifest.license, "GPL-3.0-only");
     assert.equal(manifest.description, manifests[0].description);
   }
+  const { logo } = manifests[3];
+  assert.ok(logo && !logo.split("/").some((part) => part.startsWith(".")));
+  assert.ok(existsSync(join(root, logo)), `missing Antigravity logo: ${logo}`);
   for (const marketplace of [claude, codex]) {
     assert.equal(marketplace.name, "agent-formal-verify");
     assert.equal(marketplace.plugins.length, 1);
@@ -51,7 +54,7 @@ test("the npm package ships every runtime file and nothing else from the root", 
   const { files, exports, pi } = manifests[2];
   assert.deepEqual(files, ["opencode.mjs", "skills/", "!skills/**/.lake/", "LICENSE", "README.md", "CHANGES.md"]);
   const shipped = ["package.json", ...files.filter((entry) => !entry.startsWith("!")).map((entry) => entry.replace(/\/$/, ""))];
-  const unshipped = [".agents", ".claude-plugin", ".codex-plugin", ".gitattributes", ".github", ".gitignore", ".markdownlint-cli2.jsonc", ".pre-commit-config.yaml", "AGENTS.md", "assets", "CONTRIBUTING.md", "docs", "tests"];
+  const unshipped = [".agents", ".antigravity-plugin", ".claude-plugin", ".codex-plugin", ".gitattributes", ".github", ".gitignore", ".markdownlint-cli2.jsonc", ".pre-commit-config.yaml", "AGENTS.md", "assets", "CONTRIBUTING.md", "docs", "tests"];
   const tracked = new Set(execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean).map((path) => path.split("/")[0]));
   const unclassified = [...tracked].filter((entry) => !shipped.includes(entry) && !unshipped.includes(entry));
   assert.deepEqual(unclassified, [], "add each new root entry to package.json files or to the unshipped list here");
@@ -72,7 +75,7 @@ async function register(entry, existing = []) {
   return registered;
 }
 const opencode = new URL("../opencode.mjs", import.meta.url);
-const bundled = () => readdirSync(skills).sort();
+const bundled = () => readdirSync(skills, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
 
 test("the OpenCode plugin registers every bundled skill from its SKILL.md", async () => {
   const { exports, dependencies } = manifests[2];
@@ -163,7 +166,7 @@ test("the plugin has no automatic hooks or servers that could forward credential
       assert.ok(!(field in manifest), `${field} requires a directory policy review`);
     }
   }
-  for (const file of ["hooks/hooks.json", ".mcp.json", ".lsp.json"]) {
+  for (const file of ["hooks/hooks.json", ".mcp.json", ".lsp.json", "hooks.json", "mcp_config.json", ".antigravity-plugin/hooks.json"]) {
     assert.ok(!existsSync(join(root, file)), `${file} requires a directory policy review`);
   }
 });
@@ -183,8 +186,8 @@ test("documentation does not present bundled images or fonts as code", () => {
     const text = readFileSync(file, "utf8");
     for (const [, , code] of text.matchAll(/(`+|~{3,})([\s\S]*?)\1/g)) {
       for (const [target] of code.matchAll(/[\w./-]+\.(?:png|jpe?g|gif|webp|woff2?|ttf|otf)\b/gi)) {
-        const asset = resolve(dirname(file), target);
-        assert.ok(!existsSync(asset), `${relative(root, file)}: use a Markdown image instead of code for ${target}`);
+        const found = [dirname(file), root].some((base) => existsSync(resolve(base, target)));
+        assert.ok(!found, `${relative(root, file)}: use a Markdown image instead of code for ${target}`);
       }
     }
   }
@@ -229,6 +232,8 @@ test("skills declare their names and link only to files inside the skills tree",
     if (file.endsWith("/SKILL.md")) {
       assert.match(text, new RegExp(`^---\\nname: ${dirname(file).split(sep).at(-1)}\\n`));
       assert.match(text, /^description: .+/m);
+      const body = text.slice(text.indexOf("\n---\n") + 5);
+      assert.ok(Buffer.byteLength(body, "utf8") <= 24000, `${relative(root, file)}: body exceeds 24000 bytes`);
     }
     for (const [, target] of text.matchAll(/\]\(([^)\s]+)\)/g)) {
       if (/^[a-z][a-z0-9+.-]*:|^#/i.test(target)) continue;

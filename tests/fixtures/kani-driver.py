@@ -28,6 +28,8 @@ if args == ["--version"]:
     sys.exit()
 target = pathlib.Path(args[args.index("--target-dir") + 1])
 if "list" in args:
+    if "listError" in config:
+        sys.exit(config["listError"])
     if config.get("deleteDriverAfterList"):
         (pathlib.Path(kani_home) / f"kani-{config['version']}/bin/kani-driver").unlink()
     target.mkdir(parents=True, exist_ok=True)
