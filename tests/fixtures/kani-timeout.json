@@ -1,0 +1,116 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "timestamp": "2026-11-17T14:16:56Z",
+    "kani_version": "0.68.0",
+    "target": "aarch64-apple-darwin",
+    "build_mode": "release"
+  },
+  "project": {
+    "crate_name": [
+      "fixture"
+    ],
+    "workspace_root": "/fixture",
+    "output_dir": "/fixture/target"
+  },
+  "tools": {
+    "kani": "0.68.0",
+    "rustc": "rustc 1.100.0-nightly (8925ea358 2026-08-20)",
+    "cbmc": "6.11.0 (cbmc-6.11.0)",
+    "goto_cc": "clang version 21.0.0 (goto-cc 6.11.0 (cbmc-6.11.0))",
+    "goto_instrument": "6.11.0 (cbmc-6.11.0)",
+    "solvers": [
+      {
+        "name": "cadical",
+        "version": null
+      }
+    ]
+  },
+  "harness_metadata": [
+    {
+      "pretty_name": "proofs::timeout",
+      "mangled_name": "_RNvNtCs0_7fixture6proofs7timeout",
+      "crate_name": "fixture",
+      "source": {
+        "file": "src/lib.rs",
+        "start_line": 4,
+        "end_line": 10
+      },
+      "goto_file": "/fixture/target/fixture.symtab.out",
+      "attributes": {
+        "kind": "Proof",
+        "should_panic": false
+      },
+      "contract": {
+        "contracted_function_name": null,
+        "recursion_tracker": null
+      },
+      "has_loop_contracts": false,
+      "is_automatically_generated": false,
+      "is_bounded": false,
+      "is_ctor_based": false
+    }
+  ],
+  "error_details": [
+    {
+      "harness_id": "proofs::timeout",
+      "has_errors": true,
+      "error_type": "unknown_failure",
+      "failed_properties_type": "None",
+      "exit_status": "timeout"
+    }
+  ],
+  "property_details": [
+    {
+      "harness_id": "proofs::timeout",
+      "property_details": {
+        "total_properties": null,
+        "passed": null,
+        "failed": null,
+        "unreachable": null,
+        "undetermined": null,
+        "solver_error": null,
+        "satisfied": null,
+        "unsatisfiable": null,
+        "covered": null,
+        "uncovered": null,
+        "error": "Could not extract property details due to verification failure"
+      }
+    }
+  ],
+  "cbmc": [
+    {
+      "harness_id": "proofs::timeout",
+      "cbmc_metadata": {
+        "version": "6.11.0",
+        "os_info": "aarch64 macos unix"
+      },
+      "configuration": {
+        "object_bits": 16,
+        "solver": "cadical"
+      },
+      "cbmc_stats": null
+    }
+  ],
+  "verification_results": {
+    "summary": {
+      "total_harnesses": 1,
+      "executed": 1,
+      "status": "completed",
+      "successful": 0,
+      "failed": 1,
+      "duration_ms": 15003
+    },
+    "results": [
+      {
+        "harness_id": "proofs::timeout",
+        "status": "Failure",
+        "duration_ms": 15003,
+        "checks": []
+      }
+    ]
+  },
+  "coverage": {
+    "enabled": false
+  }
+}
