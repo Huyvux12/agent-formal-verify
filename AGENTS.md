@@ -10,7 +10,7 @@ Instructions for coding agents working in this repository. [CONTRIBUTING.md](CON
 
 ## Release
 
-A release is a version bump and a tag, and a bump without the tag publishes nothing. When a change raises the version in `package.json`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.codex-plugin/plugin.json` and `CHANGES.md`, then after it merges to `main`:
+A release is a version bump and a tag, and a bump without the tag publishes nothing. When a change raises the version in `package.json`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.codex-plugin/plugin.json`, `.antigravity-plugin/plugin.json` and `CHANGES.md`, then after it merges to `main`:
 
 1. Tag the merge commit and push the tag:
 
