@@ -388,7 +388,9 @@ test("Kani reports a harness that reaches its timeout with the limit in effect",
   includes(result.stdout, "set KANI_HARNESS_TIMEOUT to a longer limit");
   excludes(result.stdout, "KANI_HARNESS_TIMEOUT=");
   excludes(result.stdout, "no property checks");
-  includes(runKani(dir, "kani-check.sh", [dir], { KANI_HARNESS_TIMEOUT: "90s" }).stdout, "within the 90s harness limit");
+  for (const value of ["90s", "90", "+090"]) {
+    includes(runKani(dir, "kani-check.sh", [dir], { KANI_HARNESS_TIMEOUT: value }).stdout, "within the 90s harness limit");
+  }
 });
 
 test("a Rust mutation that reaches the harness timeout never counts as detected", () => {
