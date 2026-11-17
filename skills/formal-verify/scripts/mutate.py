@@ -18,9 +18,9 @@ using the matrix runs. A Lean mutation is elaborated in the project, the mutated
 module alone, and reported with the theorems, lemmas, examples and #guard
 lines that fail. Every public theorem recorded in the model's .statements file
 must have its proof fail on some mutation; a failing #guard does not cover it.
-Errors in a theorem, example or #guard count only when the unmutated model has
-the same statement as Lean elaborates it; renaming a definition that a statement
-names, for example, changes that statement and gives the mutation no verdict.
+An error counts only for an original theorem, example or #guard with the same
+elaborated statement. A new example cannot count by repeating an existing one's
+statement. A changed statement gives the mutation no verdict.
 Lean reports fully qualified theorem names from elaborated declarations.
 This measures proof sensitivity, not whether a mutated statement is false or
 its hypotheses can hold. Private theorems are proof helpers and need no mutation. Exits 1 on a MISSED or
@@ -45,25 +45,23 @@ before it runs any tool, so a malformed mutation stops the run first.
 Usage: mutate.py <Name.mutations>
   The environment settings of tlc-matrix.sh apply to TLA+ mutations.
 """
-import json
 import shutil
-import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
 from functools import partial
 from os.path import commonpath
 from pathlib import Path
 
-# Importing kani and tlc must not write __pycache__ into the skill directory.
+# Copied skills can be read-only. Keep imported helpers from writing __pycache__ there.
 sys.dont_write_bytecode = True
 
 import kani
+import lean_mutations
 import tlc
 
-HERE = Path(__file__).resolve().parent
 LEAN_NOTE = "NOTE Lean detections mean existing proofs fail, not that theorem statements are false or hypotheses satisfiable."
 
 
@@ -86,6 +84,7 @@ class Mutation:
     only: str
     old: str
     new: str
+    original: str
     source: str
 
 
@@ -145,132 +144,28 @@ def make_mutation(label, directives, model, text, language):
         stop(f"mutation '{label}': its - text occurs {count} times in {model}, want 1")
     detects, only = (lines[keyword][0].strip() if lines[keyword] else "" for keyword in SINGLE)
     new = "\n".join(lines["+"])
-    return Mutation(label, detects, only, old, new, text.replace(old, new))
+    return Mutation(label, detects, only, old, new, text, text.replace(old, new))
 
 
-def check_tla(spec, checker, plan, mutation, work):
-    """Narrow the matrix's existing tasks to the named mutation target without changing run scope."""
-    for module in spec.parent.glob("*.tla"):
-        (work / module.name).write_text(module.read_text(encoding="utf-8"), encoding="utf-8")
-    (work / spec.name).write_text(mutation.source, encoding="utf-8")
-    covers, results = frozenset({mutation.detects}), []
-    runner = tlc.Runner(checker, work, mutation.only, results.append, work)
-    for task in plan:
-        if isinstance(task, tlc.Result):
-            if f"reach:{task.operator}" == mutation.detects:
-                runner.check(task)
-        elif task.reach:
-            if f"reach:{task.reach.operator}" == mutation.detects:
-                runner.check(task)
-        else:
-            checks = tuple(tlc.Check(f"{check.kind} {mutation.detects}", check.kind, (mutation.detects,))
-                           for check in task.checks if mutation.detects in check.names)
-            if checks:
-                runner.check(replace(task, checks=checks,
-                                     check_deadlock=not any(check.kind.startswith("PROPERT") for check in checks)))
-    if not results:
-        return Result(Verdict.ERROR, f"no run matches '{mutation.only}' for '{mutation.detects}'")
-    detected, errors = [], []
-    for result in results:
-        if result.outcome is tlc.Outcome.UNREACHED:
-            detected.append((result, "the model never reaches this state"))
-        elif result.outcome is tlc.Outcome.FAIL and (
-                result.detail in (f"Error: Invariant {mutation.detects} is violated.",
-                                  f"Error: Invariant {mutation.detects} is violated by the initial state:",
-                                  f"Error: Property {mutation.detects} is violated by the initial state:",
-                                  f"Error: Action property {mutation.detects} is violated.",
-                                  "Error: Temporal properties were violated.")):
-            detected.append((result, result.detail.removeprefix("Error: ").rstrip(".")))
-        elif result.outcome not in (tlc.Outcome.PASS, tlc.Outcome.WITNESS):
-            errors.extend(tlc.render(result))
-    if errors:
-        return Result(Verdict.ERROR, "\n".join(errors))
-    if detected:
-        result, error = detected[0]
-        return Result(Verdict.DETECTED, f"{mutation.detects} fails in run '{result.label}' ({error})", covers)
-    return Result(Verdict.MISSED, covers=covers)
-
-
-def lean_toolchain(project):
-    """Return the project's Lean pin once it is ready; lean-tools.sh owns the check and its remedy."""
-    done = subprocess.run(["bash", "-c", 'source "$1/lean-tools.sh" && lean_ready_pin "$2"', "bash", str(HERE), str(project)],
-                          capture_output=True, text=True, check=False)
-    if done.returncode:
-        print(done.stdout.strip())
-        sys.exit(done.returncode)
-    return done.stdout.strip()
-
-
-def lean_analysis(model, project, toolchain):
-    """Get Lean's declaration identities and error positions, never infer them from source text."""
-    done = subprocess.run(["elan", "run", toolchain, "lake", "--dir", str(project), "env", "lean", "--run",
-                           str(HERE / "lean-mutations.lean"), str(model)], capture_output=True, text=True, check=False)
-    output = done.stdout + done.stderr
-    records = [line.removeprefix("AFV_LEAN ") for line in done.stdout.splitlines() if line.startswith("AFV_LEAN ")]
-    if done.returncode != 0 or len(records) != 1:
-        stop(f"Lean declaration analysis did not complete:\n{output.strip()}")
+def check_tla(plan, checker, mutation, work):
     try:
-        analysis = json.loads(records[0])
-        for field in ("declarations", "commands", "errors"):
-            if not isinstance(analysis[field], list):
-                raise TypeError(f"{field} must be a list")
-    except (ValueError, KeyError, TypeError) as error:
-        stop(f"invalid Lean declaration analysis: {error}")
-    return analysis
+        detection = plan.check(checker, mutation.detects, mutation.only, mutation.source, work)
+    except ValueError as error:
+        return Result(Verdict.ERROR, str(error))
+    covers = frozenset({mutation.detects})
+    if detection is None:
+        return Result(Verdict.MISSED, covers=covers)
+    return Result(Verdict.DETECTED, detection, covers)
 
 
-def contains(item, position):
-    return item["start"] <= position < item["end"]
-
-
-def original_location(model, mutation, position):
-    """Map an unchanged command back across the one replacement; label inserted commands explicitly."""
-    original, old, new = model.read_text(encoding="utf-8"), mutation.old, mutation.new
-    start = original.index(old)
-    offset = sum(len(line) + 1 for line in mutation.source.split("\n")[:position[0] - 1]) + position[1]
-    if offset < start:
-        original_offset, suffix = offset, ""
-    elif offset >= start + len(new):
-        original_offset, suffix = offset + len(old) - len(new), ""
-    else:
-        original_offset, suffix = start, " (mutation replacement)"
-    line = original.count("\n", 0, original_offset) + 1
-    return f"{model}:{line}{suffix}"
-
-
-def is_witness(name, declarations):
-    parent, _, last = name.rpartition(".")
-    return last == "witness" and any(decl["theorem"] and decl["name"] == parent for decl in declarations)
-
-
-def check_lean(model, project, toolchain, unmutated_statements, mutation, work):
-    """Attribute every error to an elaborated theorem, or else a guard/example command, whose statement the unmutated model also has; the mutation covers those."""
-    copy = work / model.name
-    copy.write_text(mutation.source, encoding="utf-8")
-    analysis = lean_analysis(copy, project, toolchain)
-    if not analysis["errors"]:
+def check_lean(broken_checks, mutation, work):
+    try:
+        failures = broken_checks(mutation, work)
+    except ValueError as error:
+        return Result(Verdict.ERROR, str(error))
+    if not failures:
         return Result(Verdict.MISSED)
-    failed = []
-    for error in analysis["errors"]:
-        position = [error["pos"]["line"], error["pos"]["column"]]
-        where = f"{error['fileName']}:{position[0]}:{position[1]}: {error['data']}"
-        checks = [("theorem " + decl["name"], (decl["name"], decl["type"]))
-                  for decl in analysis["declarations"] if decl["theorem"] and contains(decl, position)]
-        if not checks:
-            checks = [(f"{cmd['property']} at {original_location(model, mutation, cmd['start'])}",
-                       (cmd["property"], cmd["statement"]))
-                      for cmd in analysis["commands"] if cmd["property"] and contains(cmd, position)]
-        for name, key in checks:
-            if key not in unmutated_statements:
-                return Result(Verdict.ERROR, f"{name}: the mutation changes its statement, "
-                                             f"so this error does not show its proof or check failing\n{where}")
-        if error["fileName"] != str(copy) or not checks:
-            return Result(Verdict.ERROR, where)
-        failed.extend(name for name, (property, _) in checks
-                      if name not in failed and not is_witness(property, analysis["declarations"]))
-    if not failed:
-        return Result(Verdict.MISSED)
-    return Result(Verdict.DETECTED, "proof/check fails: " + "; ".join(failed), frozenset(failed))
+    return Result(Verdict.DETECTED, "proof/check fails: " + "; ".join(failures), frozenset(failures))
 
 
 def check_rust(model, project, verifier, bounds, sources, mutation, work):
@@ -299,39 +194,19 @@ def tla_runner(spec, mutations):
     matrix = spec.with_suffix(".matrix")
     if not matrix.is_file():
         stop(f"{matrix} is missing; mutations use its checks and runs")
-    section, ours = [], False
-    for directive in tlc.directives(tlc.read_raw(matrix).split("\n")):
-        if isinstance(directive, tlc.Malformed):
-            stop(f"{matrix}: {directive.message}")
-        if isinstance(directive, tlc.Spec):
-            ours = (matrix.parent / directive.path).resolve() == spec
-            if ours:
-                section.append(tlc.Spec(spec.name))
-        elif ours:
-            section.append(directive)
-    targets = {name for d in section if isinstance(d, tlc.Check) for name in d.names}
-    reaches = {f"reach:{d.operator}" for d in section if isinstance(d, tlc.Reach)}
+    try:
+        plan = tlc.MatrixPlan(matrix).mutations_for(spec)
+    except ValueError as error:
+        stop(str(error))
     for mutation in mutations:
-        if mutation.detects not in targets and mutation.detects not in reaches:
+        if mutation.detects not in plan.detectors:
             stop(f"mutation '{mutation.label}': detects '{mutation.detects}', which {matrix} does not check")
     try:
         checker = tlc.Tlc()
     except tlc.Unavailable as error:
         print(error)
         sys.exit(3)
-    return targets, partial(check_tla, spec, checker, tuple(tlc.execution_plan(section)))
-
-
-def frozen_theorems(model):
-    """Return the theorem names the model's .statements record holds."""
-    record = model.with_suffix(".statements")
-    if not record.is_file():
-        stop(f"{record} is missing; freeze the model with lean-check.sh --freeze before checking its mutations")
-    try:
-        return {entry["name"] for entry in json.loads(record.read_text(encoding="utf-8"))["declarations"]
-                if entry["kind"] == "theorem"}
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        stop(f"invalid statements record {record}: {error}")
+    return plan.properties, partial(check_tla, plan, checker)
 
 
 def lean_runner(model, mutations):
@@ -339,18 +214,8 @@ def lean_runner(model, mutations):
     project = project_root(model, "lakefile.toml", "lakefile.lean")
     if project is None:
         stop(f"{model} is in no Lake project")
-    frozen = frozen_theorems(model)
-    toolchain = lean_toolchain(project)
-    analysis = lean_analysis(model, project, toolchain)
-    if analysis["errors"]:
-        stop(f"unmutated Lean model does not elaborate: {analysis['errors'][0]['data']}")
-    targets = {"theorem " + decl["name"] for decl in analysis["declarations"]
-               if decl["theorem"] and not decl["private"] and decl["name"] in frozen
-               and not is_witness(decl["name"], analysis["declarations"])}
-    statements = {(decl["name"], decl["type"]) for decl in analysis["declarations"] if decl["theorem"]}
-    statements |= {(cmd["property"], cmd["statement"]) for cmd in analysis["commands"]
-                   if cmd["property"] and cmd["statement"] is not None}
-    return targets, partial(check_lean, model, project, toolchain, statements)
+    targets, broken_checks = lean_mutations.prepare(model, project)
+    return targets, partial(check_lean, broken_checks)
 
 
 def rust_runner(model, mutations):
@@ -425,4 +290,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except lean_mutations.AnalysisError as error:
+        print(error)
+        sys.exit(error.status)

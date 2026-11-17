@@ -226,17 +226,11 @@ def tla_module_surface(directory, spec, operators):
 def tla_surface(path):
     surface = Surface()
     specs = {}
-    parsed = list(tlc.directives(tlc.read_raw(path).split("\n")))
-    tasks = list(tlc.execution_plan(parsed))
-    errors = ["; ".join(tlc.render(task)) for task in tasks if isinstance(task, tlc.Result)]
-    if errors:
-        raise ValueError(f"{path}: {'; '.join(errors)}")
-    for directive in parsed:
-        if isinstance(directive, tlc.Spec):
-            if not directive.path:
-                raise ValueError(f"{path}: spec line has no path")
-            surface.add(f"spec {directive.path}")
-            specs.setdefault(directive.path, set())
+    plan = tlc.MatrixPlan(path)
+    tasks = plan.checked_tasks()
+    for spec in plan.specs:
+        surface.add(f"spec {spec}")
+        specs.setdefault(spec, set())
     for task in tasks:
         if task.reach:
             surface.add(f"reach {task.spec} {task.reach.operator} | {collapse(task.reach.match)}",

@@ -189,6 +189,20 @@ for check in 'example : step 0 = 1 := by rfl' \
   grep -Fq "${check%% *} at $work/Model/Step.lean:3: the mutation changes its statement" "$work/result"
 done
 
+printf 'def one : Nat := 1\nexample : True := trivial\n' > "$work/Model/Step.lean"
+bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean
+for edit in \
+  $'- def one : Nat := 1\n+ def one : Nat := 1\n+ example : True := by exact 0' \
+  $'- trivial\n+ by exact 0\n+ example : True := trivial'; do
+  printf 'mutation insert duplicate example\n%s\n' "$edit" > "$work/Model/Step.mutations"
+  if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
+    echo 'FAIL a newly inserted example with an existing statement counted as a detection'
+    exit 1
+  fi
+  grep -q "^FAIL mutation 'insert duplicate example' did not reach a verdict:" "$work/result"
+  grep -Fq 'cannot match this example to a single original check' "$work/result"
+done
+
 cat > "$work/Model/Step.lean" <<'EOF'
 namespace Step
 def step (n : Nat) : Option Nat := if n < 3 then some (n + 1) else none
