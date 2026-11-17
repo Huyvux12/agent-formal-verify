@@ -284,6 +284,23 @@ rejected bash "$scripts/lean-check.sh" "$work/frozen" | tee "$work/frozen.out"
 grep -q '^FROZEN Other.property: statement changed (source deleted)' "$work/frozen.out"
 bash "$scripts/lean-check.sh" "$work/frozen" Model/Frozen.lean
 
+mkdir -p "$work/frozen-opaque/Model"
+cp "$examples/lean-template"/{lakefile.toml,lake-manifest.json,lean-toolchain} "$work/frozen-opaque/"
+cat > "$work/frozen-opaque/Model/Frozen.lean" <<'EOF'
+namespace Frozen
+opaque step : Nat := 1
+theorem property : step = step := rfl
+end Frozen
+EOF
+bash "$scripts/lean-check.sh" "$work/frozen-opaque" --freeze Model/Frozen.lean
+bash "$scripts/lean-check.sh" "$work/frozen-opaque" Model/Frozen.lean
+sed -i.orig 's|: Nat := 1|: Nat := 2|' "$work/frozen-opaque/Model/Frozen.lean"
+rejected bash "$scripts/lean-check.sh" "$work/frozen-opaque" Model/Frozen.lean | tee "$work/frozen-opaque.out"
+grep -q '^FROZEN Frozen.step: statement changed' "$work/frozen-opaque.out"
+grep -q '^  definition value changed' "$work/frozen-opaque.out"
+bash "$scripts/lean-check.sh" "$work/frozen-opaque" --freeze Model/Frozen.lean
+bash "$scripts/lean-check.sh" "$work/frozen-opaque" Model/Frozen.lean
+
 bash "$scripts/setup.sh" rust
 bash "$scripts/kani-check.sh" "$examples/kani-template"
 python3 "$scripts/mutate.py" "$examples/kani-template/src/lib.mutations"
