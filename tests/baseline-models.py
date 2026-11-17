@@ -65,6 +65,32 @@ Within == Allowed(x)
     assert "changed definition Rules.tla Allowed" in run(1, "baseline.py", "compare", record)
 
 
+def tla_layout(work):
+    project = work / "layout"
+    project.mkdir()
+    spec, matrix = project / "Layout.tla", project / "Layout.matrix"
+    matrix.write_text("spec Layout.tla\ncheck INVARIANT Safe\nrun one |\n")
+    prefix = "---- MODULE Layout ----\nVARIABLE x\nInit == x = 0\nNext == UNCHANGED x\nSpec == Init /\\ [][Next]_x\n"
+    grouped = r"""Safe ==
+    \/ /\ x = 1
+       /\ \/ x = 1
+          \/ x = 1
+          \/ x = 0
+"""
+    helper = "Unused == FALSE\n  Allowed(n) == n = 1\nSafe == Allowed(x)\n"
+    cases = [
+        (grouped, grouped.replace("          \\/ x = 0", "    \\/ x = 0")),
+        (helper, helper.replace("n = 1", "n = 0")),
+    ]
+    for before, after in cases:
+        spec.write_text(prefix + before + "====\n")
+        run(0, "baseline.py", "record", work / "layout.json", matrix)
+        assert "Invariant Safe is violated" in run(1, "tlc-matrix.sh", matrix)
+        spec.write_text(prefix + after + "====\n")
+        run(0, "tlc-matrix.sh", matrix)
+        run(1, "baseline.py", "compare", work / "layout.json")
+
+
 def kani_ownership(work):
     project = work / "kani"
     (project / "src").mkdir(parents=True)
@@ -106,6 +132,7 @@ mod proofs {
 
 
 with tempfile.TemporaryDirectory(prefix="formal-baseline-") as directory:
+    tla_layout(Path(directory))
     matrix_order(Path(directory))
     imported_property(Path(directory))
     kani_ownership(Path(directory))

@@ -218,6 +218,17 @@ test("pre-import TLA+ baselines require review and can be recorded again", () =>
   assert.equal(baseline(files.dir, "compare", files.record).status, 0);
 });
 
+test("a pre-layout TLA+ record requires review even if the model has only single-line definitions", () => {
+  const files = models();
+  assert.equal(baseline(files.dir, "record", files.record, files.matrix).status, 0);
+  const record = JSON.parse(readFileSync(files.record, "utf8"));
+  delete record.models[files.matrix].surface["TLA+ layout version"];
+  writeFileSync(files.record, JSON.stringify(record));
+  const result = baseline(files.dir, "compare", files.record);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /did not preserve TLA\+ layout/);
+});
+
 test("a TLA+ Init that Spec narrows is changed", () => {
   assertChanged(recordedThenEdited(null, "matrix", tla("Init == next = 0 /\\ consumed = 0", "Init == next = 0 /\\ consumed = 0 /\\ Items = 0")), "matrix", "changed definition BoundedQueue.tla Init");
 });
