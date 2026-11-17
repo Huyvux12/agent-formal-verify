@@ -8,11 +8,11 @@ import { command, excludes, fakeTlc, fixture, includes, logs, removeFixtures, ru
 
 afterEach(removeFixtures);
 
-function tlaMutations(checks, mutations, log = "tlc-invariant.log", specPath = "One.tla") {
+function tlaMutations(checks, mutations, log = "tlc-invariant.log", specPath = "One.tla", matrix) {
   const dir = fixture();
   const spec = "---- MODULE One ----\nStep == x' = x + 1\n====\n";
   writeFileSync(join(dir, "One.tla"), spec);
-  writeFileSync(join(dir, "One.matrix"), [`spec ${specPath}`, ...checks, "run n=4 | N=4", "run n=5 | N=5"].join("\n") + "\n");
+  writeFileSync(join(dir, "One.matrix"), (matrix ?? [`spec ${specPath}`, ...checks, "run n=4 | N=4", "run n=5 | N=5"]).join("\n") + "\n");
   writeFileSync(join(dir, "One.mutations"), mutations.join("\n") + "\n");
   writeFileSync(join(dir, "tools.jar"), "user supplied");
   // TLC fails on a spec that holds BUG, and records the checks it was given.
@@ -59,15 +59,54 @@ test("the mutation runner fails a mutation that every run still passes", () => {
   assert.equal(result.status, 1);
 });
 
-test("the mutation runner counts a deadlock as detection by a temporal property, not by an invariant", () => {
-  const stuck = (keyword) => ["mutation never step", `detects ${keyword}`, "- x + 1", "+ x \\* BUG"];
-  const temporal = tlaMutations(["check PROPERTIES Ends"], stuck("Ends"), "tlc-deadlock.log").result;
-  assert.equal(temporal.stdout, "DETECTED never step: Ends fails in run 'n=4' (Deadlock reached)\nSUMMARY 1 of 1 mutations detected\n");
-  assert.equal(temporal.status, 0);
-  const invariant = tlaMutations(["check INVARIANTS Small"], stuck("Small"), "tlc-deadlock.log").result;
-  assert.equal(invariant.status, 1);
-  includes(invariant.stdout, "FAIL mutation 'never step' did not reach a verdict:\nFAIL One n=4: Error: Deadlock reached.");
-  excludes(invariant.stdout, "mutations detected");
+test("an independent TLC deadlock never counts as detection by a property or invariant", () => {
+  for (const kind of ["PROPERTIES", "INVARIANTS"]) {
+    const { dir, result } = tlaMutations([`check ${kind} Ends`], [
+      "mutation never step", "detects Ends", "- x + 1", "+ x \\* BUG",
+    ], "tlc-deadlock.log");
+    assert.equal(result.status, 1);
+    includes(result.stdout, "FAIL mutation 'never step' did not reach a verdict:\nFAIL One n=4: Error: Deadlock reached.");
+    excludes(result.stdout, "DETECTED");
+    const config = readFileSync(join(dir, "calls"), "utf8");
+    if (kind === "PROPERTIES") includes(config, "CHECK_DEADLOCK FALSE");
+    else excludes(config, "CHECK_DEADLOCK");
+  }
+});
+
+test("temporal mutation detection requires TLC to report a property violation", () => {
+  const { result } = tlaMutations(["check PROPERTY Ends"], [
+    "mutation never step", "detects Ends", "- x + 1", "+ x \\* BUG",
+  ], "tlc-liveness.log");
+  assert.equal(result.status, 0, result.stdout);
+  includes(result.stdout, "DETECTED never step: Ends fails in run 'n=4' (Temporal properties were violated)");
+});
+
+test("an unrelated invariant failure cannot detect a named mutation", () => {
+  const { result } = tlaMutations(["check INVARIANT Other"], [
+    "mutation skip", "detects Other", "- x + 1", "+ x \\* BUG",
+  ]);
+  assert.equal(result.status, 1);
+  includes(result.stdout, "did not reach a verdict");
+  excludes(result.stdout, "DETECTED");
+});
+
+test("TLA mutation plans keep check order and reset checks at repeated spec sections", () => {
+  for (const matrix of [
+    ["spec One.tla", "run early | N=4", "check INVARIANT Small", "run later | N=5"],
+    ["spec One.tla", "check INVARIANT Small", "run first | N=4", "spec ./One.tla", "run unchecked | N=5"],
+  ]) {
+    const { dir, result } = tlaMutations([], ["mutation harmless", "detects Small", "- x + 1", "+ 1 + x"], undefined, undefined, matrix);
+    assert.equal(result.stdout, "MISSED harmless\nSUMMARY 0 of 1 mutations detected\n");
+    assert.equal(readFileSync(join(dir, "calls"), "utf8"), "SPECIFICATION Spec\nINVARIANT Small\n");
+  }
+});
+
+test("a mutation filter cannot move a target check onto an earlier run", () => {
+  const { dir, result } = tlaMutations([], ["mutation skip", "detects Small", "only early", "- x + 1", "+ x \\* BUG"], undefined, undefined,
+    ["spec One.tla", "run early | N=4", "check INVARIANT Small", "run later | N=5"]);
+  assert.equal(result.status, 1);
+  includes(result.stdout, "no run matches 'early' for 'Small'");
+  assert.equal(existsSync(join(dir, "calls")), false);
 });
 
 test("the mutation runner rejects text that is absent or repeated, and a property the matrix does not check", () => {
@@ -364,11 +403,11 @@ test("property mutations ignore reach declarations and reach checks add no prope
   excludes(result.stdout, "UNCOVERED reach");
 });
 
-function reachMutation(java) {
+function reachMutation(java, matrix = "spec One.tla\nreach Full | n=4\nrun n=4 | N=4\n", only = "") {
   const dir = fixture();
   writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\nStep == x + 1\n====\n");
-  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nreach Full | n=4\nrun n=4 | N=4\n");
-  writeFileSync(join(dir, "One.mutations"), "mutation never full\ndetects reach:Full\n- x + 1\n+ x \\* BUG\n");
+  writeFileSync(join(dir, "One.matrix"), matrix);
+  writeFileSync(join(dir, "One.mutations"), `mutation never full\ndetects reach:Full\n${only ? `only ${only}\n` : ""}- x + 1\n+ x \\* BUG\n`);
   writeFileSync(join(dir, "tools.jar"), "user supplied");
   return run(dir, "mutate.py", [join(dir, "One.mutations")], {
     JAVA: fakeTlc(dir, java),
@@ -393,6 +432,39 @@ test("a deadlock alone does not detect a reach mutation", () => {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   includes(result.stdout, "did not reach a verdict");
   excludes(result.stdout, "DETECTED never full");
+});
+
+test("reach mutation filters retain the matrix's first selected run", () => {
+  const result = reachMutation('echo "Model checking completed. No error has been found."',
+    "spec One.tla\nreach Full | n=\nrun n=4 | N=4\nrun n=5 | N=5\n", "n=5");
+  assert.equal(result.status, 1);
+  includes(result.stdout, "no run matches 'n=5' for 'reach:Full'");
+  excludes(result.stdout, "DETECTED");
+});
+
+test("reach mutation targets and run selection stay within repeated spec sections", () => {
+  const result = reachMutation([
+    'for last; do :; done',
+    'if grep -q "N = 5" "$(dirname "$last")/MC.cfg"; then',
+    '  echo "Error: unexpected run"; exit 1',
+    'fi',
+    'echo "Model checking completed. No error has been found."',
+  ].join("\n"), "spec One.tla\nreach Full | chosen\nrun chosen | N=4\nspec ./One.tla\nreach Other | chosen\nrun chosen | N=5\n");
+  assert.equal(result.status, 0, result.stdout);
+  includes(result.stdout, "DETECTED never full: reach:Full fails in run 'chosen'");
+});
+
+test("a detected reach mutation cannot hide an incomplete run in another spec section", () => {
+  const result = reachMutation([
+    'for last; do :; done',
+    'if grep -q "N = 5" "$(dirname "$last")/MC.cfg"; then',
+    '  echo "Error: evaluation failed"; exit 1',
+    'fi',
+    'echo "Model checking completed. No error has been found."',
+  ].join("\n"), "spec One.tla\nreach Full | chosen\nrun chosen | N=4\nspec ./One.tla\nreach Full | chosen\nrun chosen | N=5\n");
+  assert.equal(result.status, 1);
+  includes(result.stdout, "Error: evaluation failed");
+  excludes(result.stdout, "DETECTED");
 });
 
 test("malformed mutation matrix checks fail before running a model", () => {

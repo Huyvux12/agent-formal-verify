@@ -51,7 +51,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from functools import partial
 from os.path import commonpath
@@ -148,36 +148,47 @@ def make_mutation(label, directives, model, text, language):
     return Mutation(label, detects, only, old, new, text.replace(old, new))
 
 
-def check_tla(spec, checker, kinds, section, mutation, work):
-    """Run the mutated spec through tlc-matrix.sh's runner with only the mutation's check; it covers the name it detects."""
+def check_tla(spec, checker, plan, mutation, work):
+    """Narrow the matrix's existing tasks to the named mutation target without changing run scope."""
     for module in spec.parent.glob("*.tla"):
         (work / module.name).write_text(module.read_text(encoding="utf-8"), encoding="utf-8")
     (work / spec.name).write_text(mutation.source, encoding="utf-8")
-    kind, covers = kinds.get(mutation.detects, ""), frozenset({mutation.detects})
-    if kind:
-        checks = [tlc.Check(f"{kind} {mutation.detects}", kind, (mutation.detects,))]
-    else:
-        checks = [d for d in section if isinstance(d, tlc.Reach) and f"reach:{d.operator}" == mutation.detects]
-    results = []
+    covers, results = frozenset({mutation.detects}), []
     runner = tlc.Runner(checker, work, mutation.only, results.append, work)
-    for task in tlc.execution_plan([tlc.Spec(spec.name), *checks, *(d for d in section if isinstance(d, tlc.Run))]):
-        runner.check(task)
-    if runner.runs_total == 0:
-        return Result(Verdict.ERROR, f"no run matches '{mutation.only}'")
-    if not runner.failed:
-        return Result(Verdict.MISSED, covers=covers)
-    if kind:
-        # A deadlock stops the system for good, so it breaks a temporal property but no invariant.
-        signs = ["violated"] + (["Deadlock reached"] if kind.startswith("PROPERT") else [])
-        for result in results:
-            if result.outcome is tlc.Outcome.FAIL and any(sign in result.detail for sign in signs):
-                error = result.detail.removeprefix("Error: ").rstrip(".")
-                return Result(Verdict.DETECTED, f"{mutation.detects} fails in run '{result.label}' ({error})", covers)
-    else:
-        for result in results:
-            if result.outcome is tlc.Outcome.UNREACHED:
-                return Result(Verdict.DETECTED, f"{mutation.detects} fails in run '{result.label}' (the model never reaches this state)", covers)
-    return Result(Verdict.ERROR, "\n".join(line for result in results for line in tlc.render(result)))
+    for task in plan:
+        if isinstance(task, tlc.Result):
+            if f"reach:{task.operator}" == mutation.detects:
+                runner.check(task)
+        elif task.reach:
+            if f"reach:{task.reach.operator}" == mutation.detects:
+                runner.check(task)
+        else:
+            checks = tuple(tlc.Check(f"{check.kind} {mutation.detects}", check.kind, (mutation.detects,))
+                           for check in task.checks if mutation.detects in check.names)
+            if checks:
+                runner.check(replace(task, checks=checks,
+                                     check_deadlock=not any(check.kind.startswith("PROPERT") for check in checks)))
+    if not results:
+        return Result(Verdict.ERROR, f"no run matches '{mutation.only}' for '{mutation.detects}'")
+    detected, errors = [], []
+    for result in results:
+        if result.outcome is tlc.Outcome.UNREACHED:
+            detected.append((result, "the model never reaches this state"))
+        elif result.outcome is tlc.Outcome.FAIL and (
+                result.detail in (f"Error: Invariant {mutation.detects} is violated.",
+                                  f"Error: Invariant {mutation.detects} is violated by the initial state:",
+                                  f"Error: Property {mutation.detects} is violated by the initial state:",
+                                  f"Error: Action property {mutation.detects} is violated.",
+                                  "Error: Temporal properties were violated.")):
+            detected.append((result, result.detail.removeprefix("Error: ").rstrip(".")))
+        elif result.outcome not in (tlc.Outcome.PASS, tlc.Outcome.WITNESS):
+            errors.extend(tlc.render(result))
+    if errors:
+        return Result(Verdict.ERROR, "\n".join(errors))
+    if detected:
+        result, error = detected[0]
+        return Result(Verdict.DETECTED, f"{mutation.detects} fails in run '{result.label}' ({error})", covers)
+    return Result(Verdict.MISSED, covers=covers)
 
 
 def lean_toolchain(project):
@@ -283,7 +294,7 @@ def project_root(model, *markers):
 
 
 def tla_runner(spec, mutations):
-    """Take the checks, reach operators and runs of spec's section of its matrix, and check TLC once."""
+    """Preserve the execution plan of every matching spec section, and check TLC once."""
     matrix = spec.with_suffix(".matrix")
     if not matrix.is_file():
         stop(f"{matrix} is missing; mutations use its checks and runs")
@@ -293,19 +304,21 @@ def tla_runner(spec, mutations):
             stop(f"{matrix}: {directive.message}")
         if isinstance(directive, tlc.Spec):
             ours = (matrix.parent / directive.path).resolve() == spec
+            if ours:
+                section.append(tlc.Spec(spec.name))
         elif ours:
             section.append(directive)
-    kinds = {name: d.kind for d in section if isinstance(d, tlc.Check) for name in d.names}
+    targets = {name for d in section if isinstance(d, tlc.Check) for name in d.names}
     reaches = {f"reach:{d.operator}" for d in section if isinstance(d, tlc.Reach)}
     for mutation in mutations:
-        if mutation.detects not in kinds and mutation.detects not in reaches:
+        if mutation.detects not in targets and mutation.detects not in reaches:
             stop(f"mutation '{mutation.label}': detects '{mutation.detects}', which {matrix} does not check")
     try:
         checker = tlc.Tlc()
     except tlc.Unavailable as error:
         print(error)
         sys.exit(3)
-    return set(kinds), partial(check_tla, spec, checker, kinds, section)
+    return targets, partial(check_tla, spec, checker, tuple(tlc.execution_plan(section)))
 
 
 def frozen_theorems(model):

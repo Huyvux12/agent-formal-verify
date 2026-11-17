@@ -29,6 +29,7 @@ bash "$scripts/setup.sh" lean "$examples/lean-template"
 
 bash "$scripts/tlc-matrix.sh" "$examples/tla-template/BoundedQueue.matrix"
 python3 "$scripts/mutate.py" "$examples/tla-template/BoundedQueue.mutations"
+bash "$ROOT/tests/tla-mutations.sh"
 cp -R "$examples/tla-template" "$work/unreachable"
 sed -i.orig 's|next < consumed + Window|next < consumed + Window - 1|' "$work/unreachable/BoundedQueue.tla"
 rejected bash "$scripts/tlc-matrix.sh" "$work/unreachable/BoundedQueue.matrix" | tee "$work/unreachable.out"
