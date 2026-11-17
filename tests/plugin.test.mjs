@@ -50,17 +50,26 @@ test("the pi package exposes the skills tree and is discoverable", () => {
   assert.ok(keywords.includes("pi-package"));
 });
 
-test("the npm package ships every runtime file and nothing else from the root", () => {
-  const { files, exports, pi } = manifests[2];
-  assert.deepEqual(files, ["opencode.mjs", "skills/", "!skills/**/.lake/", "LICENSE", "README.md", "CHANGES.md"]);
-  const shipped = ["package.json", ...files.filter((entry) => !entry.startsWith("!")).map((entry) => entry.replace(/\/$/, ""))];
-  const unshipped = [".agents", ".antigravity-plugin", ".claude-plugin", ".codex-plugin", ".gitattributes", ".github", ".gitignore", ".markdownlint-cli2.jsonc", ".pre-commit-config.yaml", "AGENTS.md", "assets", "CONTRIBUTING.md", "GLOSSARY.md", "docs", "tests"];
-  const tracked = new Set(execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean).map((path) => path.split("/")[0]));
-  const unclassified = [...tracked].filter((entry) => !shipped.includes(entry) && !unshipped.includes(entry));
-  assert.deepEqual(unclassified, [], "add each new root entry to package.json files or to the unshipped list here");
-  for (const target of [...Object.values(exports), ...pi.skills]) {
-    assert.ok(shipped.includes(target.replace(/^\.\//, "")), `${target} is not in package.json files`);
+test("npm packs the tracked skills and entry points after a local example build", (t) => {
+  const work = mkdtempSync(join(tmpdir(), "formal-npm-pack-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const dir = join(work, "package");
+  const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\0").filter(Boolean);
+  for (const path of tracked) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    copyFileSync(join(root, path), join(dir, path));
   }
+  for (const output of ["kani-template/target/debug", "lean-template/.lake/build"]) {
+    const build = join(dir, "skills/formal-verify/examples", output);
+    mkdirSync(build, { recursive: true });
+    writeFileSync(join(build, "compiled-output"), "local build");
+  }
+  const listing = execFileSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--offline", "--json", "--cache", join(work, "cache")], {
+    cwd: dir, encoding: "utf8",
+  });
+  const expected = ["package.json", "README.md", "LICENSE", "CHANGES.md", "opencode.mjs",
+    ...tracked.filter((path) => path.startsWith("skills/"))];
+  assert.deepEqual(JSON.parse(listing)[0].files.map((file) => file.path).sort(), expected.sort());
 });
 
 async function register(entry, existing = []) {
