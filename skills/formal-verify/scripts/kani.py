@@ -155,9 +155,10 @@ def discover(crate, work, kani):
         output = done.stdout + done.stderr
         if "error[E0658]" in output:
             toolchain = (kani.bundle / "rust-toolchain-version").read_text(encoding="utf-8").strip()
-            output += (f"\nKani {kani.version} compiles the crate with its bundled {toolchain}, which lacks a "
-                       "library feature the crate uses. The harness is not at fault, and a feature attribute "
-                       "would change the production crate. Report the Kani target as not checked.")
+            output += (f"\nKani {kani.version} compiles with its bundled {toolchain}, which lacks a feature "
+                       "used at the locations above. Rewrite harness code that uses it. If every location is "
+                       "in production code or a dependency, report the Kani target as not checked; a feature "
+                       "attribute would change the production crate.")
         raise CheckError(f"Kani discovery failed:\n{output}")
     try:
         report = read_json(work / "kani-list.json")

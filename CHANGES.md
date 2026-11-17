@@ -4,7 +4,7 @@
 
 The plugin now installs in Antigravity with `agy plugin install`. The `.antigravity-plugin/plugin.json` manifest exposes the `setup` and `formal-verify` skills from `skills/` and adds no hooks or MCP servers. Antigravity loads only the first 24,000 bytes of a skill body, which cut off most of the formal-verify reply instructions. The helper reference and the table of evidence meanings moved from `SKILL.md` to `references/helpers.md` and `references/evidence.md`, which the skill tells the agent to read, and a test keeps each skill body within that limit.
 
-When a crate uses a standard library feature that is newer than the toolchain bundled with Kani 0.68.0, Kani discovery fails with E0658. The Rust checker and the mutation runner now add a note to that failure. The note names the bundled toolchain and says to report the target as not checked, because the feature attribute that the compiler suggests would change the production crate. The Rust brief says what to do instead.
+When a crate uses a standard library feature that is newer than the toolchain bundled with Kani 0.68.0, Kani discovery fails with E0658. The Rust checker and the mutation runner now add a note to that failure. The note names the bundled toolchain and says to rewrite harness code that uses the feature. When every error is in production code or a dependency, it says to report the target as not checked, because the feature attribute that the compiler suggests would change the production crate. The Rust brief says the same.
 
 ## 0.4.10 - baselines keep each check's run and each Kani constraint's function
 
