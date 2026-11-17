@@ -65,6 +65,13 @@ The helper installs no Kani runtime. `UNAVAILABLE` means not checked; follow the
 printed installation remedy before making any claim about the code. A compilation
 error, missing harness or incomplete verifier report fails.
 
+A discovery failure that names Kani's bundled toolchain means the crate uses a
+library feature newer than that toolchain. Do not add a feature attribute to the
+production crate. Report the target as not checked by Kani; pure arithmetic or
+bounds can go to a Lean model instead. A harness in a separate crate that copies
+the function checks the copy, not the production code, so report it as a model
+and name the copied source and commit.
+
 Put `<Name>.mutations` beside the assigned `<Name>.rs`. Use
 `detects <fully-qualified-harness>` for each mutation. The mutation runner uses
 the bundled Cargo to find the crate's workspace and local dependencies, copies
