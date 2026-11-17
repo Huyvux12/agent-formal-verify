@@ -170,6 +170,7 @@ class Task:
     run: Run
     checks: tuple = ()
     reach: Reach | None = None
+    check_deadlock: bool = True
 
 
 def execution_plan(directives):
@@ -259,6 +260,8 @@ class Runner:
             (directory / module.name).write_bytes(module.read_bytes())
         constants = "".join(f"  {pair.split('=')[0]} = {pair.split('=', 1)[-1]}\n" for pair in run.constants.split())
         config = f"CONSTANTS\n{constants}SPECIFICATION Spec\n"
+        if not task.check_deadlock:
+            config += "CHECK_DEADLOCK FALSE\n"
         if not operator:
             status, log = self.tlc.run(directory, name, config + "\n".join(check.line for check in task.checks) + "\n", reach=False)
             self.report(self.ordinary(name, run, status, log, directory / "tlc.log"))

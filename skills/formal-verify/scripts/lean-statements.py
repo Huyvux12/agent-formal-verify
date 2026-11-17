@@ -114,6 +114,10 @@ def check(toolchain, modules, sources):
             raise ValueError(f"{path}: expected module {module}, found {frozen['module']}")
         changed = 0
         for old in frozen["declarations"]:
+            if old["kind"] == "opaque" and old["valueHash"] is None:
+                print(f"FROZEN {old['name']}: opaque body was not recorded; review the definition and run --freeze")
+                failed = True
+                continue
             new = records.get(old["name"])
             if new is not None and all(old[key] == new[key] for key in ("kind", "typeHash", "valueHash")):
                 continue

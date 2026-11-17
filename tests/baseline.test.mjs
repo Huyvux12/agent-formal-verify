@@ -147,6 +147,12 @@ test("duplicate TLA+ checks cannot stand in for a check on a different occurrenc
   assertChanged(outcome, "matrix", "removed check BoundedQueue.tla INVARIANTS InWindow");
 });
 
+test("an unedited matrix that repeats a spec section compares unchanged", () => {
+  const section = "spec BoundedQueue.tla\ncheck INVARIANTS TypeOK InWindow\nrun same | Window=1 Items=3\n";
+  const setup = ({ matrix }) => writeFileSync(matrix, section + section);
+  assertUnchanged(recordedThenEdited(setup, "matrix", () => {}), "matrix");
+});
+
 test("a TLA+ Spec that loses fairness is changed", () => {
   assertChanged(recordedThenEdited(null, "matrix", tla(" /\\ WF_vars(Consume)", "")), "matrix", "changed definition BoundedQueue.tla Spec");
 });
@@ -161,6 +167,55 @@ test("a TLA+ helper that a property references is changed, and an action that no
   const outcome = recordedThenEdited(helper, "matrix", tla("Finished == consumed = Items", "Finished == consumed >= 0"));
   assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla Finished");
   assertUnchanged(recordedThenEdited(null, "matrix", tla("next' = next + 1", "next' = next + 2")), "matrix");
+});
+
+test("TLA+ properties follow transitive local imports and leave unrelated action bodies free to change", () => {
+  function setup(files) {
+    edit(files.spec, "EXTENDS Naturals", "EXTENDS Naturals,\n  Predicates");
+    edit(files.spec, "AllConsumed == <>(consumed = Items)", "AllConsumed == <>Finished(consumed, Items)");
+    writeFileSync(join(files.dir, "tla/Predicates.tla"),
+      "---- MODULE Predicates ----\nEXTENDS Limits\nFinished(n, total) == Equal(n, total)\n====\n");
+    writeFileSync(join(files.dir, "tla/Limits.tla"),
+      "---- MODULE Limits ----\nEqual(n, m) == n = m\nOtherAction == TRUE\n====\n");
+  }
+  const change = (from, to) => ({ dir }) => edit(join(dir, "tla/Limits.tla"), from, to);
+  assertChanged(recordedThenEdited(setup, "matrix", change("n = m", "TRUE")), "matrix", "changed definition Limits.tla Equal");
+  assertUnchanged(recordedThenEdited(setup, "matrix", change("OtherAction == TRUE", "OtherAction == FALSE")), "matrix");
+});
+
+test("a locally imported operator with an indented header is tracked", () => {
+  const setup = (files) => {
+    edit(files.spec, "EXTENDS Naturals", "EXTENDS Naturals, Limits");
+    edit(files.spec, "AllConsumed == <>(consumed = Items)", "AllConsumed == <>Equal(consumed, Items)");
+    writeFileSync(join(files.dir, "tla/Limits.tla"), "---- MODULE Limits ----\n  Equal(n, m) == n = m\n====\n");
+  };
+  assertChanged(recordedThenEdited(setup, "matrix", ({ dir }) =>
+    edit(join(dir, "tla/Limits.tla"), "n = m", "TRUE")), "matrix", "Limits.tla");
+});
+
+test("a local TLA+ instance retains both its operator bodies and its substitutions", () => {
+  function setup(files) {
+    edit(files.spec, "AllConsumed == <>(consumed = Items)",
+      "Bounds == INSTANCE Limit WITH Max <- Items\nAllConsumed == <>Bounds!Finished(consumed)");
+    writeFileSync(join(files.dir, "tla/Limit.tla"),
+      "---- MODULE Limit ----\nCONSTANT Max\nFinished(n) == n = Max\n====\n");
+  }
+  assertChanged(recordedThenEdited(setup, "matrix", ({ dir }) =>
+    edit(join(dir, "tla/Limit.tla"), "n = Max", "TRUE")), "matrix", "Limit.tla");
+  assertChanged(recordedThenEdited(setup, "matrix", tla("Max <- Items", "Max <- Window")), "matrix", "BoundedQueue.tla");
+});
+
+test("pre-import TLA+ baselines require review and can be recorded again", () => {
+  const files = models();
+  assert.equal(baseline(files.dir, "record", files.record, files.matrix).status, 0);
+  const record = JSON.parse(readFileSync(files.record, "utf8"));
+  delete record.models[files.matrix].surface["imports BoundedQueue.tla"];
+  writeFileSync(files.record, JSON.stringify(record));
+  const compared = baseline(files.dir, "compare", files.record);
+  assert.equal(compared.status, 1);
+  assert.match(compared.stdout, /previous baseline did not track imported modules/);
+  assert.equal(baseline(files.dir, "record", files.record, files.matrix).status, 0);
+  assert.equal(baseline(files.dir, "compare", files.record).status, 0);
 });
 
 test("a TLA+ Init that Spec narrows is changed", () => {
