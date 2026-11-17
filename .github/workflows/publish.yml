@@ -13,6 +13,7 @@ concurrency:
 jobs:
   npm:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write # npm trusted publishing and provenance

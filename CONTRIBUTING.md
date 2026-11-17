@@ -13,7 +13,7 @@ prek run --all-files
 
 prek prepares the pinned lint tools in its own cache. The hooks check plugin metadata, skill references, helper tests, shell scripts, Python, Markdown, JSON, YAML and GitHub Actions workflows. CI runs the same checks and also copies the skills into an isolated installation to check that their files match. Keep every skill reference, helper and template within `skills/` so copied installations work.
 
-CI also checks local documentation links and heading anchors with lychee in offline mode and audits workflow security with zizmor. To run these checks locally, install lychee 0.24.2 and zizmor 1.29.0, then run:
+CI also checks local documentation links and heading anchors with lychee in offline mode and audits workflow security with zizmor. A separate workflow scans the lockfiles for known vulnerabilities with OSV-Scanner on every pull request, on every push to `main` and once a week. To run the link and workflow checks locally, install lychee 0.24.2 and zizmor 1.29.0, then run:
 
 ```shell
 lychee --offline --no-progress --include-fragments \
@@ -53,9 +53,9 @@ For a credential or download-and-run finding, expand the hold in the portal: its
 
 ## Dependency updates
 
-Dependabot opens weekly update PRs for GitHub Actions, the pinned lint hooks and prek. Updates wait seven days after release and must pass CI before review; they are not merged automatically.
+Dependabot opens weekly update PRs for GitHub Actions, the pinned lint hooks, prek and the isolated-installation `skills` CLI. Updates wait seven days after release and must pass CI before review; they are not merged automatically.
 
-Update the isolated-installation `skills` CLI pin, lychee image tag and digest, zizmor tool version, and elan version and checksum manually in CI. Lean pins and TLC's version and checksum also need deliberate updates: run a valid model and a failing property with the new tools before changing their pins.
+Update the lychee and OSV-Scanner image tags and digests, zizmor tool version, and elan version and checksum manually in CI. Lean pins and TLC's version and checksum also need deliberate updates: run a valid model and a failing property with the new tools before changing their pins.
 
 ## License
 
