@@ -479,9 +479,9 @@ def record(record_path, files):
 
 def differences(kind, old, new):
     lines = []
+    if kind == "tla" and not any(name.startswith("imports ") for name in old):
+        lines.append("  previous baseline did not track imported modules; review and record this matrix again")
     for name in old:
-        if kind == "tla" and name.startswith("spec ") and "imports " + name.removeprefix("spec ") not in old:
-            lines.append(f"  {name}: previous baseline did not track imported modules; review and record this matrix again")
         if name not in new:
             lines.append(f"  removed {name}")
         elif old[name] != new[name]:

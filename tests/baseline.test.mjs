@@ -147,6 +147,12 @@ test("duplicate TLA+ checks cannot stand in for a check on a different occurrenc
   assertChanged(outcome, "matrix", "removed check BoundedQueue.tla INVARIANTS InWindow");
 });
 
+test("an unedited matrix that repeats a spec section compares unchanged", () => {
+  const section = "spec BoundedQueue.tla\ncheck INVARIANTS TypeOK InWindow\nrun same | Window=1 Items=3\n";
+  const setup = ({ matrix }) => writeFileSync(matrix, section + section);
+  assertUnchanged(recordedThenEdited(setup, "matrix", () => {}), "matrix");
+});
+
 test("a TLA+ Spec that loses fairness is changed", () => {
   assertChanged(recordedThenEdited(null, "matrix", tla(" /\\ WF_vars(Consume)", "")), "matrix", "changed definition BoundedQueue.tla Spec");
 });
