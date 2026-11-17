@@ -65,6 +65,7 @@ class Kani:
                 raise Unavailable(f"Kani {self.version} bundle is incomplete; {remedy}")
         if any(home.glob("*.tar.gz")):
             raise Unavailable(f"incomplete Kani setup at {home}; finish cargo kani setup before checking")
+        self.bundle = bundle
         self.driver = bundle / "bin/kani-driver"
         self.cargo = bundle / "toolchain/bin/cargo"
         self.env = os.environ | {
@@ -151,7 +152,14 @@ def discover(crate, work, kani):
         raise CheckError(f"{crate}/Cargo.toml is missing")
     done = invoke(crate, work, kani, "list", "--format", "json")
     if done.returncode:
-        raise CheckError(f"Kani discovery failed:\n{done.stdout}{done.stderr}")
+        output = done.stdout + done.stderr
+        if "error[E0658]" in output:
+            toolchain = (kani.bundle / "rust-toolchain-version").read_text(encoding="utf-8").strip()
+            output += (f"\nKani {kani.version} compiles with its bundled {toolchain}, which lacks a feature "
+                       "used at the locations above. Rewrite harness code that uses it. If every location is "
+                       "in production code or a dependency, report the Kani target as not checked; a feature "
+                       "attribute would change the production crate.")
+        raise CheckError(f"Kani discovery failed:\n{output}")
     try:
         report = read_json(work / "kani-list.json")
         if report.get("kani-version") != kani.version or report.get("file-version") != "0.1":
