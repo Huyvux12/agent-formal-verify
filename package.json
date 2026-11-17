@@ -16,6 +16,7 @@
     "opencode.mjs",
     "skills/",
     "!skills/**/.lake/",
+    "!skills/formal-verify/examples/kani-template/target/",
     "LICENSE",
     "README.md",
     "CHANGES.md"
