@@ -8,6 +8,8 @@ When a crate uses a standard library feature that is newer than the toolchain bu
 
 The Rust checker and the mutation runner now stop each Kani harness after five minutes, through Kani's own harness timeout, which also stops the CBMC solver. Set `KANI_HARNESS_TIMEOUT` to change the limit, for example to `90s` or `20m`. A harness that reaches the limit fails with a message that names the setting, and a mutation that reaches it gets no verdict, so it never counts as detected. Before this change, a harness whose symbolic inputs reached message-formatting error paths or a wide symbolic division could run with no output until something else stopped it.
 
+The repository now tells Git to check out text files with LF line endings on every platform. A Windows clone with `core.autocrlf=true` used to get CRLF line endings in the Bash helpers.
+
 ## 0.4.10 - baselines keep each check's run and each Kani constraint's function
 
 The specification baseline now records the checks that apply to each TLA+ run and the inputs selected by each reach check. Moving check lines below a run or changing which run a reach check selects no longer compares unchanged. Kani assumptions, covers and stubs now retain their qualified owning function, and harness names include their modules, so moving a constraint between functions is reported. The Rust reader supports free functions under inline modules and rejects Kani forms in an owner it cannot identify, including macro definitions and implementation or trait bodies. Baseline records use format 2; create a new record after updating rather than reuse a format 1 record.
