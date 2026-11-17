@@ -53,6 +53,8 @@ jobs:
       - name: Build GNU Bash 3.2.57 and install it as the container's Bash
         run: |
           cd "$RUNNER_TEMP"
+          # The release's y.tab.c predates its parse.y patches, so make regenerates it with bison.
+          { apt-get update && apt-get install -y --no-install-recommends bison; } > apt.log 2>&1 || { tail -n 40 apt.log; exit 1; }
           curl -fL --no-progress-meter --retry 3 -O https://ftp.gnu.org/gnu/bash/bash-3.2.57.tar.gz
           echo "3fa9daf85ebf35068f090ce51283ddeeb3c75eb5bc70b1a4a7cb05868bfe06a4  bash-3.2.57.tar.gz" | sha256sum -c -
           tar -xzf bash-3.2.57.tar.gz
