@@ -346,25 +346,58 @@ test("Kani limits each harness to five minutes unless KANI_HARNESS_TIMEOUT sets 
   includes(calls(dir), "--harness-timeout 5m");
   assert.equal(runKani(dir, "kani-check.sh", [dir], { KANI_HARNESS_TIMEOUT: "90s" }).status, 0);
   includes(calls(dir), "--harness-timeout 90s");
-  const { dir: empty } = kaniFixture();
-  assert.equal(runKani(empty, "kani-check.sh", [empty], { KANI_HARNESS_TIMEOUT: "" }).status, 0);
-  includes(calls(empty), "--harness-timeout 5m");
+  const zeros = `${"0".repeat(4300)}5m`;
+  for (const [value, limit] of [["", "5m"], ["  ", "5m"], [" 2h\n", "2h"], ["+90", "+90"], [zeros, zeros]]) {
+    const { dir: fresh } = kaniFixture();
+    assert.equal(runKani(fresh, "kani-check.sh", [fresh], { KANI_HARNESS_TIMEOUT: value }).status, 0);
+    includes(calls(fresh), `--harness-timeout ${limit} --export-json`);
+  }
 });
 
-test("Kani reports a harness that reaches its timeout by name", () => {
+test("Kani reports a KANI_HARNESS_TIMEOUT that is not a positive Kani limit as unavailable before checking", () => {
+  const { dir } = kaniFixture();
+  for (const value of ["0", "0s", "+00", "1.5m", "-1s", "10min", "4294967296", "004294967296", "１０s"]) {
+    const result = runKani(dir, "kani-check.sh", [dir], { KANI_HARNESS_TIMEOUT: value });
+    assert.equal(result.status, 3, `${value}: ${result.stdout}${result.stderr}`);
+    includes(result.stdout, `UNAVAILABLE KANI_HARNESS_TIMEOUT='${value}'`);
+    excludes(result.stdout, "SUMMARY");
+    excludes(result.stderr, "Traceback");
+  }
+  excludes(calls(dir), "--export-json");
+  assert.equal(runKani(dir, "kani-check.sh", [dir], { KANI_HARNESS_TIMEOUT: "4294967295" }).status, 0);
+  includes(calls(dir), "--harness-timeout 4294967295 --export-json");
+});
+
+test("Rust mutations and Kani setup report an unusable KANI_HARNESS_TIMEOUT as unavailable", () => {
+  const { dir, name } = kaniFixture("failure");
+  const mutations = rustMutation(dir, name);
+  for (const [script, args] of [["mutate.py", [mutations]], ["setup.sh", ["rust"]]]) {
+    const result = runKani(dir, script, args, { KANI_HARNESS_TIMEOUT: "0" });
+    assert.equal(result.status, 3, `${script}: ${result.stdout}${result.stderr}`);
+    includes(result.stdout, "UNAVAILABLE KANI_HARNESS_TIMEOUT='0'");
+  }
+  excludes(calls(dir), "--export-json");
+});
+
+test("Kani reports a harness that reaches its timeout with the limit in effect", () => {
   const { dir, name } = kaniFixture("timeout");
   const result = runKani(dir, "kani-check.sh", [dir]);
   assert.equal(result.status, 1, result.stdout + result.stderr);
   includes(result.stdout, `FAIL ${name}`);
-  includes(result.stdout, "KANI_HARNESS_TIMEOUT=5m");
+  includes(result.stdout, "within the 5m harness limit");
+  includes(result.stdout, "set KANI_HARNESS_TIMEOUT to a longer limit");
+  excludes(result.stdout, "KANI_HARNESS_TIMEOUT=");
   excludes(result.stdout, "no property checks");
+  for (const value of ["90s", "90", "+090"]) {
+    includes(runKani(dir, "kani-check.sh", [dir], { KANI_HARNESS_TIMEOUT: value }).stdout, "within the 90s harness limit");
+  }
 });
 
 test("a Rust mutation that reaches the harness timeout never counts as detected", () => {
   const { dir, name } = kaniFixture("timeout");
   const result = runKani(dir, "mutate.py", [rustMutation(dir, name)]);
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  includes(result.stdout, "KANI_HARNESS_TIMEOUT=5m");
+  includes(result.stdout, "within the 5m harness limit");
   excludes(result.stdout, "DETECTED");
 });
 

@@ -74,7 +74,7 @@ bundle's driver directly, without invoking the auto-installing Cargo wrapper.
 A registered Cargo installer is not required after setup. Relative `KANI_HOME`
 paths resolve against the caller's directory before any temporary work begins.
 The helper installs no Kani runtime. `UNAVAILABLE` means not checked; follow the
-printed installation remedy before making any claim about the code. A compilation
+printed remedy before making any claim about the code. A compilation
 error, missing harness or incomplete verifier report fails.
 
 A discovery failure that names Kani's bundled toolchain means that code Kani

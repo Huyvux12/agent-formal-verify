@@ -4,6 +4,8 @@
 
 Lean mutations now match a failing example or guard to its original occurrence. Previously, inserting a broken example with the same statement as a passing one could count as a detection. A failure in a new check or one whose origin is ambiguous now gives the mutation no verdict.
 
+The Rust checker, the mutation runner and `setup.sh rust` now check `KANI_HARNESS_TIMEOUT` before Kani runs. The setting takes a whole number from 1 to 4294967295 with an optional unit `s`, `m` or `h`, as Kani 0.68.0 reads it, and spaces around the value are ignored. For any other value, including `0`, the helpers print `UNAVAILABLE` and check no harness. Before this change, `0` stopped every harness at once, and a value that Kani rejects failed every harness with a message about a missing result file. The limit cannot be turned off, so set a long one, such as `24h`, instead. A harness that reaches the limit fails with a message that names the limit with its unit, such as `90s` for a value of `90`, and the setting that changes it. The setup guide says that each harness check can take up to the limit, so run the Rust checker and the mutation runner in the background or with a command timeout longer than the total.
+
 ## 0.4.11 - Antigravity install, stricter verdicts and a Kani harness time limit
 
 Kani now checks the configured crate and requires a satisfied cover witness for each passing harness. Each Rust mutation starts from a passing harness. Coverage is checked per harness source file, and the checker supports Kani stubs. A missing toolchain version file no longer hides the original compiler error.
