@@ -80,6 +80,12 @@ def lean_surface(path):
     return surface
 
 
+def tla_text(text):
+    """Columns can group TLA+ conjunctions and disjunctions across lines."""
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    return "\n".join(lines) if len(lines) > 1 else collapse("".join(lines))
+
+
 def blank_tla_comments(text):
     out, i = [], 0
     while i < len(text):
@@ -90,7 +96,7 @@ def blank_tla_comments(text):
             out.append(string[0])
             i = string.end()
         elif text.startswith("(*", i):
-            depth = 0
+            start, depth = i, 0
             while i < len(text):
                 if text.startswith("(*", i):
                     depth += 1
@@ -101,9 +107,9 @@ def blank_tla_comments(text):
                     if not depth:
                         break
                 else:
-                    out.append("\n" if text[i] == "\n" else "")
                     i += 1
-            out.append(" ")
+            # A following token keeps its source column, even after a nested comment.
+            out.append(re.sub(r"[^\s]", " ", text[start:i]))
         elif text.startswith("\\*", i):
             end = text.find("\n", i)
             i = len(text) if end < 0 else end
@@ -133,7 +139,7 @@ def tla_definitions(text):
             header = None if match or MODULE_LEVEL.match(line) or "==" not in line else collapse(line.partition("==")[0])
             if match or header or MODULE_LEVEL.match(line):
                 if name:
-                    found[name] = collapse(" ".join(lines))
+                    found[name] = tla_text("\n".join(lines))
                 name, lines = (match[1] if match else header), ([line] if match or header else [])
                 if header:
                     unreadable.add(header)
@@ -141,7 +147,7 @@ def tla_definitions(text):
         if name:
             lines.append(line)
     if name:
-        found[name] = collapse(" ".join(lines))
+        found[name] = tla_text("\n".join(lines))
     return found, unreadable
 
 
@@ -168,7 +174,7 @@ def tla_module_surface(directory, spec, operators):
         texts[path] = text
         code = STRING.sub('""', text)
         # Indented or multiline headers cannot always be separated from a local LET definition.
-        if path != root and re.search(r"(?m)^(?:[ \t].*)?(?<!=)==(?!=)", code):
+        if re.search(r"(?m)^(?:[ \t].*)?(?<!=)==(?!=)", code):
             whole_modules = True
         scope = {}
         for group in EXTENDS.findall(code):
@@ -205,7 +211,7 @@ def tla_module_surface(directory, spec, operators):
     if whole_modules:
         # Preserve substitutions and dependencies whose operator scope cannot be resolved.
         for path, text in texts.items():
-            surface[f"module text {spec} | {path}"] = collapse(text)
+            surface[f"module text {spec} | {path}"] = tla_text(text)
         return surface
 
     seen = set()
@@ -225,6 +231,7 @@ def tla_module_surface(directory, spec, operators):
 
 def tla_surface(path):
     surface = Surface()
+    surface.add("TLA+ layout version", 1)
     specs = {}
     plan = tlc.MatrixPlan(path)
     tasks = plan.checked_tasks()
@@ -475,6 +482,8 @@ def differences(kind, old, new):
     lines = []
     if kind == "tla" and not any(name.startswith("imports ") for name in old):
         lines.append("  previous baseline did not track imported modules; review and record this matrix again")
+    if kind == "tla" and "TLA+ layout version" not in old:
+        lines.append("  previous baseline did not preserve TLA+ layout; review and record this matrix again")
     for name in old:
         if name not in new:
             lines.append(f"  removed {name}")
