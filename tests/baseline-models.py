@@ -42,6 +42,29 @@ def matrix_order(work):
     run(0, "tlc-matrix.sh", matrix)
 
 
+def imported_property(work):
+    project = work / "imports"
+    project.mkdir()
+    rules, matrix = project / "Rules.tla", project / "Advance.matrix"
+    rules.write_text("---- MODULE Rules ----\nAllowed(x) == x = 0\n====\n")
+    (project / "Advance.tla").write_text(r"""---- MODULE Advance ----
+EXTENDS Rules
+VARIABLE x
+Init == x = 0
+Next == x' = 1
+Spec == Init /\ [][Next]_x
+Within == Allowed(x)
+====
+""")
+    matrix.write_text("spec Advance.tla\ncheck INVARIANT Within\nrun default |\n")
+    record = work / "imports.json"
+    run(0, "baseline.py", "record", record, matrix)
+    assert "Invariant Within is violated" in run(1, "tlc-matrix.sh", matrix)
+    rules.write_text(rules.read_text().replace("x = 0", "TRUE"))
+    run(0, "tlc-matrix.sh", matrix)
+    assert "changed definition Rules.tla Allowed" in run(1, "baseline.py", "compare", record)
+
+
 def kani_ownership(work):
     project = work / "kani"
     (project / "src").mkdir(parents=True)
@@ -84,5 +107,6 @@ mod proofs {
 
 with tempfile.TemporaryDirectory(prefix="formal-baseline-") as directory:
     matrix_order(Path(directory))
+    imported_property(Path(directory))
     kani_ownership(Path(directory))
 print("ok: the baseline rejects narrowed checks and assumptions even when the real verifiers pass")
