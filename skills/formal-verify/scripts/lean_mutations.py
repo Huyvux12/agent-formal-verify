@@ -7,6 +7,8 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from lean_records import read_record
+
 HERE = Path(__file__).resolve().parent
 
 
@@ -18,25 +20,20 @@ class AnalysisError(Exception):
         self.status = status
 
 
-def _ready_toolchain(project):
-    """Return the project's Lean pin once it is ready; lean-tools.sh owns the check and its remedy."""
-    done = subprocess.run(["bash", "-c", 'source "$1/lean-tools.sh" && lean_ready_pin "$2"', "bash", str(HERE), str(project)],
+def _checked_record(model, project):
+    """Check the original once with the same frozen declaration audit as lean-check."""
+    path = model.with_suffix(".statements")
+    if not path.is_file():
+        raise AnalysisError(f"FAIL {path} is missing; freeze the model with lean-check.sh --freeze before checking its mutations")
+    try:
+        record = read_record(path)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise AnalysisError(f"FAIL invalid statements record {path}: {error}") from error
+    done = subprocess.run(["bash", str(HERE / "lean-check.sh"), str(project), str(model)],
                           capture_output=True, text=True, check=False)
     if done.returncode:
-        raise AnalysisError(done.stdout.strip(), done.returncode)
-    return done.stdout.strip()
-
-
-def _frozen_theorems(model):
-    """Return the theorem names the model's .statements record holds."""
-    record = model.with_suffix(".statements")
-    if not record.is_file():
-        raise AnalysisError(f"FAIL {record} is missing; freeze the model with lean-check.sh --freeze before checking its mutations")
-    try:
-        return {entry["name"] for entry in json.loads(record.read_text(encoding="utf-8"))["declarations"]
-                if entry["kind"] == "theorem"}
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        raise AnalysisError(f"FAIL invalid statements record {record}: {error}") from error
+        raise AnalysisError((done.stdout + done.stderr).strip(), done.returncode)
+    return record
 
 
 def _analyze(model, project, toolchain):
@@ -167,8 +164,9 @@ class OriginalChecks:
 
 def prepare(model, project):
     """Elaborate the original once and return its coverage targets and a check for each mutant."""
-    frozen = _frozen_theorems(model)
-    pin = _ready_toolchain(project)
+    record = _checked_record(model, project)
+    pin = record["toolchain"]
+    frozen = {entry["name"] for entry in record["declarations"] if entry["kind"] == "theorem"}
     original = OriginalChecks(model, frozen, _analyze(model, project, pin))
 
     def check(mutation, work):
