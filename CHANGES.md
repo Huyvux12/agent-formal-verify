@@ -1,5 +1,19 @@
 # Changes
 
+## Unreleased
+
+The specification baseline now keeps the layout of a TLA+ definition that spans several lines, and a removed comment leaves spaces so that each token keeps its column. Before this change it flattened nested conjunction and disjunction lists, so an edit that regrouped them, which can turn a violated invariant into a passing one, compared as unchanged. When a module has an indented definition outside a `LET` expression, or a column-0 definition inside one, the baseline compares the whole module text, because it cannot tell which definition holds that line. A definition inside a `LET` stays part of the definition that contains it. A TLA+ baseline recorded before this change reports that it needs review; record it again after the review.
+
+A TLA+ mutation now gets credit only when its detector passes on the original spec at the same run settings. An ordinary check must pass there, and a reach check must find its witness. Before this change, a mutation that only added parentheses could get credit for a violation the original model already had, or for a state the original model never reached. The mutation runner checks each selected run on the original once. When the original fails, the mutation gets no verdict, and the run stops with a `FAIL` line that names the detector.
+
+The Lean mutation runner now runs the Lean checker on the original model, with its frozen statements, before it checks any mutation. Before this change, deleting a frozen public theorem removed it from mutation coverage without a failure, and a malformed `.statements` file could still give a passing summary. The Lean checker, the mutation runner and the baseline helper now read statements records with the same reader.
+
+Rust mutation runs now copy a module directory named `target`, such as `src/target/mod.rs`. Before this change, the copy left out every directory with that name. It still leaves out the target directory that `cargo metadata` reports, and any directory that holds Cargo's `CACHEDIR.TAG` file, such as a `target/` that stayed in the tree after `CARGO_TARGET_DIR` moved the build.
+
+The Lean checker now finds compiled modules through the library paths that Lake reports. A project that set `buildDir` or `leanLibDir` used to build and then fail before the declaration audit. The kernel replay uses the same paths for the project modules that a checked file imports.
+
+The npm package no longer includes the Kani template's Cargo build output when the template was built in the checkout before publishing. A test packs the package offline and compares its file list with the tracked files under `skills/` and the root entry points.
+
 ## 0.4.12 - Kani harness time limits checked before any harness runs
 
 Lean mutations now match a failing example or guard to its original occurrence. Previously, inserting a broken example with the same statement as a passing one could count as a detection. A failure in a new check or one whose origin is ambiguous now gives the mutation no verdict.
