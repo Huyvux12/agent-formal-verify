@@ -335,3 +335,19 @@ test("the matrix runner rejects empty or unsupported checks", () => {
     includes(result.stdout, "malformed check");
   }
 });
+
+test("the matrix runner strips trailing spaces and tabs before | in run labels", () => {
+  const { matrix } = matrixFixture([
+    "run before-spec   \t | N=1",
+    "spec a/One.tla",
+    "run small-case     | N=1",
+    "run multi  word\t  | N=2",
+  ]);
+  const result = matrix();
+  assert.equal(result.status, 1);
+  includes(result.stdout, "FAIL run 'before-spec' before any spec line\n");
+  includes(result.stdout, "PASS One small-case 4 distinct states found\n");
+  includes(result.stdout, "PASS One multi  word 4 distinct states found\n");
+  const filtered = matrix(["small-case"]);
+  assert.equal(filtered.stdout, "FAIL run 'before-spec' before any spec line\nPASS One small-case 4 distinct states found\nSUMMARY 1 of 1 runs passed, 4 distinct states in total\n");
+});
