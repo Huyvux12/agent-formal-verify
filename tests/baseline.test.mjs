@@ -262,6 +262,7 @@ test("an indented TLA+ definition after a LET closes, or a column-0 one inside a
   for (const replacement of [
     "Unused ==\n  LET one == 1 IN one\n  Finished == consumed = Items\nAllConsumed == <>Finished",
     "AllConsumed ==\n  LET\nFinished == consumed = Items\n  IN <>Finished",
+    "AllConsumed ==\n  LET Finished == consumed = Items\na ++ b == a + b\n  IN <>Finished",
   ]) {
     const setup = tla("AllConsumed == <>(consumed = Items)", replacement);
     assertChanged(recordedThenEdited(setup, "matrix", tla("Finished == consumed = Items", "Finished == TRUE")),

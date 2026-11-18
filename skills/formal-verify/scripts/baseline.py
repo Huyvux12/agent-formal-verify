@@ -139,7 +139,7 @@ def has_unplaced_definition(code):
     open_lets = 0
     for line in code.split("\n"):
         indented = not begins_in_column_zero(line)
-        if open_lets and not indented and (DEFINITION.match(line) or MODULE_LEVEL.match(line)):
+        if open_lets and not indented and ("==" in line or MODULE_LEVEL.match(line)):
             return True
         for token in DEFINITION_TOKENS.finditer(line):
             if token[0] == "LET":
