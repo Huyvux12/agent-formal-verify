@@ -367,7 +367,7 @@ test("Rust mutations reject a should_panic harness they name and check the other
   const detected = runKani(dir, "mutate.py", [rustMutation(dir, name)]);
   assert.equal(detected.status, 0, detected.stdout + detected.stderr);
   includes(detected.stdout, "DETECTED guard");
-  const rejected = runKani(dir, "mutate.py", [rustMutation(dir, "proofs::panics", "panic")]);
+  const rejected = runKani(dir, "mutate.py", [rustMutation(dir, "proofs::panics")]);
   assert.equal(rejected.status, 1);
   includes(rejected.stdout, "FAIL proofs::panics is marked #[kani::should_panic]");
 });

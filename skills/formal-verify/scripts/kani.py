@@ -223,6 +223,7 @@ def discover(crate, work, kani):
                     continue
                 name = harness["pretty_name"]
                 bound = harness["attributes"].get("unwind_value")
+                should_panic = harness["attributes"].get("should_panic") is True
                 source = harness["original_file"]
                 if not isinstance(name, str) or not name or not isinstance(source, str) or not source:
                     raise CheckError("malformed Kani harness name or source")
@@ -230,8 +231,7 @@ def discover(crate, work, kani):
                     raise CheckError("duplicate harness names; select a single crate")
                 if type(bound) is not int or bound < 1:
                     raise CheckError(f"{name} needs #[kani::unwind(N)] with N greater than zero")
-                harnesses[name] = Harness(bound, (workspace / source).resolve(),
-                                          harness["attributes"].get("should_panic") is True)
+                harnesses[name] = Harness(bound, (workspace / source).resolve(), should_panic)
     except (KeyError, TypeError, AttributeError) as error:
         raise CheckError(f"malformed Kani discovery record: {error!r}") from error
     if not harnesses:
