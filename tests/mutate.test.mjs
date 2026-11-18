@@ -85,7 +85,6 @@ test("temporal mutation detection requires TLC to report a property violation", 
 for (const [log, reason] of [["tlc-invariant.log", "Invariant Small is violated"],
   ["tlc-reach-initial.log", "Invariant ReachNegated is violated by the initial state:"]]) {
   test(`a box property detects a mutation when TLC names its inner invariant (${log})`, () => {
-    // TLC checks a property such as Safe == []Small as the invariant Small and names Small.
     const { result } = tlaMutations(["check PROPERTIES Safe"], [
       "mutation skip", "detects Safe", "- x + 1", "+ x \\* BUG",
     ], log);
