@@ -146,13 +146,11 @@ class Tlc:
                    *(["-deadlock"] if reach else []), "-cleanup", "-metadir", str(directory / "states"),
                    "-config", str(directory / "MC.cfg"), str(directory / f"{module}.tla")]
         with log.open("w", encoding="utf-8") as stream:
-            process = subprocess.Popen(
-                command, stdout=stream, stderr=subprocess.STDOUT, start_new_session=(os.name == "posix")
-            )
+            process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT)
             try:
                 status = process.wait()
             except BaseException:
-                workdir.stop_process_group(process)
+                workdir.stop_process(process)
                 raise
         return status, read_raw(log)
 
@@ -456,6 +454,9 @@ def main():
             runner = Runner(tlc, Path(matrix).resolve().parent, only, lambda result: print("\n".join(render(result)), flush=True), Path(work))
             for task in MatrixPlan(matrix):
                 runner.check(task)
+    except workdir.TempDirError as error:
+        print(error)
+        return 1
     except workdir.SignalTerminated as error:
         return error.status
     if runner.runs_total == 0:

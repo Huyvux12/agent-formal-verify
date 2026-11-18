@@ -291,6 +291,9 @@ if __name__ == "__main__":
     try:
         with workdir.signal_cleanup():
             main()
+    except workdir.TempDirError as error:
+        print(error)
+        sys.exit(1)
     except lean_mutations.AnalysisError as error:
         print(error)
         sys.exit(error.status)

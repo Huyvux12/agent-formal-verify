@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -23,14 +24,20 @@ SKIP_MOUNT_PREFIXES = (
     "/proc",
     "/sys",
     "/run",
-    "/System/",
+    "/System",
     "/Volumes/.timemachine",
     "/Volumes/Recovery",
 )
 
+_warned_runtime = False
+
+
+class TempDirError(Exception):
+    """Raised when an explicitly set TMPDIR cannot be created or written."""
+
 
 class SignalTerminated(BaseException):
-    """Raised on SIGINT or SIGTERM so context managers and finally blocks still clean up."""
+    """Raised on handled termination signals so context managers and finally blocks still clean up."""
 
     def __init__(self, signum):
         self.signum = signum
@@ -39,19 +46,23 @@ class SignalTerminated(BaseException):
 
 
 def ensure_temp_root():
-    """Ensure TMPDIR exists when set so tempfile does not silently fall back to the system disk."""
+    """Ensure explicit TMPDIR exists and is writable so tempfile never silently falls back."""
     configured = os.environ.get("TMPDIR", "").strip()
     if configured:
+        path = Path(configured)
         try:
-            Path(configured).mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise TempDirError(f"FAIL TMPDIR={configured!r} cannot be created: {error}") from error
+        if not path.is_dir() or not os.access(path, os.W_OK):
+            raise TempDirError(f"FAIL TMPDIR={configured!r} is not a writable directory")
+        return path.resolve()
     return Path(tempfile.gettempdir()).resolve()
 
 
 @contextmanager
 def signal_cleanup():
-    """Convert SIGINT/SIGTERM into SignalTerminated while running on the main thread."""
+    """Convert non-ignored termination signals into SignalTerminated on the main thread."""
     if threading.current_thread() is not threading.main_thread():
         yield
         return
@@ -64,8 +75,14 @@ def signal_cleanup():
         state["caught"] = True
         raise SignalTerminated(signum)
 
-    for signum in (signal.SIGINT, signal.SIGTERM):
-        previous[signum] = signal.getsignal(signum)
+    signals = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+        signals.append(signal.SIGHUP)
+    for signum in signals:
+        current = signal.getsignal(signum)
+        if current is signal.SIG_IGN:
+            continue
+        previous[signum] = current
         signal.signal(signum, handle)
     try:
         yield
@@ -74,44 +91,37 @@ def signal_cleanup():
             signal.signal(signum, handler)
 
 
-def stop_process_group(process):
-    """Terminate a spawned subprocess and its POSIX process group cleanly."""
+def stop_process(process):
+    """Terminate a spawned subprocess cleanly while keeping it in the caller's process group."""
     if process.poll() is not None:
         return
     try:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
+        process.terminate()
     except ProcessLookupError:
         return
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
         try:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGKILL)
-            else:
-                process.kill()
+            process.kill()
         except ProcessLookupError:
             pass
         process.wait()
 
 
 def run_captured(command, **kwargs):
-    """Run a command in its own POSIX session and kill its process group on signal or interruption."""
+    """Run a command in the caller's process group and terminate it cleanly on interruption."""
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        start_new_session=(os.name == "posix"),
         **kwargs,
     )
     try:
         stdout, stderr = process.communicate()
     except BaseException:
-        stop_process_group(process)
+        stop_process(process)
         raise
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
@@ -128,7 +138,7 @@ def _min_free_gib(default):
 def _skipped_mount(mount):
     if mount == "/":
         return True
-    return any(mount == prefix.rstrip("/") or mount.startswith(prefix) for prefix in SKIP_MOUNT_PREFIXES)
+    return any(mount == prefix or mount.startswith(prefix + "/") for prefix in SKIP_MOUNT_PREFIXES)
 
 
 def parse_df_mounts(
@@ -140,7 +150,7 @@ def parse_df_mounts(
     access_fn=os.access,
     usage_fn=shutil.disk_usage,
 ):
-    """Return writable local mounted volumes with more free space than temp_root, largest first."""
+    """Return writable local mounted volume directories with more free space than temp_root."""
     temp_free = usage_fn(temp_root).free
     seen_devs = {stat_fn(temp_root).st_dev, stat_fn(root_path).st_dev}
     candidates = {}
@@ -152,7 +162,10 @@ def parse_df_mounts(
         if not mount or _skipped_mount(mount):
             continue
         try:
-            dev = stat_fn(mount).st_dev
+            st = stat_fn(mount)
+            if not stat.S_ISDIR(st.st_mode):
+                continue
+            dev = st.st_dev
             if dev in seen_devs or not access_fn(mount, os.W_OK):
                 continue
             free = usage_fn(mount).free
@@ -199,13 +212,15 @@ def format_report(report):
     if not report.same_device:
         lines.append(f"SYSTEM_DISK / ({report.root_free / GIB:.1f} GiB free)")
     threshold = report.min_gib * GIB
+    # Warn on / only when TMPDIR still shares the root device; once TMPDIR moves off /,
+    # a low root volume should not repeat an unclearable warning.
     low_temp = report.min_gib > 0 and report.temp_free < threshold
-    low_root = report.min_gib > 0 and report.root_free < threshold
+    low_root = report.same_device and report.min_gib > 0 and report.root_free < threshold
     if low_temp or low_root:
         lines.append(
             f"WARN low free space (< {report.min_gib} GiB): temp dir {report.temp_root} has "
             f"{report.temp_free / GIB:.1f} GiB free, system disk / has {report.root_free / GIB:.1f} GiB free; "
-            "TLC disk queues, Kani targets, or Lean builds may exhaust disk space. Set TMPDIR=<dir> to choose another volume."
+            "TLC disk queues or Kani build dirs may exhaust disk space. Set TMPDIR=<dir> to choose another volume."
         )
     for mount, free in report.candidates:
         suggested = Path(mount) / ".tmp" / "formal-verify"
@@ -214,7 +229,11 @@ def format_report(report):
 
 
 def warn_runtime():
-    """Emit a stderr warning before heavy verification runs if active temp storage is critically low."""
+    """Emit a single per-process stderr warning if active temporary space is critically low."""
+    global _warned_runtime
+    if _warned_runtime:
+        return
+    _warned_runtime = True
     report = inspect_storage(DEFAULT_RUNTIME_MIN_GIB)
     if report.min_gib <= 0:
         return
@@ -233,13 +252,17 @@ def warn_runtime():
 
 def main():
     action = sys.argv[1] if len(sys.argv) == 2 else ""
-    if action == "report":
-        for line in format_report(inspect_storage()):
-            print(line)
-        return 0
-    if action == "warn":
-        warn_runtime()
-        return 0
+    try:
+        if action == "report":
+            for line in format_report(inspect_storage()):
+                print(line)
+            return 0
+        if action == "warn":
+            warn_runtime()
+            return 0
+    except TempDirError as error:
+        print(error)
+        return 1
     print("usage: workdir.py <report|warn>", file=sys.stderr)
     return 2
 

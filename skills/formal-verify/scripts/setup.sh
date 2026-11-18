@@ -7,7 +7,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 report_storage() {
   if command -v python3 > /dev/null 2>&1; then
-    python3 "$HERE/workdir.py" report || true
+    python3 "$HERE/workdir.py" report
   fi
 }
 

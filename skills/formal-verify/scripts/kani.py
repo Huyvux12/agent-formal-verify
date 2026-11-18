@@ -327,9 +327,10 @@ def main():
         print(f"READY Kani {kani.version}")
         return 0
     crate, selected = Path(arguments.crate).resolve(), arguments.harnesses
-    workdir.warn_runtime()
     try:
-        with workdir.signal_cleanup(), tempfile.TemporaryDirectory(prefix="formal-kani-", dir=workdir.ensure_temp_root()) as temporary:
+        temp_root = workdir.ensure_temp_root()
+        workdir.warn_runtime()
+        with workdir.signal_cleanup(), tempfile.TemporaryDirectory(prefix="formal-kani-", dir=temp_root) as temporary:
             work = Path(temporary)
             try:
                 bounds = discover(crate, work, kani)
@@ -351,6 +352,9 @@ def main():
                     print(outcome.output.rstrip())
             print(f"SUMMARY {passed} of {len(names)} harnesses passed")
             return 0 if passed == len(names) else 1
+    except workdir.TempDirError as error:
+        print(error)
+        return 1
     except workdir.SignalTerminated as error:
         return error.status
 
