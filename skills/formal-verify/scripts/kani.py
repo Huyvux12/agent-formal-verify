@@ -83,7 +83,8 @@ class CrateSources:
 
         for root in self.roots:
             if self.roots.isdisjoint(root.parents):
-                shutil.copytree(root, destination / root.relative_to(anchor), ignore=ignore)
+                shutil.copytree(root, destination / root.relative_to(anchor), ignore=ignore,
+                                ignore_dangling_symlinks=True)
         return destination / crate.relative_to(anchor)
 
 
