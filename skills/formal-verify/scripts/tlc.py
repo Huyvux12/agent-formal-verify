@@ -107,9 +107,9 @@ def _directives(lines):
             if not bar:
                 yield Malformed(f"run '{rest}' has no | before its constants")
             elif not seen_spec:
-                yield Malformed(f"run '{label.removesuffix(' ')}' before any spec line")
+                yield Malformed(f"run '{label.rstrip()}' before any spec line")
             else:
-                yield Run(label.removesuffix(" "), constants)
+                yield Run(label.rstrip(), constants)
         else:
             yield Malformed(f"unknown directive: {line}")
 
