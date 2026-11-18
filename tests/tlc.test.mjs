@@ -467,7 +467,7 @@ test("Ctrl-C stops a shell loop that runs the matrix runner", async () => {
       env: { ...process.env, JAVA: java, TLC_JAR: join(dir, "tools.jar"), TASK_STARTS: starts, FORMAL_MIN_FREE_GIB: "0" },
     });
     const timer = setInterval(() => {
-      if (existsSync(starts)) {
+      if (existsSync(starts) && readFileSync(starts, "utf8").endsWith("\n")) {
         clearInterval(timer);
         process.kill(-child.pid, "SIGINT");
       }
@@ -503,7 +503,7 @@ test("SIGKILL and SIGHUP sent to the runner process group still stop TLC", async
         env: { ...process.env, JAVA: java, TLC_JAR: join(dir, "tools.jar"), TASK_PID_FILE: pidFile, FORMAL_MIN_FREE_GIB: "0" },
       });
       const timer = setInterval(() => {
-        if (existsSync(pidFile)) {
+        if (existsSync(pidFile) && readFileSync(pidFile, "utf8").endsWith("\n")) {
           clearInterval(timer);
           process.kill(-child.pid, sig);
         }
