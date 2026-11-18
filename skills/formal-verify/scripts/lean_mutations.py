@@ -137,7 +137,8 @@ class OriginalChecks:
 
     def _theorem_checks(self, declarations, mutation):
         start = mutation.original.index(mutation.old)
-        edit_start, edit_end = (_position(mutation.source, offset) for offset in (start, start + len(mutation.new)))
+        edit_start = _position(mutation.source, start)
+        edit_end = _position(mutation.source, start + len(mutation.new))
         theorems = [decl for decl in declarations if decl["theorem"]]
         names = {decl["name"] for decl in theorems}
         for decl in theorems:
@@ -145,7 +146,7 @@ class OriginalChecks:
             if (name, decl["type"]) not in self._theorems:
                 problem = "the mutation changes its statement"
             elif decl["start"] <= edit_end and edit_start <= decl["end"]:
-                # A broken proof shows the model changed only when the edit lies outside that proof.
+                # A broken proof shows the model changed only when the edit lies outside that theorem.
                 problem = "the mutation edits this theorem"
             else:
                 problem = ""
