@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-Rust mutation runs now skip a dangling symbolic link when they copy the crate, such as the `.#lib.rs` lock file that Emacs leaves beside an open file. Before this change, the copy stopped the run with a Python traceback after the unmutated harnesses had passed.
+Rust mutation runs now skip a dangling symbolic link, such as the `.#lib.rs` lock file that Emacs leaves beside an open file, when they copy the crate. Before this change, the copy stopped the run with a Python traceback after the unmutated harnesses had passed.
 
 The specification baseline now keeps the layout of a TLA+ definition that spans several lines, and a removed comment leaves spaces so that each token keeps its column. Before this change it flattened nested conjunction and disjunction lists, so an edit that regrouped them, which can turn a violated invariant into a passing one, compared as unchanged. When a module has an indented definition outside a `LET` expression, or a column-0 definition inside one, the baseline compares the whole module text, because it cannot tell which definition holds that line. A definition inside a `LET` stays part of the definition that contains it. A TLA+ baseline recorded before this change reports that it needs review; record it again after the review.
 
