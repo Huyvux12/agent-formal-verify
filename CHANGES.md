@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-The Rust checker and the mutation runner now reject a harness marked `#[kani::should_panic]` before they verify any harness, and name the harness. Kani reports the expected panic as a failed check, so before this change the checker printed `FAIL` for a harness that Kani verified, and the mutation runner stopped at the unmutated harness.
+The Rust checker and the mutation runner now reject a harness marked `#[kani::should_panic]` when it is among the harnesses they would verify, before they verify any, and name the harness. Naming the other harnesses still checks them. Kani reports the expected panic as a failed check, so before this change the checker printed `FAIL` for a harness that Kani verified, and the mutation runner stopped at the unmutated harness.
 
 The specification baseline now keeps the layout of a TLA+ definition that spans several lines, and a removed comment leaves spaces so that each token keeps its column. Before this change it flattened nested conjunction and disjunction lists, so an edit that regrouped them, which can turn a violated invariant into a passing one, compared as unchanged. When a module has an indented definition outside a `LET` expression, or a column-0 definition inside one, the baseline compares the whole module text, because it cannot tell which definition holds that line. A definition inside a `LET` stays part of the definition that contains it. A TLA+ baseline recorded before this change reports that it needs review; record it again after the review.
 

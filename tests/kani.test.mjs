@@ -336,15 +336,40 @@ test("Kani requires an explicit unwind bound", () => {
   includes(result.stdout, "needs #[kani::unwind(N)]");
 });
 
-test("Kani rejects a should_panic harness before running verification", () => {
-  const { dir, name } = kaniFixture();
-  writeJson(join(dir, "driver.json"), { version: KANI, harnesses: {}, metadata: { proof_harnesses: [
-    { pretty_name: name, original_file: "src/lib.rs", attributes: { kind: "Proof", should_panic: true, unwind_value: 3 } },
+function withShouldPanicHarness(fixture) {
+  const harness = (name, file, shouldPanic) =>
+    ({ pretty_name: name, original_file: file, attributes: { kind: "Proof", should_panic: shouldPanic, unwind_value: 3 } });
+  writeJson(join(fixture.dir, "driver.json"), { version: KANI, harnesses: {}, metadata: { proof_harnesses: [
+    harness(fixture.name, "src/lib.rs", false), harness("proofs::panics", "src/other.rs", true),
   ] } });
-  const result = runKani(dir, "kani-check.sh", [dir]);
-  assert.equal(result.status, 1);
-  includes(result.stdout, `${name} is marked #[kani::should_panic]`);
-  excludes(calls(dir), "--export-json");
+  return fixture;
+}
+
+test("Kani rejects a selected should_panic harness before running verification", () => {
+  const { dir } = withShouldPanicHarness(kaniFixture());
+  for (const harnesses of [[], ["proofs::panics"]]) {
+    const result = runKani(dir, "kani-check.sh", [dir, ...harnesses]);
+    assert.equal(result.status, 1);
+    includes(result.stdout, "proofs::panics is marked #[kani::should_panic]");
+    excludes(calls(dir), "--export-json");
+  }
+});
+
+test("Kani checks the other harnesses of a crate that has a should_panic harness", () => {
+  const { dir, name } = withShouldPanicHarness(kaniFixture());
+  const result = runKani(dir, "kani-check.sh", [dir, name]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  includes(result.stdout, `PASS ${name}`);
+});
+
+test("Rust mutations reject a should_panic harness they name and check the others", () => {
+  const { dir, name } = withShouldPanicHarness(kaniFixture("failure"));
+  const detected = runKani(dir, "mutate.py", [rustMutation(dir, name)]);
+  assert.equal(detected.status, 0, detected.stdout + detected.stderr);
+  includes(detected.stdout, "DETECTED guard");
+  const rejected = runKani(dir, "mutate.py", [rustMutation(dir, "proofs::panics", "panic")]);
+  assert.equal(rejected.status, 1);
+  includes(rejected.stdout, "FAIL proofs::panics is marked #[kani::should_panic]");
 });
 
 test("Rust mutation coverage reports harnesses no mutation targets", () => {

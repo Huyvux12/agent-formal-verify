@@ -42,6 +42,7 @@ class Verdict(IntEnum):
 class Harness:
     unwind: int
     source: Path
+    should_panic: bool
 
 
 @dataclass(frozen=True)
@@ -227,18 +228,24 @@ def discover(crate, work, kani):
                     raise CheckError("malformed Kani harness name or source")
                 if name in harnesses:
                     raise CheckError("duplicate harness names; select a single crate")
-                # Kani reports the expected panic as a failed check, which would read as a refuted property.
-                if harness["attributes"].get("should_panic"):
-                    raise CheckError(f"{name} is marked #[kani::should_panic], which the Rust checker does not "
-                                     "support; remove the attribute and assert the condition that leads to the panic")
                 if type(bound) is not int or bound < 1:
                     raise CheckError(f"{name} needs #[kani::unwind(N)] with N greater than zero")
-                harnesses[name] = Harness(bound, (workspace / source).resolve())
+                harnesses[name] = Harness(bound, (workspace / source).resolve(),
+                                          harness["attributes"].get("should_panic") is True)
     except (KeyError, TypeError, AttributeError) as error:
         raise CheckError(f"malformed Kani discovery record: {error!r}") from error
     if not harnesses:
         raise CheckError("no proof harnesses found")
     return harnesses
+
+
+def reject_should_panic(harnesses, names):
+    """Raise CheckError for the first named harness that Kani verifies with an expected panic."""
+    for name in names:
+        # Kani reports the expected panic as a failed check, which would read as a refuted property.
+        if harnesses[name].should_panic:
+            raise CheckError(f"{name} is marked #[kani::should_panic], which the Rust checker does not "
+                             "support; remove the attribute and assert the condition that leads to the panic")
 
 
 def harness_result(report, kani, name, returncode):
@@ -339,6 +346,7 @@ def main():
             unknown = set(names) - set(bounds)
             if unknown:
                 raise CheckError("unknown harnesses: " + ", ".join(sorted(unknown)))
+            reject_should_panic(bounds, names)
         except CheckError as error:
             print(f"FAIL {error}")
             return 1
