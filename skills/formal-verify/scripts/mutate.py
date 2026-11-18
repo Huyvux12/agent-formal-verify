@@ -298,4 +298,4 @@ if __name__ == "__main__":
         print(error)
         sys.exit(error.status)
     except workdir.SignalTerminated as error:
-        sys.exit(error.status)
+        error.exit()

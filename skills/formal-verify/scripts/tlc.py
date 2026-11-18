@@ -458,7 +458,7 @@ def main():
         print(error)
         return 1
     except workdir.SignalTerminated as error:
-        return error.status
+        error.exit()
     if runner.runs_total == 0:
         matching = f"matching '{only}' " if only else ""
         print(f"FAIL no run {matching}in {matrix}")

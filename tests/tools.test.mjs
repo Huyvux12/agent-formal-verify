@@ -72,7 +72,7 @@ test("workdir.parse_df_mounts selects only writable larger local volume director
     "access_fn = lambda p, _m: str(p) != '/Volumes/BackupRO'",
     "usage_fn = lambda p: types.SimpleNamespace(free=frees[str(p)])",
     `out = workdir.parse_df_mounts(${JSON.stringify(dfSample)}, '/tmp', '/', stat_fn=stat_fn, access_fn=access_fn, usage_fn=usage_fn)`,
-    "report = workdir.format_report(workdir.StorageReport('/Volumes/ExternalLarge/.tmp', 300*workdir.GIB, 20*workdir.GIB, False, 64, ()))",
+    "report = workdir.format_report(workdir.StorageReport('/Volumes/ExternalLarge/.tmp', 300*workdir.GIB, 20*workdir.GIB, False, 64, (('/Volumes/Big Disk', 400*workdir.GIB),)))",
     "print(json.dumps({'mounts': out, 'report': report}))",
   ].join("; ");
   const result = spawnSync("python3", ["-B", "-c", script], { cwd: root, encoding: "utf8" });
@@ -86,5 +86,6 @@ test("workdir.parse_df_mounts selects only writable larger local volume director
   assert.deepEqual(parsed.report, [
     `TEMP_DIR /Volumes/ExternalLarge/.tmp (300.0 GiB free)`,
     `SYSTEM_DISK / (20.0 GiB free)`,
+    `EXTERNAL_VOLUME /Volumes/Big Disk (400.0 GiB free; suggested TMPDIR='/Volumes/Big Disk/.tmp/formal-verify')`,
   ]);
 });

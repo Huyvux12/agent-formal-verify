@@ -405,21 +405,24 @@ function assertProcessStopped(pid) {
   assert.ok(isStopped(pid), `expected child process ${pid} to stop`);
 }
 
-test("SIGTERM stops the child TLC process and cleans temporary directories", async () => {
+test("SIGTERM stops TLC and the processes it started, cleans temporary directories and ends the runner by SIGTERM", async () => {
   const dir = fixture();
   const customTmp = join(dir, "nested", "signal-tmp");
   writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
   writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun hang | N=1\n");
   writeFileSync(join(dir, "tools.jar"), "user supplied");
   const pidFile = join(dir, "child.pid");
+  const grandchildPidFile = join(dir, "grandchild.pid");
   const readyFile = join(dir, "ready");
   const java = fakeTlc(dir, [
     'for last; do :; done',
     'mkdir -p "$(dirname "$last")/states"',
     'echo data > "$(dirname "$last")/states/mock.fp"',
+    'sleep 30 &',
+    'echo "$!" > "$TASK_GRANDCHILD_PID_FILE"',
     'echo "$$" > "$TASK_PID_FILE"',
     'echo ready > "$TASK_READY_FILE"',
-    'exec sleep 30',
+    'wait',
   ].join("\n"));
   const code = await new Promise((resolve) => {
     const child = spawn("python3", [join(scripts, "tlc.py"), join(dir, "One.matrix")], {
@@ -429,6 +432,7 @@ test("SIGTERM stops the child TLC process and cleans temporary directories", asy
         TLC_JAR: join(dir, "tools.jar"),
         TMPDIR: customTmp,
         TASK_PID_FILE: pidFile,
+        TASK_GRANDCHILD_PID_FILE: grandchildPidFile,
         TASK_READY_FILE: readyFile,
         FORMAL_MIN_FREE_GIB: "0",
       },
@@ -444,10 +448,45 @@ test("SIGTERM stops the child TLC process and cleans temporary directories", asy
       resolve({ exitCode, signalName });
     });
   });
-  assert.equal(code.exitCode, 143, JSON.stringify(code));
-  const pid = Number(readFileSync(pidFile, "utf8").trim());
-  assertProcessStopped(pid);
+  assertProcessStopped(Number(readFileSync(pidFile, "utf8").trim()));
+  assertProcessStopped(Number(readFileSync(grandchildPidFile, "utf8").trim()));
   assert.deepEqual(readdirSync(customTmp), []);
+  assert.equal(code.signalName, "SIGTERM", JSON.stringify(code));
+});
+
+test("Ctrl-C stops a shell loop that runs the matrix runner", async () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun hang | N=1\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const starts = join(dir, "starts");
+  const java = fakeTlc(dir, 'echo start >> "$TASK_STARTS"\nexec sleep 30');
+  const result = await new Promise((resolve) => {
+    const child = spawn("bash", ["-c", 'for i in 1 2; do bash "$1" "$2"; done', "loop", join(scripts, "tlc-matrix.sh"), join(dir, "One.matrix")], {
+      detached: true,
+      env: { ...process.env, JAVA: java, TLC_JAR: join(dir, "tools.jar"), TASK_STARTS: starts, FORMAL_MIN_FREE_GIB: "0" },
+    });
+    const timer = setInterval(() => {
+      if (existsSync(starts)) {
+        clearInterval(timer);
+        process.kill(-child.pid, "SIGINT");
+      }
+    }, 20);
+    const guard = setTimeout(() => {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // The loop already ended.
+      }
+    }, 10000);
+    child.on("close", (exitCode, signalName) => {
+      clearInterval(timer);
+      clearTimeout(guard);
+      resolve({ exitCode, signalName });
+    });
+  });
+  assert.equal(readFileSync(starts, "utf8"), "start\n");
+  assert.equal(result.signalName, "SIGINT", JSON.stringify(result));
 });
 
 test("SIGKILL and SIGHUP sent to the runner process group still stop TLC", async () => {

@@ -356,7 +356,7 @@ def main():
         print(error)
         return 1
     except workdir.SignalTerminated as error:
-        return error.status
+        error.exit()
 
 
 if __name__ == "__main__":

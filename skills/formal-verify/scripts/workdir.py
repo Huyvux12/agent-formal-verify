@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import signal
 import stat
@@ -12,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,6 +44,15 @@ class SignalTerminated(BaseException):
         self.signum = signum
         self.status = 128 + signum
         super().__init__(f"terminated by signal {signum}")
+
+    def exit(self):
+        """End the process by the signal itself, so a calling shell stops as it would without the cleanup."""
+        with suppress(OSError):
+            sys.stdout.flush()
+            sys.stderr.flush()
+        signal.signal(self.signum, signal.SIG_DFL)
+        os.kill(os.getpid(), self.signum)
+        sys.exit(self.status)
 
 
 def ensure_temp_root():
@@ -91,14 +101,36 @@ def signal_cleanup():
             signal.signal(signum, handler)
 
 
+def _descendants(pid):
+    """Return the pids of every process below pid in one ps snapshot, or none when ps cannot run."""
+    try:
+        listing = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, check=False).stdout
+    except OSError:
+        return []
+    children = {}
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0].isdigit() and fields[1].isdigit():
+            children.setdefault(int(fields[1]), []).append(int(fields[0]))
+    found, pending = [], [pid]
+    while pending:
+        below = children.get(pending.pop(), [])
+        found += below
+        pending += below
+    return found
+
+
 def stop_process(process):
-    """Terminate a spawned subprocess cleanly while keeping it in the caller's process group."""
+    """Terminate a spawned subprocess and the processes it started, keeping them in the caller's process group."""
     if process.poll() is not None:
         return
-    try:
+    # List the descendants before the child stops, because its exit moves them out of its tree.
+    descendants = _descendants(process.pid)
+    with suppress(ProcessLookupError):
         process.terminate()
-    except ProcessLookupError:
-        return
+    for pid in descendants:
+        with suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
@@ -206,6 +238,10 @@ def inspect_storage(default_min_gib=DEFAULT_PREFLIGHT_MIN_GIB):
     return StorageReport(temp_root, temp_free, root_free, same_device, min_gib, tuple(candidates))
 
 
+def _suggested_tmpdir(mount):
+    return shlex.quote(str(Path(mount) / ".tmp" / "formal-verify"))
+
+
 def format_report(report):
     """Format preflight storage lines for setup.sh and interactive agent checks."""
     lines = [f"TEMP_DIR {report.temp_root} ({report.temp_free / GIB:.1f} GiB free)"]
@@ -223,8 +259,7 @@ def format_report(report):
             "TLC disk queues or Kani build dirs may exhaust disk space. Set TMPDIR=<dir> to choose another volume."
         )
     for mount, free in report.candidates:
-        suggested = Path(mount) / ".tmp" / "formal-verify"
-        lines.append(f"EXTERNAL_VOLUME {mount} ({free / GIB:.1f} GiB free; suggested TMPDIR={suggested})")
+        lines.append(f"EXTERNAL_VOLUME {mount} ({free / GIB:.1f} GiB free; suggested TMPDIR={_suggested_tmpdir(mount)})")
     return lines
 
 
@@ -245,8 +280,7 @@ def warn_runtime():
         f"(< {report.min_gib} GiB); set TMPDIR=<dir> to use another volume.\n"
     )
     for mount, free in report.candidates:
-        suggested = Path(mount) / ".tmp" / "formal-verify"
-        sys.stderr.write(f"WARN candidate volume {mount} ({free / GIB:.1f} GiB free; suggested TMPDIR={suggested})\n")
+        sys.stderr.write(f"WARN candidate volume {mount} ({free / GIB:.1f} GiB free; suggested TMPDIR={_suggested_tmpdir(mount)})\n")
     sys.stderr.flush()
 
 
