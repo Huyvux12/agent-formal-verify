@@ -213,7 +213,7 @@ def tla_module_surface(directory, spec, operators):
             scope[name] = key
         required.update((path, name) for name in unreadable)
         scopes[path] = scope
-        exports[path] = {name: key for name, key in scope.items() if not bodies[key].startswith("LOCAL ")}
+        exports[path] = {name: key for name, key in scope.items() if not re.match(r"LOCAL\s", bodies[key])}
         visiting.remove(path)
         return exports[path]
 
