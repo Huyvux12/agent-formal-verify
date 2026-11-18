@@ -222,6 +222,8 @@ for (const workspace of [false, true]) {
       "proof/Cargo.toml": '[package]\nname="proof"\nversion="0.1.0"\n[dependencies]\nlogic={path="../logic"}\n',
       "proof/src/target/mod.rs": "pub const STEP: u8 = 1;\n",
       "proof/custom-output/stale": "prior build\n",
+      "proof/target/CACHEDIR.TAG": "Signature: 8a477f597d28d172789f06886806bc55\n",
+      "proof/target/debug/stale": "build from before the output directory moved\n",
       "logic/Cargo.toml": '[package]\nname="logic"\nversion="0.1.0"\n[dependencies]\nshared={path="../../shared"}\n',
       "logic/src/lib.rs": "pub fn step(n: u8) -> u8 { shared::step(n) }\n",
     };
@@ -249,7 +251,7 @@ for (const workspace of [false, true]) {
           { source: null, manifest_path: join(shared, "Cargo.toml"), dependencies: [] },
         ],
       },
-      excludedCrateFiles: ["custom-output/stale"],
+      excludedCrateFiles: ["custom-output/stale", "target/debug/stale"],
       requiredCrateFiles: {
         "src/target/mod.rs": files["proof/src/target/mod.rs"],
         "src/lib.rs": "new\n",
