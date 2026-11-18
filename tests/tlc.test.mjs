@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Michael Denyer
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -370,7 +370,32 @@ test("invalid TLC_TIMEOUT settings are reported as unavailable without starting 
   assert.equal(existsSync(join(dir, "calls")), false);
 });
 
-test("timed-out TLC runs terminate their process group and report ordinary failure or incomplete reach", () => {
+function isStopped(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    return error.code === "ESRCH";
+  }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const afterName = stat.slice(stat.lastIndexOf(") ") + 2);
+    if (afterName.startsWith("Z")) return true;
+  } catch {
+    // Non-Linux hosts have no /proc/<pid>/stat; fall back to ps below.
+  }
+  const ps = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" });
+  return !ps.error && ps.status === 0 && (ps.stdout.trim() === "" || ps.stdout.trim().startsWith("Z"));
+}
+
+function assertProcessStopped(pid) {
+  const deadline = Date.now() + 1000;
+  while (!isStopped(pid) && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  }
+  assert.ok(isStopped(pid), `expected child process ${pid} to stop`);
+}
+
+test("timed-out TLC runs terminate their child process and report ordinary failure or incomplete reach", () => {
   const dir = fixture();
   writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
   writeFileSync(join(dir, "One.matrix"), "spec One.tla\nreach Full | n=1\nrun n=1 | N=1\n");
@@ -378,9 +403,8 @@ test("timed-out TLC runs terminate their process group and report ordinary failu
   const pidFile = join(dir, "child.pid");
   const java = fakeTlc(dir, [
     'echo "Progress(1) at 2026-11-18 00:00:01: 100 states generated"',
-    'sleep 30 &',
-    'echo "$!" > "$TASK_PID_FILE"',
-    'wait',
+    'echo "$$" > "$TASK_PID_FILE"',
+    'exec sleep 30',
   ].join("\n"));
   const result = run(dir, "tlc-matrix.sh", [join(dir, "One.matrix")], {
     JAVA: java,
@@ -394,10 +418,37 @@ test("timed-out TLC runs terminate their process group and report ordinary failu
   includes(result.stdout, "FAIL One reach Full n=1: TLC did not complete the reach check");
   excludes(result.stdout, "the model never reaches this state");
   const pid = Number(readFileSync(pidFile, "utf8").trim());
-  assert.throws(() => process.kill(pid, 0));
+  assertProcessStopped(pid);
 });
 
-test("long TLC runs forward Progress updates to stderr without changing stdout parsing", () => {
+test("signals sent to the runner process group still stop TLC", async () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun n=1 | N=1\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const pidFile = join(dir, "child.pid");
+  const java = fakeTlc(dir, 'echo "$$" > "$TASK_PID_FILE"\nexec sleep 30');
+  await new Promise((resolve) => {
+    const child = spawn("bash", [join(scripts, "tlc-matrix.sh"), join(dir, "One.matrix")], {
+      detached: true,
+      env: { ...process.env, JAVA: java, TLC_JAR: join(dir, "tools.jar"), TASK_PID_FILE: pidFile },
+    });
+    const timer = setInterval(() => {
+      if (existsSync(pidFile)) {
+        clearInterval(timer);
+        process.kill(-child.pid, "SIGTERM");
+      }
+    }, 20);
+    child.on("close", () => {
+      clearInterval(timer);
+      resolve();
+    });
+  });
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  assertProcessStopped(pid);
+});
+
+test("long TLC runs forward elapsed time and Progress updates to stderr without changing stdout parsing", () => {
   const dir = fixture();
   writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
   writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun n=1 | N=1\n");
@@ -424,5 +475,5 @@ test("long TLC runs forward Progress updates to stderr without changing stdout p
   });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "PASS One n=1 500 distinct states found\nSUMMARY 1 of 1 runs passed, 500 distinct states in total\n");
-  includes(result.stderr, "[tlc] One n=1: Progress(42)");
+  assert.match(result.stderr, /\[tlc\] One n=1: \d+s elapsed: Progress\(42\)/);
 });

@@ -526,9 +526,8 @@ test("malformed mutation matrix checks fail before running a model", () => {
   }
 });
 
-test("timed-out reach mutations never count as detected", () => {
-  const result = runWithTimeout();
-  function runWithTimeout() {
+test("timed-out reach and ordinary mutations never count as detected, and timed-out baselines stop", () => {
+  const reachResult = (() => {
     const dir = fixture();
     writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\nStep == x + 1\n====\n");
     writeFileSync(join(dir, "One.matrix"), "spec One.tla\nreach Full | n=4\nrun n=4 | N=4\n");
@@ -541,15 +540,46 @@ test("timed-out reach mutations never count as detected", () => {
         '  invariant=$(sed -n "s/^INVARIANT //p" "$(dirname "$last")/MC.cfg")',
         '  echo "Error: Invariant $invariant is violated by the initial state:"; exit 12',
         'fi',
-        'sleep 10',
+        'sleep 3',
+        'echo "Model checking completed. No error has been found."',
       ].join("\n")),
       TLC_JAR: join(dir, "tools.jar"),
       TLC_TIMEOUT: "1s",
     });
+  })();
+  assert.equal(reachResult.status, 1);
+  includes(reachResult.stdout, "did not reach a verdict");
+  includes(reachResult.stdout, "TLC timed out after 1s");
+  excludes(reachResult.stdout, "DETECTED hang");
+
+  for (const hangOriginal of [false, true]) {
+    const dir = fixture();
+    writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\nStep == x + 1\n====\n");
+    writeFileSync(join(dir, "One.matrix"), "spec One.tla\ncheck INVARIANTS Small\nrun n=4 | N=4\n");
+    writeFileSync(join(dir, "One.mutations"), "mutation hang\ndetects Small\n- x + 1\n+ x \\* BUG\n");
+    writeFileSync(join(dir, "tools.jar"), "user supplied");
+    const result = run(dir, "mutate.py", [join(dir, "One.mutations")], {
+      JAVA: fakeTlc(dir, hangOriginal ? [
+        'sleep 3',
+        'echo "Model checking completed. No error has been found."',
+      ].join("\n") : [
+        'for last; do :; done',
+        'if ! grep -q BUG "$(dirname "$last")/One.tla"; then',
+        '  echo "Model checking completed. No error has been found."; exit 0',
+        'fi',
+        'sleep 3',
+        'cat "$TLC_LOG"; exit 12',
+      ].join("\n")),
+      TLC_JAR: join(dir, "tools.jar"),
+      TLC_LOG: join(logs, "tlc-invariant.log"),
+      TLC_TIMEOUT: "1s",
+    });
+    assert.equal(result.status, 1);
+    includes(result.stdout, "did not reach a verdict");
+    includes(result.stdout, "TLC timed out after 1s");
+    excludes(result.stdout, "DETECTED hang");
+    if (hangOriginal) includes(result.stdout, "unmutated model did not pass Small");
   }
-  assert.equal(result.status, 1);
-  includes(result.stdout, "did not reach a verdict");
-  excludes(result.stdout, "DETECTED hang");
 });
 
 test("reach mutations keep one worker for the baseline witness and allow TLC_WORKERS for the mutant", () => {

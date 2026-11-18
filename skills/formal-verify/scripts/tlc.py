@@ -21,13 +21,12 @@ Usage: tlc-matrix.sh <matrix-file> [label-substring]
   TLC_CACHE=<dir>    where the pinned jar lives (default ~/.cache/tla)
   JAVA=<path>        the java binary (default: java on PATH)
   TLC_WORKERS=<n>    TLC worker threads (default auto)
-  TLC_TIMEOUT=<lim>  per-run time limit, e.g. 90s, 10m, 1h (default 10m)
+  TLC_TIMEOUT=<lim>  per-run time limit, e.g. 90s, 30m, 1h (default 30m)
 """
 from __future__ import annotations
 
 import os
 import re
-import signal
 import subprocess
 import sys
 import tempfile
@@ -121,7 +120,7 @@ class Unavailable(Exception):
     pass
 
 
-DEFAULT_TIMEOUT = "10m"
+DEFAULT_TIMEOUT = "30m"
 TIME_UNITS = {"": 1, "s": 1, "m": 60, "h": 3600}
 PROGRESS_DELAY = 15.0
 PROGRESS_INTERVAL = 30.0
@@ -133,31 +132,25 @@ def parse_timeout(raw):
     if not limit or int(limit[1]) >= 2**32:
         raise Unavailable(
             f"UNAVAILABLE TLC_TIMEOUT={raw!r} is not a run time limit; set a whole number from 1 to 4294967295 "
-            "with an optional unit s, m or h, such as 90s or 20m, or unset it for ten minutes"
+            "with an optional unit s, m or h, such as 90s or 20m, or unset it for thirty minutes"
         )
     unit = limit[2] or "s"
     return limit[1] + unit, int(limit[1]) * TIME_UNITS[limit[2]]
 
 
-def _stop_process_group(process):
-    """Terminate a spawned TLC process and its process group cleanly."""
+def _stop_process(process):
+    """Terminate a spawned TLC process cleanly while keeping it in the caller's process group."""
     if process.poll() is not None:
         return
     try:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
+        process.terminate()
     except ProcessLookupError:
         return
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
         try:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGKILL)
-            else:
-                process.kill()
+            process.kill()
         except ProcessLookupError:
             pass
         process.wait()
@@ -216,15 +209,13 @@ class Tlc:
         offset, partial, latest = 0, "", ""
         timed_out = False
         with log.open("w", encoding="utf-8") as stream:
-            process = subprocess.Popen(
-                command, stdout=stream, stderr=subprocess.STDOUT, start_new_session=(os.name == "posix")
-            )
+            process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT)
             try:
                 while True:
                     now = time.monotonic()
                     remaining = deadline - now
                     if remaining <= 0:
-                        _stop_process_group(process)
+                        _stop_process(process)
                         timed_out = True
                         break
                     if now >= next_report:
@@ -233,7 +224,8 @@ class Tlc:
                             latest = found
                         elapsed = int(now - start)
                         prefix = f"[tlc] {progress_label}: " if progress_label else "[tlc] "
-                        sys.stderr.write(f"{prefix}{latest or f'running ({elapsed}s elapsed)'}\n")
+                        body = f"{elapsed}s elapsed: {latest}" if latest else f"{elapsed}s elapsed"
+                        sys.stderr.write(f"{prefix}{body}\n")
                         sys.stderr.flush()
                         next_report = now + PROGRESS_INTERVAL
                     wait_for = min(remaining, max(0.05, next_report - time.monotonic()))
@@ -244,7 +236,7 @@ class Tlc:
                         continue
             finally:
                 if process.poll() is None:
-                    _stop_process_group(process)
+                    _stop_process(process)
             status = process.returncode
         return status, read_raw(log), timed_out
 
