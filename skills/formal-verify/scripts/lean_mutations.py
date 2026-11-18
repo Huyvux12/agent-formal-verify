@@ -111,6 +111,11 @@ def _compare_commands(model, before, mutation, after):
         yield _Check(cmd["start"], cmd["end"], f"{cmd['property']} at {model}:{location}", reason)
 
 
+def _position(source, offset):
+    """Return the [line, column] that Lean reports for a character offset into source."""
+    return [source.count("\n", 0, offset) + 1, offset - source.rfind("\n", 0, offset) - 1]
+
+
 def _is_witness(name, theorem_names):
     parent, _, last = name.rpartition(".")
     return last == "witness" and parent in theorem_names
@@ -130,19 +135,28 @@ class OriginalChecks:
         self._theorems = {(decl["name"], decl["type"]) for decl in theorems}
         self._commands = original["commands"]
 
-    def _theorem_checks(self, declarations):
+    def _theorem_checks(self, declarations, mutation):
+        start = mutation.original.index(mutation.old)
+        edit_start = _position(mutation.source, start)
+        edit_end = _position(mutation.source, start + len(mutation.new))
         theorems = [decl for decl in declarations if decl["theorem"]]
         names = {decl["name"] for decl in theorems}
         for decl in theorems:
             name = decl["name"]
-            problem = "" if (name, decl["type"]) in self._theorems else "the mutation changes its statement"
+            if (name, decl["type"]) not in self._theorems:
+                problem = "the mutation changes its statement"
+            elif decl["start"] <= edit_end and edit_start <= decl["end"]:
+                # A broken proof shows the model changed only when the edit lies outside that theorem.
+                problem = "the mutation edits this theorem"
+            else:
+                problem = ""
             yield _Check(decl["start"], decl["end"], "theorem " + name, problem, _is_witness(name, names))
 
     def broken_checks(self, mutation, copy, analysis):
         """Return the original checks that fail, or raise ValueError if any error cannot be attributed."""
         if not analysis["errors"]:
             return []
-        theorems = list(self._theorem_checks(analysis["declarations"]))
+        theorems = list(self._theorem_checks(analysis["declarations"], mutation))
         commands = list(_compare_commands(self._path, self._commands, mutation, analysis["commands"]))
         failed = []
         for error in analysis["errors"]:

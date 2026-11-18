@@ -41,6 +41,16 @@ if grep -q '^UNCOVERED theorem Step.helper$' "$work/result"; then
   exit 1
 fi
 
+# A mutation that edits only a theorem's own proof does not cover that theorem.
+printf 'mutation edit the vacuous proof only\n- absurd h (Nat.not_lt_zero n)\n+ absurd h (Nat.lt_irrefl n)\n' > "$work/Model/Step.mutations"
+if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
+  echo 'FAIL a proof-only edit covered its own theorem'
+  exit 1
+fi
+cat "$work/result"
+grep -q '^theorem Step.Vacuous.property: the mutation edits this theorem' "$work/result"
+printf 'mutation no increment\n- n + 1\n+ n\n' > "$work/Model/Step.mutations"
+
 # Removing a frozen theorem must not turn incomplete mutation coverage green.
 sed -i.orig '/(h : n < 0)/d' "$work/Model/Step.lean"
 if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
