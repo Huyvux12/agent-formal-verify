@@ -1,11 +1,12 @@
 // Copyright (c) 2026 Michael Denyer
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { command, excludes, fakeTlc, fixture, includes, leanPin, logs, removeFixtures, run, writeLeanProject } from "./helpers.mjs";
+import { command, excludes, fakeTlc, fixture, includes, leanPin, logs, removeFixtures, run, scripts, writeLeanProject } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
@@ -523,4 +524,89 @@ test("malformed mutation matrix checks fail before running a model", () => {
     excludes(result.stderr, "Traceback");
     assert.equal(existsSync(join(dir, "calls")), false);
   }
+});
+
+test("timed-out reach mutations never count as detected", () => {
+  const result = runWithTimeout();
+  function runWithTimeout() {
+    const dir = fixture();
+    writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\nStep == x + 1\n====\n");
+    writeFileSync(join(dir, "One.matrix"), "spec One.tla\nreach Full | n=4\nrun n=4 | N=4\n");
+    writeFileSync(join(dir, "One.mutations"), "mutation hang\ndetects reach:Full\n- x + 1\n+ x \\* BUG\n");
+    writeFileSync(join(dir, "tools.jar"), "user supplied");
+    return run(dir, "mutate.py", [join(dir, "One.mutations")], {
+      JAVA: fakeTlc(dir, [
+        'for last; do :; done',
+        'if ! grep -q BUG "$(dirname "$last")/One.tla"; then',
+        '  invariant=$(sed -n "s/^INVARIANT //p" "$(dirname "$last")/MC.cfg")',
+        '  echo "Error: Invariant $invariant is violated by the initial state:"; exit 12',
+        'fi',
+        'sleep 10',
+      ].join("\n")),
+      TLC_JAR: join(dir, "tools.jar"),
+      TLC_TIMEOUT: "1s",
+    });
+  }
+  assert.equal(result.status, 1);
+  includes(result.stdout, "did not reach a verdict");
+  excludes(result.stdout, "DETECTED hang");
+});
+
+test("reach mutations keep one worker for the baseline witness and allow TLC_WORKERS for the mutant", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\nStep == x + 1\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nreach Full | n=4\nrun n=4 | N=4\n");
+  writeFileSync(join(dir, "One.mutations"), "mutation never full\ndetects reach:Full\n- x + 1\n+ x \\* BUG\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const result = run(dir, "mutate.py", [join(dir, "One.mutations")], {
+    JAVA: fakeTlc(dir, [
+      'printf "%s\\n" "$*" >> "$TASK_TRACE"',
+      'for last; do :; done',
+      'if ! grep -q BUG "$(dirname "$last")/One.tla"; then',
+      '  invariant=$(sed -n "s/^INVARIANT //p" "$(dirname "$last")/MC.cfg")',
+      '  echo "Error: Invariant $invariant is violated by the initial state:"; exit 12',
+      'fi',
+      'echo "Model checking completed. No error has been found."',
+    ].join("\n")),
+    TLC_JAR: join(dir, "tools.jar"),
+    TLC_WORKERS: "4",
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const calls = readFileSync(join(dir, "calls"), "utf8").trim().split("\n");
+  assert.equal(calls.length, 2);
+  includes(calls[0], "-workers 1");
+  includes(calls[1], "-workers 4");
+});
+
+test("mutate.py flushes each verdict immediately on non-TTY pipes", async () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\na == x + 1\nb == x + 2\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\ncheck INVARIANTS Small\nrun n=4 | N=4\n");
+  writeFileSync(join(dir, "One.mutations"), [
+    "mutation first", "detects Small", "- x + 1", "+ x \\* BUG1",
+    "mutation second", "detects Small", "- x + 2", "+ x \\* BUG2",
+  ].join("\n") + "\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const java = fakeTlc(dir, [
+    'for last; do :; done',
+    'if grep -q BUG2 "$last"; then sleep 0.6; fi',
+    'if grep -q BUG "$last"; then cat "$TLC_LOG"; exit 12; fi',
+    'echo "Model checking completed. No error has been found."',
+  ].join("\n"));
+  const times = [];
+  await new Promise((resolve, reject) => {
+    const child = spawn("python3", [join(scripts, "mutate.py"), join(dir, "One.mutations")], {
+      env: { ...process.env, JAVA: java, TLC_JAR: join(dir, "tools.jar"), TLC_LOG: join(logs, "tlc-invariant.log") },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout.on("data", (chunk) => {
+      out += chunk.toString("utf8");
+      if (out.includes("DETECTED first:") && times.length === 0) times.push(Date.now());
+      if (out.includes("SUMMARY 2 of 2") && times.length === 1) times.push(Date.now());
+    });
+    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}: ${out}`))));
+  });
+  assert.equal(times.length, 2);
+  assert.ok(times[1] - times[0] >= 350, `expected streamed first verdict before delayed second verdict (${times[1] - times[0]}ms)`);
 });
