@@ -229,6 +229,46 @@ test("a pre-layout TLA+ record requires review even if the model has only single
   assert.match(result.stdout, /did not preserve TLA\+ layout/);
 });
 
+test("indented LET definitions keep per-definition records for actions and properties", () => {
+  const setup = (files) => {
+    edit(files.spec, "         /\\ next' = next + 1", "         /\\ LET step == 1\n            IN next' = next + step");
+    edit(files.spec, "AllConsumed == <>(consumed = Items)", "AllConsumed ==\n    LET done == consumed = Items\n    IN <>done");
+  };
+  assertUnchanged(recordedThenEdited(setup, "matrix", tla("step == 1", "step == 2")), "matrix");
+  assertChanged(recordedThenEdited(setup, "matrix", tla("done == consumed = Items", "done == consumed >= 0")),
+    "matrix", "changed definition BoundedQueue.tla AllConsumed");
+});
+
+test("a nested LET closes only its own scope, so a later definition of the outer LET stays local", () => {
+  const setup = tla("AllConsumed == <>(consumed = Items)",
+    "AllConsumed ==\n    LET done == LET all == Items IN consumed = all\n        also == TRUE\n    IN <>(done /\\ also)");
+  assertChanged(recordedThenEdited(setup, "matrix", tla("also == TRUE", "also == FALSE")),
+    "matrix", "changed definition BoundedQueue.tla AllConsumed");
+});
+
+test("an imported module with an indented LET definition keeps per-definition records", () => {
+  const setup = (files) => {
+    edit(files.spec, "EXTENDS Naturals", "EXTENDS Naturals, Limits");
+    edit(files.spec, "AllConsumed == <>(consumed = Items)", "AllConsumed == <>Equal(consumed, Items)");
+    writeFileSync(join(files.dir, "tla/Limits.tla"),
+      "---- MODULE Limits ----\nEqual(n, m) ==\n  LET same == n = m IN same\nOtherAction == TRUE\n====\n");
+  };
+  const change = (from, to) => ({ dir }) => edit(join(dir, "tla/Limits.tla"), from, to);
+  assertChanged(recordedThenEdited(setup, "matrix", change("same == n = m", "same == TRUE")), "matrix", "changed definition Limits.tla Equal");
+  assertUnchanged(recordedThenEdited(setup, "matrix", change("OtherAction == TRUE", "OtherAction == FALSE")), "matrix");
+});
+
+test("an indented TLA+ definition after a LET closes, or a column-0 one inside a LET, compares the whole module", () => {
+  for (const replacement of [
+    "Unused ==\n  LET one == 1 IN one\n  Finished == consumed = Items\nAllConsumed == <>Finished",
+    "AllConsumed ==\n  LET\nFinished == consumed = Items\n  IN <>Finished",
+  ]) {
+    const setup = tla("AllConsumed == <>(consumed = Items)", replacement);
+    assertChanged(recordedThenEdited(setup, "matrix", tla("Finished == consumed = Items", "Finished == TRUE")),
+      "matrix", "changed module text");
+  }
+});
+
 test("a TLA+ Init that Spec narrows is changed", () => {
   assertChanged(recordedThenEdited(null, "matrix", tla("Init == next = 0 /\\ consumed = 0", "Init == next = 0 /\\ consumed = 0 /\\ Items = 0")), "matrix", "changed definition BoundedQueue.tla Init");
 });
