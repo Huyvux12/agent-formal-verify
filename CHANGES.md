@@ -6,6 +6,8 @@ The specification baseline now keeps the layout of a TLA+ definition that spans 
 
 A TLA+ mutation now gets credit only when its detector passes on the original spec at the same run settings. An ordinary check must pass there, and a reach check must find its witness. Before this change, a mutation that only added parentheses could get credit for a violation the original model already had, or for a state the original model never reached. The mutation runner checks each selected run on the original once. When the original fails, the mutation gets no verdict. The run stops with a `FAIL` line for that mutation, followed by a line that names the detector the original did not pass.
 
+The TLA+ matrix runner now drops every space and tab between a run's label and its `|`. Before this change it dropped one space, so a label followed by more spaces or a tab printed them in its `PASS` and `FAIL` lines. Spaces inside a label stay.
+
 The Lean mutation runner now runs the Lean checker on the original model, with its frozen statements, before it checks any mutation. Before this change, deleting a frozen public theorem removed it from mutation coverage without a failure, and a malformed `.statements` file could still give a passing summary. The Lean checker, the mutation runner and the baseline helper now read statements records with the same reader.
 
 Rust mutation runs now copy a module directory named `target`, such as `src/target/mod.rs`. Before this change, the copy left out every directory with that name. It still leaves out the target directory that `cargo metadata` reports, and any directory that holds Cargo's `CACHEDIR.TAG` file, such as a `target/` that stayed in the tree after `CARGO_TARGET_DIR` moved the build.
