@@ -245,9 +245,10 @@ def tla_module_surface(directory, spec, operators):
         body = STRING.sub('""', body)
         if key == scopes[root]["Spec"]:
             body = SPEC_ACTIONS.sub(" ", body)
-        # A function definition such as F[x \in S] == ... references S in its header.
-        domain = header if "[" in header else ""
-        required.update(scopes[owner][word] for word in IDENTIFIER.findall(f"{domain} {body}") if word in scopes[owner])
+        if "[" in header:
+            # A function definition such as F[x \in S] == ... references S in its header.
+            body = f"{header} {body}"
+        required.update(scopes[owner][word] for word in IDENTIFIER.findall(body) if word in scopes[owner])
     return surface
 
 
