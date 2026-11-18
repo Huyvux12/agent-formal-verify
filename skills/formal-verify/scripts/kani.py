@@ -42,6 +42,7 @@ class Verdict(IntEnum):
 class Harness:
     unwind: int
     source: Path
+    should_panic: bool
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,8 @@ class CrateSources:
 
         for root in self.roots:
             if self.roots.isdisjoint(root.parents):
-                shutil.copytree(root, destination / root.relative_to(anchor), ignore=ignore)
+                shutil.copytree(root, destination / root.relative_to(anchor), ignore=ignore,
+                                ignore_dangling_symlinks=True)
         return destination / crate.relative_to(anchor)
 
 
@@ -222,6 +224,7 @@ def discover(crate, work, kani):
                     continue
                 name = harness["pretty_name"]
                 bound = harness["attributes"].get("unwind_value")
+                should_panic = harness["attributes"].get("should_panic") is True
                 source = harness["original_file"]
                 if not isinstance(name, str) or not name or not isinstance(source, str) or not source:
                     raise CheckError("malformed Kani harness name or source")
@@ -229,12 +232,21 @@ def discover(crate, work, kani):
                     raise CheckError("duplicate harness names; select a single crate")
                 if type(bound) is not int or bound < 1:
                     raise CheckError(f"{name} needs #[kani::unwind(N)] with N greater than zero")
-                harnesses[name] = Harness(bound, (workspace / source).resolve())
+                harnesses[name] = Harness(bound, (workspace / source).resolve(), should_panic)
     except (KeyError, TypeError, AttributeError) as error:
         raise CheckError(f"malformed Kani discovery record: {error!r}") from error
     if not harnesses:
         raise CheckError("no proof harnesses found")
     return harnesses
+
+
+def reject_should_panic(harnesses, names):
+    """Raise CheckError for the first named harness that Kani verifies with an expected panic."""
+    for name in names:
+        # Kani reports the expected panic as a failed check, which would read as a refuted property.
+        if harnesses[name].should_panic:
+            raise CheckError(f"{name} is marked #[kani::should_panic], which the Rust checker does not "
+                             "support; remove the attribute and assert the condition that leads to the panic")
 
 
 def harness_result(report, kani, name, returncode):
@@ -335,6 +347,7 @@ def main():
             unknown = set(names) - set(bounds)
             if unknown:
                 raise CheckError("unknown harnesses: " + ", ".join(sorted(unknown)))
+            reject_should_panic(bounds, names)
         except CheckError as error:
             print(f"FAIL {error}")
             return 1
