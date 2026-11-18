@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,9 @@ import uuid
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
+
+sys.dont_write_bytecode = True
+import workdir
 
 HERE = Path(__file__).resolve().parent
 CHECK_KINDS = ("INVARIANT", "INVARIANTS", "PROPERTY", "PROPERTIES")
@@ -129,16 +133,27 @@ class Tlc:
             raise Unavailable(done.stdout.rstrip("\n"))
         self.java, self.jar = done.stdout.splitlines()[-2:]
         self.workers = os.environ.get("TLC_WORKERS") or "auto"
+        self._warned_disk = False
 
     def run(self, directory, module, config, reach):
         """Run TLC on module in directory with config; return its exit status and log."""
+        if not self._warned_disk:
+            self._warned_disk = True
+            workdir.warn_runtime()
         log = directory / "tlc.log"
         (directory / "MC.cfg").write_text(config, encoding="utf-8")
         command = [self.java, "-XX:+UseParallelGC", "-cp", self.jar, "tlc2.TLC", "-workers", "1" if reach else self.workers,
                    *(["-deadlock"] if reach else []), "-cleanup", "-metadir", str(directory / "states"),
                    "-config", str(directory / "MC.cfg"), str(directory / f"{module}.tla")]
         with log.open("w", encoding="utf-8") as stream:
-            status = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=False).returncode
+            process = subprocess.Popen(
+                command, stdout=stream, stderr=subprocess.STDOUT, start_new_session=(os.name == "posix")
+            )
+            try:
+                status = process.wait()
+            except BaseException:
+                workdir.stop_process_group(process)
+                raise
         return status, read_raw(log)
 
 
@@ -342,24 +357,28 @@ def run_task(checker, matrix_dir, task, work, source=None):
     if not (matrix_dir / spec).is_file():
         return Result(Outcome.MISSING, name, run.label, detail=spec)
     directory = Path(tempfile.mkdtemp(prefix="run.", dir=work))
-    for module in (matrix_dir / spec).parent.glob("*.tla"):
-        dest = directory / module.name
-        if source is not None and module.name == Path(spec).name:
-            dest.write_text(source, encoding="utf-8")
-        else:
-            dest.write_bytes(module.read_bytes())
-    constants = "".join(f"  {pair.split('=')[0]} = {pair.split('=', 1)[-1]}\n" for pair in run.constants.split())
-    config = f"CONSTANTS\n{constants}SPECIFICATION Spec\n"
-    if not task.check_deadlock:
-        config += "CHECK_DEADLOCK FALSE\n"
-    if not operator:
-        status, log = checker.run(directory, name, config + "\n".join(check.line for check in task.checks) + "\n", reach=False)
-        return ordinary(name, run, status, log, directory / "tlc.log")
-    wrapper = f"Reach{uuid.uuid4().hex}"
-    invariant = f"{wrapper}Negated"
-    (directory / f"{wrapper}.tla").write_text(f"---- MODULE {wrapper} ----\nEXTENDS {name}\n{invariant} == ~{operator}\n====\n", encoding="utf-8")
-    status, log = checker.run(directory, wrapper, config + f"INVARIANT {invariant}\n", reach=True)
-    return witness(name, run, operator, invariant, status, log)
+    try:
+        for module in (matrix_dir / spec).parent.glob("*.tla"):
+            dest = directory / module.name
+            if source is not None and module.name == Path(spec).name:
+                dest.write_text(source, encoding="utf-8")
+            else:
+                dest.write_bytes(module.read_bytes())
+        constants = "".join(f"  {pair.split('=')[0]} = {pair.split('=', 1)[-1]}\n" for pair in run.constants.split())
+        config = f"CONSTANTS\n{constants}SPECIFICATION Spec\n"
+        if not task.check_deadlock:
+            config += "CHECK_DEADLOCK FALSE\n"
+        if not operator:
+            status, log = checker.run(directory, name, config + "\n".join(check.line for check in task.checks) + "\n", reach=False)
+            shutil.rmtree(directory / "states", ignore_errors=True)
+            return ordinary(name, run, status, log, directory / "tlc.log")
+        wrapper = f"Reach{uuid.uuid4().hex}"
+        invariant = f"{wrapper}Negated"
+        (directory / f"{wrapper}.tla").write_text(f"---- MODULE {wrapper} ----\nEXTENDS {name}\n{invariant} == ~{operator}\n====\n", encoding="utf-8")
+        status, log = checker.run(directory, wrapper, config + f"INVARIANT {invariant}\n", reach=True)
+        return witness(name, run, operator, invariant, status, log)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 
@@ -432,10 +451,13 @@ def main():
     except Unavailable as error:
         print(error)
         return 3
-    with tempfile.TemporaryDirectory() as work:
-        runner = Runner(tlc, Path(matrix).resolve().parent, only, lambda result: print("\n".join(render(result)), flush=True), Path(work))
-        for task in MatrixPlan(matrix):
-            runner.check(task)
+    try:
+        with workdir.signal_cleanup(), tempfile.TemporaryDirectory(dir=workdir.ensure_temp_root()) as work:
+            runner = Runner(tlc, Path(matrix).resolve().parent, only, lambda result: print("\n".join(render(result)), flush=True), Path(work))
+            for task in MatrixPlan(matrix):
+                runner.check(task)
+    except workdir.SignalTerminated as error:
+        return error.status
     if runner.runs_total == 0:
         matching = f"matching '{only}' " if only else ""
         print(f"FAIL no run {matching}in {matrix}")

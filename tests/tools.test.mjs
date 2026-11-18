@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { command, excludes, fixture, includes, leanPin, removeFixtures, run, scripts } from "./helpers.mjs";
+import { command, excludes, fixture, includes, leanPin, removeFixtures, root, run, scripts } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
@@ -35,7 +35,47 @@ test("missing runtimes and hash tools are unavailable with their remedies", () =
 
 test("helper usage errors exit 2", () => {
   const dir = fixture();
-  for (const [script, args] of [["lean-check.sh", []], ["tlc-matrix.sh", []], ["mutate.py", []], ["setup.sh", ["lean"]]]) {
+  for (const [script, args] of [["lean-check.sh", []], ["tlc-matrix.sh", []], ["mutate.py", []], ["setup.sh", ["lean"]], ["workdir.py", []]]) {
     assert.equal(run(dir, script, args).status, 2, script);
   }
+});
+
+test("setup.sh storage warns when free space is below FORMAL_MIN_FREE_GIB", () => {
+  const dir = fixture();
+  const tmp = join(dir, "custom-tmp");
+  const result = run(dir, "setup.sh", ["storage"], { TMPDIR: tmp, FORMAL_MIN_FREE_GIB: "999999" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  includes(result.stdout, "TEMP_DIR ");
+  includes(result.stdout, "WARN low free space (< 999999 GiB):");
+});
+
+test("workdir.parse_df_mounts selects only writable larger local volumes", () => {
+  const dir = fixture();
+  mkdirSync(join(dir, "tmp"));
+  const dfSample = [
+    "Filesystem 1024-blocks Used Available Capacity Mounted on",
+    "/dev/disk3s1s1 400000 300000 100000 75% /",
+    "/dev/disk3s5 400000 300000 100000 75% /System/Volumes/Data",
+    "/dev/disk5s1 900000 100000 800000 11% /Volumes/BackupRO",
+    "/dev/disk6s1 600000 100000 500000 16% /Volumes/ExternalSmall",
+    "/dev/disk7s1 1200000 100000 1100000 8% /Volumes/ExternalLarge",
+  ].join("\n");
+  const script = [
+    "import json, sys, types",
+    `sys.path.insert(0, ${JSON.stringify(scripts)})`,
+    "import workdir",
+    "devs = {'/': 1, '/tmp': 2, '/System/Volumes/Data': 2, '/Volumes/BackupRO': 3, '/Volumes/ExternalSmall': 4, '/Volumes/ExternalLarge': 5}",
+    "frees = {'/': 20*workdir.GIB, '/tmp': 20*workdir.GIB, '/Volumes/BackupRO': 500*workdir.GIB, '/Volumes/ExternalSmall': 100*workdir.GIB, '/Volumes/ExternalLarge': 300*workdir.GIB}",
+    "stat_fn = lambda p: types.SimpleNamespace(st_dev=devs[str(p)])",
+    "access_fn = lambda p, _m: str(p) != '/Volumes/BackupRO'",
+    "usage_fn = lambda p: types.SimpleNamespace(free=frees[str(p)])",
+    `out = workdir.parse_df_mounts(${JSON.stringify(dfSample)}, '/tmp', '/', stat_fn=stat_fn, access_fn=access_fn, usage_fn=usage_fn)`,
+    "print(json.dumps(out))",
+  ].join("; ");
+  const result = spawnSync("python3", ["-B", "-c", script], { cwd: root, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), [
+    ["/Volumes/ExternalLarge", 300 * 1024 ** 3],
+    ["/Volumes/ExternalSmall", 100 * 1024 ** 3],
+  ]);
 });

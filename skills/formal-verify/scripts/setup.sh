@@ -4,6 +4,13 @@
 # Ensures one tool is ready; system runtimes must already be installed.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+
+report_storage() {
+  if command -v python3 > /dev/null 2>&1; then
+    python3 "$HERE/workdir.py" report || true
+  fi
+}
+
 case ${1:-} in
   tla)
     # shellcheck source=skills/formal-verify/scripts/tlc-tools.sh
@@ -11,11 +18,13 @@ case ${1:-} in
     require_tlc_runtime
     tlc_jar_ready
     echo "READY TLC $TLC_JAR"
+    report_storage
     ;;
   rust)
     [ "$#" -eq 1 ] || { echo "usage: setup.sh rust"; exit 2; }
     command -v python3 > /dev/null || { echo "UNAVAILABLE python3 is required; install Python 3"; exit 3; }
     python3 "$HERE/kani.py" ready
+    report_storage
     ;;
   lean)
     [ "$#" -eq 2 ] || { echo "usage: setup.sh lean <lake-project-dir>"; exit 2; }
@@ -30,6 +39,12 @@ case ${1:-} in
       [ -z "$install_log" ] || echo "$install_log"
     fi
     echo "READY Lean $toolchain"
+    report_storage
     ;;
-  *) echo "usage: setup.sh tla | setup.sh lean <lake-project-dir> | setup.sh rust"; exit 2 ;;
+  storage)
+    [ "$#" -eq 1 ] || { echo "usage: setup.sh storage"; exit 2; }
+    command -v python3 > /dev/null || { echo "UNAVAILABLE python3 is required; install Python 3"; exit 3; }
+    python3 "$HERE/workdir.py" report
+    ;;
+  *) echo "usage: setup.sh tla | setup.sh lean <lake-project-dir> | setup.sh rust | setup.sh storage"; exit 2 ;;
 esac

@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Michael Denyer
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { command, excludes, fakeTlc, fixture, includes, logs, removeFixtures, run, scripts } from "./helpers.mjs";
@@ -350,4 +350,93 @@ test("the matrix runner strips trailing spaces and tabs before | in run labels",
   includes(result.stdout, "PASS One multi  word 4 distinct states found\n");
   const filtered = matrix(["small-case"]);
   assert.equal(filtered.stdout, "FAIL run 'before-spec' before any spec line\nPASS One small-case 4 distinct states found\nSUMMARY 1 of 1 runs passed, 4 distinct states in total\n");
+});
+
+test("the matrix runner deletes each run directory as soon as the run finishes", () => {
+  const dir = fixture();
+  const customTmp = join(dir, "work-tmp");
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun first | N=1\nrun second | N=2\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const java = fakeTlc(dir, [
+    'for last; do :; done',
+    'run_dir=$(dirname "$last")',
+    'work_dir=$(dirname "$run_dir")',
+    'mkdir -p "$run_dir/states"',
+    'echo state-data > "$run_dir/states/mock.fp"',
+    'ls -1 "$work_dir" | wc -l | tr -d " " >> "$TASK_TRACE"',
+    'echo "Model checking completed. No error has been found."',
+    'echo "4 distinct states found"',
+  ].join("\n"));
+  const result = run(dir, "tlc-matrix.sh", [join(dir, "One.matrix")], {
+    JAVA: java,
+    TLC_JAR: join(dir, "tools.jar"),
+    TMPDIR: customTmp,
+    FORMAL_MIN_FREE_GIB: "0",
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  // Each run sees only its own single run.* dir because the prior run.* was deleted.
+  assert.equal(readFileSync(join(dir, "calls"), "utf8"), "1\n1\n");
+  assert.deepEqual(readdirSync(customTmp), []);
+});
+
+test("SIGTERM stops the child TLC process group and cleans temporary directories", async () => {
+  const dir = fixture();
+  const customTmp = join(dir, "nested", "signal-tmp");
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun hang | N=1\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const pidFile = join(dir, "child.pid");
+  const readyFile = join(dir, "ready");
+  const java = fakeTlc(dir, [
+    'for last; do :; done',
+    'mkdir -p "$(dirname "$last")/states"',
+    'echo data > "$(dirname "$last")/states/mock.fp"',
+    'sleep 30 &',
+    'echo "$!" > "$TASK_PID_FILE"',
+    'echo ready > "$TASK_READY_FILE"',
+    'wait',
+  ].join("\n"));
+  const code = await new Promise((resolve) => {
+    const child = spawn("python3", [join(scripts, "tlc.py"), join(dir, "One.matrix")], {
+      env: {
+        ...process.env,
+        JAVA: java,
+        TLC_JAR: join(dir, "tools.jar"),
+        TMPDIR: customTmp,
+        TASK_PID_FILE: pidFile,
+        TASK_READY_FILE: readyFile,
+        FORMAL_MIN_FREE_GIB: "0",
+      },
+    });
+    const timer = setInterval(() => {
+      if (existsSync(readyFile)) {
+        clearInterval(timer);
+        child.kill("SIGTERM");
+      }
+    }, 20);
+    child.on("close", (exitCode, signalName) => {
+      clearInterval(timer);
+      resolve({ exitCode, signalName });
+    });
+  });
+  assert.equal(code.exitCode, 143, JSON.stringify(code));
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  assert.throws(() => process.kill(pid, 0));
+  assert.deepEqual(readdirSync(customTmp), []);
+});
+
+test("tlc-matrix warns on stderr when FORMAL_MIN_FREE_GIB exceeds available temp space", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun n=1 | N=1\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const result = run(dir, "tlc-matrix.sh", [join(dir, "One.matrix")], {
+    JAVA: fakeTlc(dir, 'echo "Model checking completed. No error has been found."; echo "4 distinct states found"'),
+    TLC_JAR: join(dir, "tools.jar"),
+    FORMAL_MIN_FREE_GIB: "999999",
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  includes(result.stdout, "PASS One n=1 4 distinct states found");
+  includes(result.stderr, "WARN low free space on temp dir");
 });
