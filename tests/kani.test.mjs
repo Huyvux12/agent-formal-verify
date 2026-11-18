@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { afterEach, test } from "node:test";
 import { command, excludes, fixture, includes, logs, removeFixtures, run } from "./helpers.mjs";
@@ -211,6 +211,15 @@ for (const outcome of ["success", "failure"]) {
     assert.equal(readFileSync(join(dir, "src/lib.rs"), "utf8"), "old\n");
   });
 }
+
+test("Rust mutations copy a crate that holds a dangling symlink, such as an editor lock file", () => {
+  const { dir, name } = kaniFixture("failure");
+  const mutations = rustMutation(dir, name);
+  symlinkSync("user@host.1234:1700000000", join(dir, "src/.#lib.rs"));
+  const result = runKani(dir, "mutate.py", [mutations]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  includes(result.stdout, "DETECTED guard");
+});
 
 for (const workspace of [false, true]) {
   test(`Rust mutations preserve ${workspace ? "workspace inheritance and transitive" : "sibling"} path dependencies`, () => {
