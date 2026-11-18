@@ -300,6 +300,18 @@ test("reach uses one worker and disables deadlock only for witness searches", ()
   includes(calls[1], "-deadlock");
 });
 
+test("each TLC run gets its own existing java.io.tmpdir", () => {
+  const { dir, matrix } = matrixFixture(["spec a/One.tla", "run first | N=1", "run second | N=2"], [
+    'for arg; do case "$arg" in -Djava.io.tmpdir=*) tmp=${arg#-Djava.io.tmpdir=}; [ -d "$tmp" ] && echo "$tmp" >> "$TASK_TRACE";; esac; done',
+    'echo "Model checking completed. No error has been found."',
+    'echo "4 distinct states found"',
+  ].join("\n"));
+  assert.equal(matrix().status, 0);
+  const tmpdirs = existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8").trim().split("\n") : [];
+  assert.equal(tmpdirs.length, 2, `java.io.tmpdir per launch: ${JSON.stringify(tmpdirs)}`);
+  assert.notEqual(tmpdirs[0], tmpdirs[1]);
+});
+
 test("reach does not confuse a runtime error with an unreachable state", () => {
   const { matrix } = reachFixture(["spec a/One.tla", "reach Full | n=1", "run n=1 | N=1"], 'echo "Error: undefined operator Full"; exit 1');
   const result = matrix();

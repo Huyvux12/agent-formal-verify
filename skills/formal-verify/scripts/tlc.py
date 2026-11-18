@@ -200,7 +200,10 @@ class Tlc:
         log = directory / "tlc.log"
         (directory / "MC.cfg").write_text(config, encoding="utf-8")
         chosen_workers = workers if workers is not None else ("1" if reach else self.workers)
-        command = [self.java, "-XX:+UseParallelGC", "-cp", self.jar, "tlc2.TLC", "-workers", chosen_workers,
+        # TLC unpacks its standard modules into java.io.tmpdir and deletes them on exit, so concurrent runs must not share it.
+        java_tmp = directory / "java"
+        java_tmp.mkdir(exist_ok=True)
+        command = [self.java, "-XX:+UseParallelGC", f"-Djava.io.tmpdir={java_tmp}", "-cp", self.jar, "tlc2.TLC", "-workers", chosen_workers,
                    *(["-deadlock"] if reach else []), "-cleanup", "-metadir", str(directory / "states"),
                    "-config", str(directory / "MC.cfg"), str(directory / f"{module}.tla")]
         start = time.monotonic()
