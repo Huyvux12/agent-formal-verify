@@ -247,6 +247,21 @@ test("a failing Lean guard or example cannot cover an unrelated theorem", () => 
   assert.equal(result.status, 1);
 });
 
+for (const replacement of ["absurd h (Nat.lt_irrefl n)", ""]) {
+  test(`a Lean mutation that edits only a theorem's proof reaches no verdict (${replacement ? "replaced" : "deleted"})`, () => {
+    const model = "def step (n : Nat) : Nat := n + 1\n"
+      + "theorem vacuous (n : Nat) (h : n < 0) : n < step n := absurd h (Nat.not_lt_zero n)\n";
+    const decls = [leanDecl("vacuous", 2)];
+    const result = leanMutations(model, ["vacuous"], leanAnalysis(decls),
+      `mutation edit the proof\n- absurd h (Nat.not_lt_zero n)\n${replacement ? `+ ${replacement}\n` : ""}`,
+      [{ text: ":= " + replacement + "\n", analysis: leanAnalysis(decls, [leanError(2)]) }]);
+    assert.equal(result.status, 1, result.stdout);
+    includes(result.stdout, "FAIL mutation 'edit the proof' did not reach a verdict:\n"
+      + "theorem vacuous: the mutation edits this theorem");
+    excludes(result.stdout, "DETECTED");
+  });
+}
+
 test("Lean proof sensitivity reports its limit even when every recorded proof breaks", () => {
   const model = "def step (n : Nat) : Nat := n + 1\n"
     + "theorem vacuous (n : Nat) (_h : n < 0) : n < step n := by simp [step]\n";
