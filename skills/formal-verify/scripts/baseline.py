@@ -241,10 +241,13 @@ def tla_module_surface(directory, spec, operators):
         seen.add(key)
         owner, name = key
         surface[f"definition {owner} {name}"] = bodies[key]
-        body = STRING.sub('""', bodies[key].partition("==")[2])
+        header, _, body = bodies[key].partition("==")
+        body = STRING.sub('""', body)
         if key == scopes[root]["Spec"]:
             body = SPEC_ACTIONS.sub(" ", body)
-        required.update(scopes[owner][word] for word in IDENTIFIER.findall(body) if word in scopes[owner])
+        # A function definition such as F[x \in S] == ... references S in its header.
+        domain = header if "[" in header else ""
+        required.update(scopes[owner][word] for word in IDENTIFIER.findall(f"{domain} {body}") if word in scopes[owner])
     return surface
 
 
