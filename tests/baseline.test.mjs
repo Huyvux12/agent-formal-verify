@@ -183,6 +183,17 @@ test("TLA+ properties follow transitive local imports and leave unrelated action
   assertUnchanged(recordedThenEdited(setup, "matrix", change("OtherAction == TRUE", "OtherAction == FALSE")), "matrix");
 });
 
+test("a multi-line LOCAL definition with a tab after LOCAL does not hide the imported operator of that name", () => {
+  function setup(files) {
+    edit(files.spec, "EXTENDS Naturals", "EXTENDS Naturals, Shared, Hidden");
+    edit(files.spec, "AllConsumed == <>(consumed = Items)", "AllConsumed == <>Finished(consumed, Items)");
+    writeFileSync(join(files.dir, "tla/Shared.tla"), "---- MODULE Shared ----\nFinished(n, total) == n = total\n====\n");
+    writeFileSync(join(files.dir, "tla/Hidden.tla"), "---- MODULE Hidden ----\nLOCAL\tFinished(n, total) ==\n  TRUE\n====\n");
+  }
+  assertChanged(recordedThenEdited(setup, "matrix", ({ dir }) => edit(join(dir, "tla/Shared.tla"), "n = total", "TRUE")),
+    "matrix", "changed definition Shared.tla Finished");
+});
+
 test("a locally imported operator with an indented header is tracked", () => {
   const setup = (files) => {
     edit(files.spec, "EXTENDS Naturals", "EXTENDS Naturals, Limits");
