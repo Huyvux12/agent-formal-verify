@@ -76,7 +76,9 @@ class CrateSources:
         anchor = Path(os.path.commonpath(self.roots))
 
         def ignore(directory, names):
-            return [name for name in names if name == ".git" or Path(directory) / name in self.outputs]
+            # Cargo tags each build directory, including one left behind after the target directory moved.
+            return [name for name in names if name == ".git" or Path(directory) / name in self.outputs
+                    or (Path(directory) / name / "CACHEDIR.TAG").is_file()]
 
         for root in self.roots:
             if self.roots.isdisjoint(root.parents):
