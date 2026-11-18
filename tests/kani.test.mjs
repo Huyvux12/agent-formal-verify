@@ -336,6 +336,17 @@ test("Kani requires an explicit unwind bound", () => {
   includes(result.stdout, "needs #[kani::unwind(N)]");
 });
 
+test("Kani rejects a should_panic harness before running verification", () => {
+  const { dir, name } = kaniFixture();
+  writeJson(join(dir, "driver.json"), { version: KANI, harnesses: {}, metadata: { proof_harnesses: [
+    { pretty_name: name, original_file: "src/lib.rs", attributes: { kind: "Proof", should_panic: true, unwind_value: 3 } },
+  ] } });
+  const result = runKani(dir, "kani-check.sh", [dir]);
+  assert.equal(result.status, 1);
+  includes(result.stdout, `${name} is marked #[kani::should_panic]`);
+  excludes(calls(dir), "--export-json");
+});
+
 test("Rust mutation coverage reports harnesses no mutation targets", () => {
   const { dir, name } = kaniFixture("failure");
   writeJson(join(dir, "driver.json"), { version: KANI, harnesses: { [name]: 3, "proofs::other": 3 } });

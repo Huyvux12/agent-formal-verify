@@ -227,6 +227,10 @@ def discover(crate, work, kani):
                     raise CheckError("malformed Kani harness name or source")
                 if name in harnesses:
                     raise CheckError("duplicate harness names; select a single crate")
+                # Kani reports the expected panic as a failed check, which would read as a refuted property.
+                if harness["attributes"].get("should_panic"):
+                    raise CheckError(f"{name} is marked #[kani::should_panic], which the Rust checker does not "
+                                     "support; remove the attribute and assert the condition that leads to the panic")
                 if type(bound) is not int or bound < 1:
                     raise CheckError(f"{name} needs #[kani::unwind(N)] with N greater than zero")
                 harnesses[name] = Harness(bound, (workspace / source).resolve())
