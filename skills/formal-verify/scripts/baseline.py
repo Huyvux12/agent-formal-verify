@@ -127,6 +127,30 @@ def begins_in_column_zero(line):
     return line[:1].strip() != ""
 
 
+DEFINITION_TOKENS = re.compile(r"\b(?:LET|IN)\b|(?<!=)==(?!=)")
+
+
+def has_unplaced_definition(code):
+    """Return whether a definition can lie outside the column-0 headers that tla_definitions splits on.
+
+    An indented `==` inside an open LET defines a LET-local operator. Any other indented `==`, a line
+    that starts with `==`, or a column-0 header while a LET is open can define a module operator.
+    """
+    open_lets = 0
+    for line in code.split("\n"):
+        indented = not begins_in_column_zero(line)
+        if open_lets and not indented and ("==" in line or MODULE_LEVEL.match(line)):
+            return True
+        for token in DEFINITION_TOKENS.finditer(line):
+            if token[0] == "LET":
+                open_lets += 1
+            elif token[0] == "IN":
+                open_lets = max(open_lets - 1, 0)
+            elif not open_lets and (indented or token.start() == 0):
+                return True
+    return False
+
+
 def tla_definitions(text):
     found, unreadable, name, lines = {}, set(), None, []
     for line in text.split("\n"):
@@ -169,8 +193,7 @@ def tla_module_surface(directory, spec, operators):
         text = blank_tla_comments(tlc.read_raw(directory / path))
         texts[path] = text
         code = STRING.sub('""', text)
-        # Indented or multiline headers cannot always be separated from a local LET definition.
-        if re.search(r"(?m)^(?:[ \t].*)?(?<!=)==(?!=)", code):
+        if has_unplaced_definition(code):
             whole_modules = True
         scope = {}
         for group in EXTENDS.findall(code):
