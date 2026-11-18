@@ -40,6 +40,9 @@ Put `#[kani::unwind(N)]` on every harness, above its real loop bounds. The check
 requires this explicit bound and passes it to Kani. A failed unwinding assertion
 means the bound is too low and fails the check. Discovery and verification both
 enable `-Z stubbing`, so documented `#[kani::stub]` attributes work in either step.
+The checker rejects a harness marked `#[kani::should_panic]` when it would verify
+that harness, before it verifies any. Assert the condition that leads to the panic
+instead.
 
 Kani stops a harness at `KANI_HARNESS_TIMEOUT`, five minutes by default. Symbolic
 inputs that reach an error constructor that builds a message with `format!`, or

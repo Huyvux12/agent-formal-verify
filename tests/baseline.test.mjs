@@ -169,6 +169,13 @@ test("a TLA+ helper that a property references is changed, and an action that no
   assertUnchanged(recordedThenEdited(null, "matrix", tla("next' = next + 1", "next' = next + 2")), "matrix");
 });
 
+test("a TLA+ operator that only a function definition's domain references is changed", () => {
+  const helper = tla("InWindow == consumed <= next /\\ next <= consumed + Window",
+    "Slots == 0..Window\nFits[k \\in Slots] == next <= consumed + k\nInWindow == consumed <= next /\\ \\E k \\in DOMAIN Fits : Fits[k]");
+  const outcome = recordedThenEdited(helper, "matrix", tla("Slots == 0..Window", "Slots == 0..Items"));
+  assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla Slots");
+});
+
 test("TLA+ properties follow transitive local imports and leave unrelated action bodies free to change", () => {
   function setup(files) {
     edit(files.spec, "EXTENDS Naturals", "EXTENDS Naturals,\n  Predicates");
