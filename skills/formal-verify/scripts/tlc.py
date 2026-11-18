@@ -287,7 +287,7 @@ class MutationPlan:
         results = []
         for task in self._select(detector):
             if isinstance(task, Result):
-                results.append(task)
+                results.append((task, False))
                 continue
             if only not in task.run.label:
                 continue
@@ -296,7 +296,8 @@ class MutationPlan:
                 if original.outcome not in (Outcome.PASS, Outcome.WITNESS):
                     raise ValueError(f"unmutated model did not pass {detector}: " + "\n".join(render(original)))
                 self._passing_originals.add(task)
-            results.append(run_task(checker, self._spec.parent, task, work, source))
+            temporal = any(check.kind.startswith("PROPERT") for check in task.checks)
+            results.append((run_task(checker, self._spec.parent, task, work, source), temporal))
         if not results:
             raise ValueError(f"no run matches '{only}' for '{detector}'")
         violations = {
@@ -306,11 +307,14 @@ class MutationPlan:
             f"Error: Action property {detector} is violated.",
             "Error: Temporal properties were violated.",
         }
+        # TLC checks a property such as []P as the invariant P and names P. The config holds only the detector.
+        inner_invariant = re.compile(r"Error: Invariant .+ is violated(?:\.| by the initial state:)")
         detections, errors = [], []
-        for result in results:
+        for result, temporal in results:
             if result.outcome is Outcome.UNREACHED:
                 detections.append((result.label, "the model never reaches this state"))
-            elif result.outcome is Outcome.FAIL and result.detail in violations:
+            elif result.outcome is Outcome.FAIL and (result.detail in violations
+                                                     or (temporal and inner_invariant.fullmatch(result.detail))):
                 detections.append((result.label, result.detail.removeprefix("Error: ").rstrip(".")))
             elif result.outcome not in (Outcome.PASS, Outcome.WITNESS):
                 errors.extend(render(result))
