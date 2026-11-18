@@ -83,6 +83,17 @@ test("temporal mutation detection requires TLC to report a property violation", 
   includes(result.stdout, "DETECTED never step: Ends fails in run 'n=4' (Temporal properties were violated)");
 });
 
+for (const [log, reason] of [["tlc-invariant.log", "Invariant Small is violated"],
+  ["tlc-reach-initial.log", "Invariant ReachNegated is violated by the initial state:"]]) {
+  test(`a box property detects a mutation when TLC names its inner invariant (${log})`, () => {
+    const { result } = tlaMutations(["check PROPERTIES Safe"], [
+      "mutation skip", "detects Safe", "- x + 1", "+ x \\* BUG",
+    ], log);
+    assert.equal(result.status, 0, result.stdout);
+    includes(result.stdout, `DETECTED skip: Safe fails in run 'n=4' (${reason})`);
+  });
+}
+
 test("an unrelated invariant failure cannot detect a named mutation", () => {
   const { result } = tlaMutations(["check INVARIANT Other"], [
     "mutation skip", "detects Other", "- x + 1", "+ x \\* BUG",
@@ -247,6 +258,21 @@ test("a failing Lean guard or example cannot cover an unrelated theorem", () => 
     + "SUMMARY 1 of 1 mutations detected, 1 properties without a mutation\n");
   assert.equal(result.status, 1);
 });
+
+for (const replacement of ["absurd h (Nat.lt_irrefl n)", ""]) {
+  test(`a Lean mutation that edits only a theorem's proof reaches no verdict (${replacement ? "replaced" : "deleted"})`, () => {
+    const model = "def step (n : Nat) : Nat := n + 1\n"
+      + "theorem vacuous (n : Nat) (h : n < 0) : n < step n := absurd h (Nat.not_lt_zero n)\n";
+    const decls = [leanDecl("vacuous", 2)];
+    const result = leanMutations(model, ["vacuous"], leanAnalysis(decls),
+      `mutation edit the proof\n- absurd h (Nat.not_lt_zero n)\n${replacement ? `+ ${replacement}\n` : ""}`,
+      [{ text: ":= " + replacement + "\n", analysis: leanAnalysis(decls, [leanError(2)]) }]);
+    assert.equal(result.status, 1, result.stdout);
+    includes(result.stdout, "FAIL mutation 'edit the proof' did not reach a verdict:\n"
+      + "theorem vacuous: the mutation edits this theorem");
+    excludes(result.stdout, "DETECTED");
+  });
+}
 
 test("Lean proof sensitivity reports its limit even when every recorded proof breaks", () => {
   const model = "def step (n : Nat) : Nat := n + 1\n"

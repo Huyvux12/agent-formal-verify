@@ -231,6 +231,7 @@ def rust_runner(model, mutations):
                 if mutation.detects not in bounds:
                     stop(f"mutation '{mutation.label}': unknown harness '{mutation.detects}'")
             selected = {mutation.detects for mutation in mutations}
+            kani.reject_should_panic(bounds, sorted(selected))
             for name in sorted(selected):
                 outcome = kani.verify(project, work, verifier, name, bounds[name].unwind)
                 if outcome.verdict is not kani.Verdict.PASS:
