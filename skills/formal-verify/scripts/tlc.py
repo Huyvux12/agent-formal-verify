@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,9 @@ import uuid
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
+
+sys.dont_write_bytecode = True
+import workdir
 
 HERE = Path(__file__).resolve().parent
 CHECK_KINDS = ("INVARIANT", "INVARIANTS", "PROPERTY", "PROPERTIES")
@@ -138,24 +142,6 @@ def parse_timeout(raw):
     return limit[1] + unit, int(limit[1]) * TIME_UNITS[limit[2]]
 
 
-def _stop_process(process):
-    """Terminate a spawned TLC process cleanly while keeping it in the caller's process group."""
-    if process.poll() is not None:
-        return
-    try:
-        process.terminate()
-    except ProcessLookupError:
-        return
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-        process.wait()
-
-
 def _read_progress(log_path, offset, partial):
     """Read newly written complete lines from tlc.log and return (new_offset, new_partial, latest_progress)."""
     latest = ""
@@ -194,9 +180,13 @@ class Tlc:
             raise Unavailable(done.stdout.rstrip("\n"))
         self.java, self.jar = done.stdout.splitlines()[-2:]
         self.workers = os.environ.get("TLC_WORKERS") or "auto"
+        self._warned_disk = False
 
     def run(self, directory, module, config, reach, workers=None, progress_label=""):
         """Run TLC on module in directory with config; return (exit_status, log, timed_out)."""
+        if not self._warned_disk:
+            self._warned_disk = True
+            workdir.warn_runtime()
         log = directory / "tlc.log"
         (directory / "MC.cfg").write_text(config, encoding="utf-8")
         chosen_workers = workers if workers is not None else ("1" if reach else self.workers)
@@ -218,7 +208,7 @@ class Tlc:
                     now = time.monotonic()
                     remaining = deadline - now
                     if remaining <= 0:
-                        _stop_process(process)
+                        workdir.stop_process(process)
                         timed_out = True
                         break
                     if now >= next_report:
@@ -237,11 +227,10 @@ class Tlc:
                         break
                     except subprocess.TimeoutExpired:
                         continue
-            finally:
-                if process.poll() is None:
-                    _stop_process(process)
-            status = process.returncode
-        return status, read_raw(log), timed_out
+            except BaseException:
+                workdir.stop_process(process)
+                raise
+        return process.returncode, read_raw(log), timed_out
 
 
 class Outcome(Enum):
@@ -448,32 +437,36 @@ def run_task(checker, matrix_dir, task, work, source=None):
     if not (matrix_dir / spec).is_file():
         return Result(Outcome.MISSING, name, run.label, detail=spec)
     directory = Path(tempfile.mkdtemp(prefix="run.", dir=work))
-    for module in (matrix_dir / spec).parent.glob("*.tla"):
-        dest = directory / module.name
-        if source is not None and module.name == Path(spec).name:
-            dest.write_text(source, encoding="utf-8")
-        else:
-            dest.write_bytes(module.read_bytes())
-    constants = "".join(f"  {pair.split('=')[0]} = {pair.split('=', 1)[-1]}\n" for pair in run.constants.split())
-    config = f"CONSTANTS\n{constants}SPECIFICATION Spec\n"
-    if not task.check_deadlock:
-        config += "CHECK_DEADLOCK FALSE\n"
-    if not operator:
+    try:
+        for module in (matrix_dir / spec).parent.glob("*.tla"):
+            dest = directory / module.name
+            if source is not None and module.name == Path(spec).name:
+                dest.write_text(source, encoding="utf-8")
+            else:
+                dest.write_bytes(module.read_bytes())
+        constants = "".join(f"  {pair.split('=')[0]} = {pair.split('=', 1)[-1]}\n" for pair in run.constants.split())
+        config = f"CONSTANTS\n{constants}SPECIFICATION Spec\n"
+        if not task.check_deadlock:
+            config += "CHECK_DEADLOCK FALSE\n"
+        if not operator:
+            status, log, timed_out = checker.run(
+                directory, name, config + "\n".join(check.line for check in task.checks) + "\n",
+                reach=False, progress_label=f"{name} {run.label}",
+            )
+            shutil.rmtree(directory / "states", ignore_errors=True)
+            return ordinary(name, run, status, log, directory / "tlc.log", checker.limit if timed_out else None)
+        wrapper = f"Reach{uuid.uuid4().hex}"
+        invariant = f"{wrapper}Negated"
+        (directory / f"{wrapper}.tla").write_text(f"---- MODULE {wrapper} ----\nEXTENDS {name}\n{invariant} == ~{operator}\n====\n", encoding="utf-8")
+        # Exhaustive UNREACHED checks in reach: mutations do not depend on shortest-trace determinism.
+        reach_workers = checker.workers if source is not None else "1"
         status, log, timed_out = checker.run(
-            directory, name, config + "\n".join(check.line for check in task.checks) + "\n",
-            reach=False, progress_label=f"{name} {run.label}",
+            directory, wrapper, config + f"INVARIANT {invariant}\n",
+            reach=True, workers=reach_workers, progress_label=f"{name} reach {operator} {run.label}",
         )
-        return ordinary(name, run, status, log, directory / "tlc.log", checker.limit if timed_out else None)
-    wrapper = f"Reach{uuid.uuid4().hex}"
-    invariant = f"{wrapper}Negated"
-    (directory / f"{wrapper}.tla").write_text(f"---- MODULE {wrapper} ----\nEXTENDS {name}\n{invariant} == ~{operator}\n====\n", encoding="utf-8")
-    # Exhaustive UNREACHED checks in reach: mutations do not depend on shortest-trace determinism.
-    reach_workers = checker.workers if source is not None else "1"
-    status, log, timed_out = checker.run(
-        directory, wrapper, config + f"INVARIANT {invariant}\n",
-        reach=True, workers=reach_workers, progress_label=f"{name} reach {operator} {run.label}",
-    )
-    return witness(name, run, operator, invariant, status, log, checker.limit if timed_out else None)
+        return witness(name, run, operator, invariant, status, log, checker.limit if timed_out else None)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 
@@ -554,10 +547,16 @@ def main():
     except Unavailable as error:
         print(error)
         return 3
-    with tempfile.TemporaryDirectory() as work:
-        runner = Runner(tlc, Path(matrix).resolve().parent, only, lambda result: print("\n".join(render(result)), flush=True), Path(work))
-        for task in MatrixPlan(matrix):
-            runner.check(task)
+    try:
+        with workdir.signal_cleanup(), tempfile.TemporaryDirectory(dir=workdir.ensure_temp_root()) as work:
+            runner = Runner(tlc, Path(matrix).resolve().parent, only, lambda result: print("\n".join(render(result)), flush=True), Path(work))
+            for task in MatrixPlan(matrix):
+                runner.check(task)
+    except workdir.TempDirError as error:
+        print(error)
+        return 1
+    except workdir.SignalTerminated as error:
+        error.exit()
     if runner.runs_total == 0:
         matching = f"matching '{only}' " if only else ""
         print(f"FAIL no run {matching}in {matrix}")
