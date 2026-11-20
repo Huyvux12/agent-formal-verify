@@ -454,6 +454,54 @@ test("SIGTERM stops TLC and the processes it started, cleans temporary directori
   assert.equal(code.signalName, "SIGTERM", JSON.stringify(code));
 });
 
+test("SIGTERM also stops processes that TLC starts while the runner is stopping it", async () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun hang | N=1\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const pidsFile = join(dir, "started.pids");
+  const readyFile = join(dir, "ready");
+  const java = fakeTlc(dir, [
+    'i=0',
+    'while [ "$i" -lt 300 ]; do',
+    '  sleep 30 &',
+    '  echo "$!" >> "$TASK_PIDS_FILE"',
+    '  i=$((i + 1))',
+    '  if [ "$i" = 5 ]; then echo ready > "$TASK_READY_FILE"; fi',
+    'done',
+    'wait',
+  ].join("\n"));
+  const code = await new Promise((resolve) => {
+    const child = spawn("python3", [join(scripts, "tlc.py"), join(dir, "One.matrix")], {
+      env: {
+        ...process.env,
+        JAVA: java,
+        TLC_JAR: join(dir, "tools.jar"),
+        TASK_PIDS_FILE: pidsFile,
+        TASK_READY_FILE: readyFile,
+        FORMAL_MIN_FREE_GIB: "0",
+      },
+    });
+    const timer = setInterval(() => {
+      if (existsSync(readyFile)) {
+        clearInterval(timer);
+        child.kill("SIGTERM");
+      }
+    }, 20);
+    child.on("close", (exitCode, signalName) => {
+      clearInterval(timer);
+      resolve({ exitCode, signalName });
+    });
+  });
+  const started = readFileSync(pidsFile, "utf8").trim().split("\n").map(Number);
+  try {
+    assert.equal(code.signalName, "SIGTERM", JSON.stringify(code));
+    for (const pid of started) assertProcessStopped(pid);
+  } finally {
+    for (const pid of started) if (!isStopped(pid)) process.kill(pid, "SIGKILL");
+  }
+});
+
 test("Ctrl-C stops a shell loop that runs the matrix runner", async () => {
   const dir = fixture();
   writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
