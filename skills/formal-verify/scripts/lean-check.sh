@@ -100,6 +100,11 @@ private def hasTheoremParent (env : Environment) : Name → Bool
   | .str parent _ | .num parent _ =>
     (match env.find? parent with | some (.thmInfo _) => true | _ => false) || hasTheoremParent env parent
 
+private def body? : Lean.ConstantInfo → Option Lean.Expr
+  | .defnInfo v => some v.value
+  | .opaqueInfo v => some v.value
+  | _ => none
+
 private def oneLine (s : String) : String :=
   (s.foldl (fun (acc, gap) c =>
     if c.isWhitespace then (acc, true) else ((if gap then acc.push ' ' else acc).push c, false)) ("", false)).1
@@ -147,6 +152,11 @@ open Lean Elab Command in
     unless extra.isEmpty do IO.println s!"AXIOMS '{name}' depends on axioms: {extra}"
     let userName := (privateToUserName? name).getD name
     if userName.isInternalDetail && hasTheoremParent env name && (← findDeclarationRanges? name).isNone then continue
+    -- Lean generates a reserved name, such as an equation lemma, only when a proof uses it.
+    if isReservedName env name then continue
+    -- Its check misses the equations of a private definition's matcher.
+    if let .str parent _ := name then
+      if Meta.isMatcherCore env parent && (← findDeclarationRanges? name).isNone then continue
     let info := (env.find? name).get!
     let kind := match info with
       | .thmInfo _ => "theorem"
@@ -157,10 +167,14 @@ open Lean Elab Command in
       | .recInfo _ => "recursor"
       | .quotInfo _ => "quotient"
       | .axiomInfo _ => "axiom"
-    let value := match info with
-      | .defnInfo v => toJson (reprStr v.value)
-      | .opaqueInfo v => toJson (reprStr v.value)
-      | _ => Json.null
+    -- A recursive body can sit in an auxiliary: _unary or _mutual for well-founded recursion,
+    -- and _unsafe_rec for the code that runs, the only body a partial def has.
+    let value := match body? info with
+      | some v => toJson <| [`_unary, `_mutual, `_unsafe_rec].foldl (init := reprStr v) fun acc aux =>
+          match (env.find? (name ++ aux)).bind body? with
+          | some auxBody => acc ++ s!"\n{aux}: {reprStr auxBody}"
+          | none => acc
+      | none => Json.null
     let pp ← liftTermElabM <| Meta.ppExpr info.type
     let record := Json.mkObj [
       ("module", toJson env.header.moduleNames[idx.toNat]!.toString),
