@@ -502,6 +502,40 @@ test("SIGTERM also stops processes that TLC starts while the runner is stopping 
   }
 });
 
+test("a second interrupt while the runner stops TLC does not leave TLC suspended", () => {
+  const dir = fixture();
+  const ps = spawnSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).stdout.trim();
+  assert.ok(ps, "ps must be on PATH");
+  writeFileSync(join(dir, "ps"), `#!/bin/sh\nkill -INT "$PPID"\nexec "${ps}" "$@"\n`, { mode: 0o755 });
+  const script = [
+    "import os, signal, subprocess, sys",
+    `sys.path.insert(0, ${JSON.stringify(scripts)})`,
+    "import workdir",
+    "signal.signal(signal.SIGINT, signal.default_int_handler)",
+    "checker = subprocess.Popen(['sleep', '30'])",
+    "try:",
+    "    try:",
+    "        workdir.stop_process(checker)",
+    "        print('not interrupted')",
+    "    except KeyboardInterrupt:",
+    "        print('interrupted')",
+    "    try:",
+    "        print('exited', checker.wait(timeout=5))",
+    "    except subprocess.TimeoutExpired:",
+    "        print('still suspended')",
+    "finally:",
+    "    checker.kill()",
+    "    checker.wait()",
+  ].join("\n");
+  const result = spawnSync("python3", ["-B", "-c", script], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split("\n"), ["interrupted", "exited -15"]);
+});
+
 test("Ctrl-C stops a shell loop that runs the matrix runner", async () => {
   const dir = fixture();
   writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");

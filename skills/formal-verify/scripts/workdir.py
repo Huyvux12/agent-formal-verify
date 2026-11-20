@@ -126,17 +126,19 @@ def stop_process(process):
         return
     # Freeze the tree before signalling it: a stopped process cannot start another or leave its children orphaned.
     frozen = [process.pid]
-    with suppress(ProcessLookupError):
-        process.send_signal(signal.SIGSTOP)
-    while new := [pid for pid in _descendants(process.pid) if pid not in frozen]:
-        for pid in new:
-            with suppress(OSError):
-                os.kill(pid, signal.SIGSTOP)
-        frozen += new
-    for signum in (signal.SIGTERM, signal.SIGCONT):
-        for pid in frozen:
-            with suppress(OSError):
-                os.kill(pid, signum)
+    try:
+        with suppress(ProcessLookupError):
+            process.send_signal(signal.SIGSTOP)
+        while new := [pid for pid in _descendants(process.pid) if pid not in frozen]:
+            frozen += new
+            for pid in new:
+                with suppress(OSError):
+                    os.kill(pid, signal.SIGSTOP)
+    finally:
+        for signum in (signal.SIGTERM, signal.SIGCONT):
+            for pid in frozen:
+                with suppress(OSError):
+                    os.kill(pid, signum)
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
