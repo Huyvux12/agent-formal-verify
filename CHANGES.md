@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The TLC runner now removes each run directory as soon as its check and trace reduction finish instead of holding every `states` directory until the matrix ends. On a non-ignored `SIGINT`, `SIGTERM` or `SIGHUP`, the Python runners (`tlc.py`, `mutate.py`, `kani.py`) clean up active working directories, stop their child checkers and the processes those started, such as CBMC under Kani, and then end by the same signal, so a shell loop that calls them stops at Ctrl-C. They keep child processes in the caller's process group, so `SIGHUP` and `SIGKILL` sent to the group stop them too. `lean-check.sh` honors `TMPDIR` across platforms and exits promptly on `SIGTERM`, an explicitly configured `TMPDIR` that cannot be created or written fails fast instead of falling back to the system disk, and `setup.sh` plus the runners check free temporary space (`FORMAL_MIN_FREE_GIB`) and report larger writable `EXTERNAL_VOLUME` mounts with a shell-quoted suggested `TMPDIR`.
+
 A Lean mutation that edits the text of a theorem, such as one that replaces only its proof term, now reaches no verdict when that theorem fails. Before this change, such a mutation counted as detected and covered the theorem, even though the model it describes had not changed.
 
 A TLA+ mutation that a property such as `Safe == []Small` detects now counts as detected. TLC checks such a property as the invariant `Small` and reports `Invariant Small is violated`, with or without `by the initial state:`, so before this change the mutation reached no verdict and the runner stopped. The run's configuration holds only the named property, so the violation comes from it. An invariant check still needs TLC to name the invariant itself.

@@ -7,12 +7,14 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
+
+sys.dont_write_bytecode = True
+import workdir
 
 STATUSES = {"Success", "Failure", "Unreachable", "Undetermined", "Satisfied", "Unsatisfiable"}
 # Statuses that pass and statuses that refute the property, by check category; any other is inconclusive.
@@ -136,19 +138,17 @@ class Kani:
     def run(self, *arguments, cwd=None):
         try:
             # The driver selects Cargo mode from argv[0]; the Cargo wrapper can auto-install.
-            return subprocess.run(
-                ["cargo-kani", *arguments], executable=str(self.driver), env=self.env,
-                cwd=cwd, capture_output=True, text=True, check=False)
+            return workdir.run_captured(["cargo-kani", *arguments], executable=str(self.driver), env=self.env, cwd=cwd)
         except OSError as error:
             raise CheckError(f"cannot execute Kani: {error}") from error
 
     def cargo_metadata(self, crate, resolve=False):
         """Read package declarations; resolve only when finding the full local source graph."""
         try:
-            done = subprocess.run(
+            done = workdir.run_captured(
                 [str(self.cargo), "metadata", *([] if resolve else ["--no-deps"]), "--format-version", "1",
                  "--manifest-path", str(crate / "Cargo.toml")],
-                cwd=crate, env=self.env, capture_output=True, text=True, check=False)
+                cwd=crate, env=self.env)
         except OSError as error:
             raise CheckError(f"cannot read Cargo metadata: {error}") from error
         if done.returncode:
@@ -339,29 +339,37 @@ def main():
         print(f"READY Kani {kani.version}")
         return 0
     crate, selected = Path(arguments.crate).resolve(), arguments.harnesses
-    with tempfile.TemporaryDirectory(prefix="formal-kani-") as temporary:
-        work = Path(temporary)
-        try:
-            bounds = discover(crate, work, kani)
-            names = list(dict.fromkeys(selected)) if selected else sorted(bounds)
-            unknown = set(names) - set(bounds)
-            if unknown:
-                raise CheckError("unknown harnesses: " + ", ".join(sorted(unknown)))
-            reject_should_panic(bounds, names)
-        except CheckError as error:
-            print(f"FAIL {error}")
-            return 1
-        passed = 0
-        for name in names:
-            outcome = verify(crate, work, kani, name, bounds[name].unwind)
-            ok = outcome.verdict is Verdict.PASS
-            passed += ok
-            print(f"{'PASS' if ok else 'FAIL'} {name} unwind={bounds[name].unwind} checks={outcome.checks}"
-                  + (": " + "; ".join(outcome.failures) if outcome.failures else ""))
-            if not ok:
-                print(outcome.output.rstrip())
-        print(f"SUMMARY {passed} of {len(names)} harnesses passed")
-        return 0 if passed == len(names) else 1
+    try:
+        temp_root = workdir.ensure_temp_root()
+        workdir.warn_runtime()
+        with workdir.signal_cleanup(), tempfile.TemporaryDirectory(prefix="formal-kani-", dir=temp_root) as temporary:
+            work = Path(temporary)
+            try:
+                bounds = discover(crate, work, kani)
+                names = list(dict.fromkeys(selected)) if selected else sorted(bounds)
+                unknown = set(names) - set(bounds)
+                if unknown:
+                    raise CheckError("unknown harnesses: " + ", ".join(sorted(unknown)))
+                reject_should_panic(bounds, names)
+            except CheckError as error:
+                print(f"FAIL {error}")
+                return 1
+            passed = 0
+            for name in names:
+                outcome = verify(crate, work, kani, name, bounds[name].unwind)
+                ok = outcome.verdict is Verdict.PASS
+                passed += ok
+                print(f"{'PASS' if ok else 'FAIL'} {name} unwind={bounds[name].unwind} checks={outcome.checks}"
+                      + (": " + "; ".join(outcome.failures) if outcome.failures else ""))
+                if not ok:
+                    print(outcome.output.rstrip())
+            print(f"SUMMARY {passed} of {len(names)} harnesses passed")
+            return 0 if passed == len(names) else 1
+    except workdir.TempDirError as error:
+        print(error)
+        return 1
+    except workdir.SignalTerminated as error:
+        error.exit()
 
 
 if __name__ == "__main__":

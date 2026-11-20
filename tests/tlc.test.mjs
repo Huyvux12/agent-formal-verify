@@ -1,11 +1,11 @@
 // Copyright (c) 2026 Michael Denyer
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { command, excludes, fakeTlc, fixture, includes, logs, removeFixtures, run, scripts } from "./helpers.mjs";
+import { command, excludes, fakeTlc, fixture, includes, leanPin, logs, removeFixtures, root, run, scripts, writeLeanProject } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
@@ -350,4 +350,267 @@ test("the matrix runner strips trailing spaces and tabs before | in run labels",
   includes(result.stdout, "PASS One multi  word 4 distinct states found\n");
   const filtered = matrix(["small-case"]);
   assert.equal(filtered.stdout, "FAIL run 'before-spec' before any spec line\nPASS One small-case 4 distinct states found\nSUMMARY 1 of 1 runs passed, 4 distinct states in total\n");
+});
+
+test("the matrix runner deletes each run directory as soon as the run finishes", () => {
+  const dir = fixture();
+  const customTmp = join(dir, "work-tmp");
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun first | N=1\nrun second | N=2\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const java = fakeTlc(dir, [
+    'for last; do :; done',
+    'run_dir=$(dirname "$last")',
+    'work_dir=$(dirname "$run_dir")',
+    'mkdir -p "$run_dir/states"',
+    'echo state-data > "$run_dir/states/mock.fp"',
+    'ls -1 "$work_dir" | wc -l | tr -d " " >> "$TASK_TRACE"',
+    'echo "Model checking completed. No error has been found."',
+    'echo "4 distinct states found"',
+  ].join("\n"));
+  const result = run(dir, "tlc-matrix.sh", [join(dir, "One.matrix")], {
+    JAVA: java,
+    TLC_JAR: join(dir, "tools.jar"),
+    TMPDIR: customTmp,
+    FORMAL_MIN_FREE_GIB: "0",
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  // Each run sees only its own single run.* dir because the prior run.* was deleted.
+  assert.equal(readFileSync(join(dir, "calls"), "utf8"), "1\n1\n");
+  assert.deepEqual(readdirSync(customTmp), []);
+});
+
+function isStopped(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    return error.code === "ESRCH";
+  }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const afterName = stat.slice(stat.lastIndexOf(") ") + 2);
+    if (afterName.startsWith("Z")) return true;
+  } catch {
+    // Non-Linux hosts have no /proc/<pid>/stat; fall back to ps below.
+  }
+  const ps = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" });
+  return !ps.error && ps.status === 0 && (ps.stdout.trim() === "" || ps.stdout.trim().startsWith("Z"));
+}
+
+function assertProcessStopped(pid) {
+  const deadline = Date.now() + 1000;
+  while (!isStopped(pid) && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  }
+  assert.ok(isStopped(pid), `expected child process ${pid} to stop`);
+}
+
+test("SIGTERM stops TLC and the processes it started, cleans temporary directories and ends the runner by SIGTERM", async () => {
+  const dir = fixture();
+  const customTmp = join(dir, "nested", "signal-tmp");
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun hang | N=1\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const pidFile = join(dir, "child.pid");
+  const grandchildPidFile = join(dir, "grandchild.pid");
+  const readyFile = join(dir, "ready");
+  const java = fakeTlc(dir, [
+    'for last; do :; done',
+    'mkdir -p "$(dirname "$last")/states"',
+    'echo data > "$(dirname "$last")/states/mock.fp"',
+    'sleep 30 &',
+    'echo "$!" > "$TASK_GRANDCHILD_PID_FILE"',
+    'echo "$$" > "$TASK_PID_FILE"',
+    'echo ready > "$TASK_READY_FILE"',
+    'wait',
+  ].join("\n"));
+  const code = await new Promise((resolve) => {
+    const child = spawn("python3", [join(scripts, "tlc.py"), join(dir, "One.matrix")], {
+      env: {
+        ...process.env,
+        JAVA: java,
+        TLC_JAR: join(dir, "tools.jar"),
+        TMPDIR: customTmp,
+        TASK_PID_FILE: pidFile,
+        TASK_GRANDCHILD_PID_FILE: grandchildPidFile,
+        TASK_READY_FILE: readyFile,
+        FORMAL_MIN_FREE_GIB: "0",
+      },
+    });
+    const timer = setInterval(() => {
+      if (existsSync(readyFile)) {
+        clearInterval(timer);
+        child.kill("SIGTERM");
+      }
+    }, 20);
+    child.on("close", (exitCode, signalName) => {
+      clearInterval(timer);
+      resolve({ exitCode, signalName });
+    });
+  });
+  assertProcessStopped(Number(readFileSync(pidFile, "utf8").trim()));
+  assertProcessStopped(Number(readFileSync(grandchildPidFile, "utf8").trim()));
+  assert.deepEqual(readdirSync(customTmp), []);
+  assert.equal(code.signalName, "SIGTERM", JSON.stringify(code));
+});
+
+test("Ctrl-C stops a shell loop that runs the matrix runner", async () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun hang | N=1\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const starts = join(dir, "starts");
+  const java = fakeTlc(dir, 'echo start >> "$TASK_STARTS"\nexec sleep 30');
+  const result = await new Promise((resolve) => {
+    const child = spawn("bash", ["-c", 'for i in 1 2; do bash "$1" "$2"; done', "loop", join(scripts, "tlc-matrix.sh"), join(dir, "One.matrix")], {
+      detached: true,
+      env: { ...process.env, JAVA: java, TLC_JAR: join(dir, "tools.jar"), TASK_STARTS: starts, FORMAL_MIN_FREE_GIB: "0" },
+    });
+    const timer = setInterval(() => {
+      if (existsSync(starts) && readFileSync(starts, "utf8").endsWith("\n")) {
+        clearInterval(timer);
+        process.kill(-child.pid, "SIGINT");
+      }
+    }, 20);
+    const guard = setTimeout(() => {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // The loop already ended.
+      }
+    }, 10000);
+    child.on("close", (exitCode, signalName) => {
+      clearInterval(timer);
+      clearTimeout(guard);
+      resolve({ exitCode, signalName });
+    });
+  });
+  assert.equal(readFileSync(starts, "utf8"), "start\n");
+  assert.equal(result.signalName, "SIGINT", JSON.stringify(result));
+});
+
+test("SIGKILL and SIGHUP sent to the runner process group still stop TLC", async () => {
+  for (const sig of ["SIGHUP", "SIGKILL"]) {
+    const dir = fixture();
+    writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+    writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun hang | N=1\n");
+    writeFileSync(join(dir, "tools.jar"), "user supplied");
+    const pidFile = join(dir, "child.pid");
+    const java = fakeTlc(dir, 'echo "$$" > "$TASK_PID_FILE"\nexec sleep 30');
+    await new Promise((resolve) => {
+      const child = spawn("bash", [join(scripts, "tlc-matrix.sh"), join(dir, "One.matrix")], {
+        detached: true,
+        env: { ...process.env, JAVA: java, TLC_JAR: join(dir, "tools.jar"), TASK_PID_FILE: pidFile, FORMAL_MIN_FREE_GIB: "0" },
+      });
+      const timer = setInterval(() => {
+        if (existsSync(pidFile) && readFileSync(pidFile, "utf8").endsWith("\n")) {
+          clearInterval(timer);
+          process.kill(-child.pid, sig);
+        }
+      }, 20);
+      child.on("close", () => {
+        clearInterval(timer);
+        resolve();
+      });
+    });
+    const pid = Number(readFileSync(pidFile, "utf8").trim());
+    assertProcessStopped(pid);
+  }
+});
+
+test("signal_cleanup preserves an already ignored SIGINT", () => {
+  const script = [
+    "import os, signal, sys",
+    `sys.path.insert(0, ${JSON.stringify(scripts)})`,
+    "import workdir",
+    "signal.signal(signal.SIGINT, signal.SIG_IGN)",
+    "with workdir.signal_cleanup():",
+    "    os.kill(os.getpid(), signal.SIGINT)",
+    "print('survived')",
+  ].join("\n");
+  const result = spawnSync("python3", ["-B", "-c", script], { cwd: root, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "survived");
+});
+
+test("an explicitly configured TMPDIR that cannot be created fails cleanly without falling back", () => {
+  const dir = fixture();
+  const blocker = join(dir, "not-a-dir");
+  writeFileSync(blocker, "file");
+  const badTmp = join(blocker, "nested");
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\nStep == x + 1\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\ncheck INVARIANTS Small\nrun n=1 | N=1\n");
+  writeFileSync(join(dir, "One.mutations"), "mutation m\ndetects Small\n- x + 1\n+ x\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  for (const [script, args] of [
+    ["setup.sh", ["storage"]],
+    ["tlc-matrix.sh", [join(dir, "One.matrix")]],
+    ["mutate.py", [join(dir, "One.mutations")]],
+  ]) {
+    const result = run(dir, script, args, {
+      JAVA: fakeTlc(dir, 'echo "Model checking completed. No error has been found."'),
+      TLC_JAR: join(dir, "tools.jar"),
+      TMPDIR: badTmp,
+    });
+    assert.equal(result.status, 1, script + ": " + result.stdout + result.stderr);
+    includes(result.stdout, "TMPDIR");
+    excludes(result.stderr, "Traceback");
+  }
+});
+
+test("tlc-matrix warns on stderr once per run when FORMAL_MIN_FREE_GIB exceeds available temp space", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\nStep == x + 1\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\ncheck INVARIANTS Small\nrun n=1 | N=1\n");
+  writeFileSync(join(dir, "One.mutations"), "mutation m\ndetects Small\n- x + 1\n+ x \\* BUG\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const java = fakeTlc(dir, [
+    'for last; do :; done',
+    'if grep -q BUG "$last"; then echo "Error: Invariant Small is violated."; exit 12; fi',
+    'echo "Model checking completed. No error has been found."; echo "4 distinct states found"',
+  ].join("\n"));
+  const matrix = run(dir, "tlc-matrix.sh", [join(dir, "One.matrix")], {
+    JAVA: java, TLC_JAR: join(dir, "tools.jar"), FORMAL_MIN_FREE_GIB: "999999",
+  });
+  assert.equal(matrix.status, 0, matrix.stdout + matrix.stderr);
+  includes(matrix.stdout, "PASS One n=1 4 distinct states found");
+  includes(matrix.stderr, "WARN low free space on temp dir");
+
+  const mutated = run(dir, "mutate.py", [join(dir, "One.mutations")], {
+    JAVA: java, TLC_JAR: join(dir, "tools.jar"), FORMAL_MIN_FREE_GIB: "999999",
+  });
+  assert.equal(mutated.status, 0, mutated.stdout + mutated.stderr);
+  assert.equal(mutated.stderr.match(/WARN low free space on temp dir/g)?.length, 1, mutated.stderr);
+});
+
+test("lean-check.sh honors TMPDIR, exits promptly on SIGTERM, and cleans its temp dir", async () => {
+  const dir = fixture();
+  const project = join(dir, "lean");
+  const leanTmp = join(dir, "lean-tmp");
+  writeLeanProject(project);
+  writeFileSync(join(project, "Model.lean"), "def x : Nat := 1\n");
+  const readyFile = join(dir, "elan.ready");
+  command(dir, "elan", [
+    '[ "$4" = "--version" ] && exit 0',
+    'echo ready > "$TASK_READY_FILE"',
+    'exec sleep 15',
+  ].join("\n"));
+  const start = Date.now();
+  await new Promise((resolve) => {
+    const child = spawn("bash", [join(scripts, "lean-check.sh"), project], {
+      env: { ...process.env, PATH: join(dir, "bin") + ":" + process.env.PATH, TMPDIR: leanTmp, TASK_READY_FILE: readyFile, FORMAL_MIN_FREE_GIB: "0" },
+    });
+    const timer = setInterval(() => {
+      if (existsSync(readyFile)) {
+        clearInterval(timer);
+        child.kill("SIGTERM");
+      }
+    }, 20);
+    child.on("close", () => {
+      clearInterval(timer);
+      resolve();
+    });
+  });
+  assert.ok(Date.now() - start < 4000, "lean-check.sh waited for child instead of exiting promptly on SIGTERM");
+  assert.deepEqual(readdirSync(leanTmp), []);
 });

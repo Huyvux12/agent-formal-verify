@@ -33,10 +33,16 @@ dir=$(cd "$dir" && pwd)
 source "$HERE/lean-tools.sh"
 toolchain=$(lean_ready_pin "$dir") || { status=$?; echo "$toolchain"; exit "$status"; }
 
-work=$(mktemp -d)
+if [ -n "${TMPDIR:-}" ]; then
+  mkdir -p "$TMPDIR" || { echo "FAIL TMPDIR=$TMPDIR cannot be created"; exit 1; }
+  work=$(mktemp -d "${TMPDIR%/}/lean-check.XXXXXX") || { echo "FAIL cannot create temporary directory in TMPDIR=$TMPDIR"; exit 1; }
+else
+  work=$(mktemp -d)
+fi
 trap 'rm -rf "$work"' EXIT
 log=$work/build.log
 command -v python3 > /dev/null || { echo "UNAVAILABLE python3 is required to check frozen Lean statements; install Python 3"; exit 3; }
+python3 "$HERE/workdir.py" warn
 # Lake builds a module named by its source path and rejects a path that no
 # library owns, so naming every source leaves no file unchecked. Its query
 # command prints the .olean of each, which names the modules to audit without

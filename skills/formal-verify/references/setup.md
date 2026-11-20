@@ -10,6 +10,8 @@ The helpers are in the `scripts/` directory of the installed `formal-verify` ski
 
 Stay in the target repository and run each helper with `bash` and its absolute path. Pass absolute paths to model projects and matrices. Keep the installed skill files read-only, and create models and build outputs in the target repository. Shared tool caches can serve several repositories; each repository determines its own tool requirements and Lean pins.
 
+Every runner writes its temporary state into `TMPDIR` (failing cleanly with `FAIL` if an explicitly set `TMPDIR` cannot be created or written) and removes its working directories between matrix runs and on `SIGINT`, `SIGTERM` or `SIGHUP`. Lean builds write into the model project's `.lake` directory, while `lean-check.sh` places its temporary build log in `TMPDIR`. `setup.sh` (`tla`, `rust`, `lean`, and `storage`) reports `TEMP_DIR` free space, warns when the active temporary volume has less than `FORMAL_MIN_FREE_GIB` free (default `64` GiB), and lists larger writable `EXTERNAL_VOLUME` mounts so heavy runs can redirect `TMPDIR` onto an external disk. Checkers also warn once on `stderr` before starting when active temporary space drops below `10` GiB (or `FORMAL_MIN_FREE_GIB` when set).
+
 ## TLA+ and TLC
 
 The setup helper needs a JDK, Python 3, and `sha256sum` or `shasum` to verify the TLC JAR. If `java` on PATH has no runtime, as with the macOS stub, set `JAVA` to a working JDK's `java` binary. Copy the [TLA+ template](../examples/tla-template/BoundedQueue.tla) with its `BoundedQueue.matrix` and `BoundedQueue.mutations` into the project to start a spec.

@@ -59,6 +59,7 @@ sys.dont_write_bytecode = True
 import kani
 import lean_mutations
 import tlc
+import workdir
 
 LEAN_NOTE = "NOTE Lean detections mean existing proofs fail, not that theorem statements are false or hypotheses satisfiable."
 
@@ -222,7 +223,7 @@ def rust_runner(model, mutations):
     except kani.Unavailable as error:
         print(f"UNAVAILABLE {error}")
         sys.exit(3)
-    with tempfile.TemporaryDirectory(prefix="formal-kani-discover-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="formal-kani-discover-", dir=workdir.ensure_temp_root()) as temporary:
         work = Path(temporary)
         try:
             bounds = kani.discover(project, work, verifier)
@@ -265,10 +266,12 @@ def main():
     language, text = LANGUAGES[model.suffix], model.read_text(encoding="utf-8")
     mutations = [make_mutation(label, directives, model, text, language) for label, directives in parse(path)]
     targets, check = language.runner(model, mutations)
+    workdir.warn_runtime()
+    temp_root = workdir.ensure_temp_root()
 
     detected, covered = 0, set()
     for mutation in mutations:
-        with tempfile.TemporaryDirectory() as work:
+        with tempfile.TemporaryDirectory(dir=temp_root) as work:
             result = check(mutation, Path(work))
         if result.verdict is Verdict.ERROR:
             stop(f"mutation '{mutation.label}' did not reach a verdict:\n{result.detail.strip()}")
@@ -287,7 +290,13 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        with workdir.signal_cleanup():
+            main()
+    except workdir.TempDirError as error:
+        print(error)
+        sys.exit(1)
     except lean_mutations.AnalysisError as error:
         print(error)
         sys.exit(error.status)
+    except workdir.SignalTerminated as error:
+        error.exit()
