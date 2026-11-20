@@ -21,7 +21,7 @@ Usage: tlc-matrix.sh <matrix-file> [label-substring]
   TLC_CACHE=<dir>    where the pinned jar lives (default ~/.cache/tla)
   JAVA=<path>        the java binary (default: java on PATH)
   TLC_WORKERS=<n>    TLC worker threads (default auto)
-  TLC_TIMEOUT=<lim>  per-run time limit, e.g. 90s, 30m, 1h (default 30m)
+  TLC_TIMEOUT=<lim>  per-run time limit, e.g. 90s, 30m, 1h (default 60m)
 """
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ class Unavailable(Exception):
     pass
 
 
-DEFAULT_TIMEOUT = "30m"
+DEFAULT_TIMEOUT = "60m"
 TIME_UNITS = {"": 1, "s": 1, "m": 60, "h": 3600}
 PROGRESS_DELAY = 15.0
 PROGRESS_INTERVAL = 30.0
@@ -136,7 +136,7 @@ def parse_timeout(raw):
     if not limit or int(limit[1]) >= 2**32:
         raise Unavailable(
             f"UNAVAILABLE TLC_TIMEOUT={raw!r} is not a run time limit; set a whole number from 1 to 4294967295 "
-            "with an optional unit s, m or h, such as 90s or 20m, or unset it for thirty minutes"
+            "with an optional unit s, m or h, such as 90s or 20m, or unset it for sixty minutes"
         )
     unit = limit[2] or "s"
     return limit[1] + unit, int(limit[1]) * TIME_UNITS[limit[2]]
