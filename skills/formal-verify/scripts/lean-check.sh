@@ -167,10 +167,10 @@ open Lean Elab Command in
       | .recInfo _ => "recursor"
       | .quotInfo _ => "quotient"
       | .axiomInfo _ => "axiom"
-    -- A recursive body can sit in an auxiliary: _unary or _mutual for well-founded recursion,
-    -- and _unsafe_rec for the code that runs, the only body a partial def has.
+    -- A recursive body can sit in an auxiliary: _f for structural recursion, _unary or _mutual
+    -- for well-founded recursion, and _unsafe_rec for the code that runs, the only body a partial def has.
     let value := match body? info with
-      | some v => toJson <| [`_unary, `_mutual, `_unsafe_rec].foldl (init := reprStr v) fun acc aux =>
+      | some v => toJson <| [`_f, `_unary, `_mutual, `_unsafe_rec].foldl (init := reprStr v) fun acc aux =>
           match (env.find? (name ++ aux)).bind body? with
           | some auxBody => acc ++ s!"\n{aux}: {reprStr auxBody}"
           | none => acc

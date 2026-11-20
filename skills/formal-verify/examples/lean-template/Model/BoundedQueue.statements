@@ -225,7 +225,7 @@
       "kind": "definition",
       "type": "Nat → Nat → List BoundedQueue.State",
       "typeHash": "1b888cc781cb5cb759ba80328d78e9d5fe802b4262f2dd96e56fcd3f39051dd4",
-      "valueHash": "1a08286e79e70876b10e075fa0491e38f51fc0b872c99434e861dfd82fbec7f4"
+      "valueHash": "b2b5202dd9e6d75dbb58c2178a5c20064a1550470dfa2d03c232ab33deae7e08"
     },
     {
       "name": "BoundedQueue.reachable.match_1",

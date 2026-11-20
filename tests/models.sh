@@ -313,8 +313,9 @@ bash "$scripts/lean-check.sh" "$work/frozen-opaque" Model/Frozen.lean
 
 # Lean generates equation lemmas, induction principles and the equations of a
 # private definition's matcher only when a proof uses them, so a proof edit can
-# remove them. A recursive body sits in an auxiliary: _unary or _mutual for
-# well-founded recursion, _unsafe_rec for a partial def.
+# remove them. A recursive body sits in an auxiliary: _f for structural
+# recursion, _unary or _mutual for well-founded recursion, _unsafe_rec for the
+# code that runs, which a noncomputable definition lacks.
 mkdir -p "$work/frozen-recursive/Model"
 cp "$examples/lean-template"/{lakefile.toml,lake-manifest.json,lean-toolchain} "$work/frozen-recursive/"
 cat > "$work/frozen-recursive/original" <<'EOF'
@@ -336,6 +337,9 @@ private def steps : Nat → Nat
   | 0 => 0
   | 1 => 1
   | n + 2 => steps n + 1
+noncomputable def triple : Nat → Nat
+  | 0 => 0
+  | n + 1 => triple n + 3
 theorem halve_small : halve 1 5 = 5 := by simp [halve]
 theorem double_eq (n : Nat) : double n = 2 * n := by
   induction n using double.induct <;> simp [double, *] <;> omega
@@ -347,7 +351,8 @@ bash "$scripts/lean-check.sh" "$work/frozen-recursive" --freeze Model/Frozen.lea
 sed -e 's|^decreasing_by omega$|decreasing_by all_goals omega|' -e 's|induction n using double.induct <;>|induction n <;>|' \
   -e 's|:= by simp \[steps\]|:= rfl|' "$work/frozen-recursive/original" > "$work/frozen-recursive/Model/Frozen.lean"
 bash "$scripts/lean-check.sh" "$work/frozen-recursive" Model/Frozen.lean
-for edit in 'halve s|(b + 1)|(b + 2)|' 'countDown s|countDown (n - 1) + 1|countDown (n - 1) + 2|' 'isOdd s|then false|then true|'; do
+for edit in 'halve s|(b + 1)|(b + 2)|' 'countDown s|countDown (n - 1) + 1|countDown (n - 1) + 2|' 'isOdd s|then false|then true|' \
+  'triple s|triple n + 3|triple n + 4|'; do
   sed "${edit#* }" "$work/frozen-recursive/original" > "$work/frozen-recursive/Model/Frozen.lean"
   rejected bash "$scripts/lean-check.sh" "$work/frozen-recursive" Model/Frozen.lean | tee "$work/frozen-recursive.out"
   grep -q "^FROZEN Frozen.${edit%% *}: statement changed" "$work/frozen-recursive.out"
