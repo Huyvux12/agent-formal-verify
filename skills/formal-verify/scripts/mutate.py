@@ -277,7 +277,7 @@ def main():
             stop(f"mutation '{mutation.label}' did not reach a verdict:\n{result.detail.strip()}")
         detected += result.verdict is Verdict.DETECTED
         covered |= result.covers
-        print(f"{result.verdict.value} {mutation.label}" + (f": {result.detail}" if result.detail else ""))
+        print(f"{result.verdict.value} {mutation.label}" + (f": {result.detail}" if result.detail else ""), flush=True)
     uncovered = sorted(targets - covered)
     for name in uncovered:
         print(f"UNCOVERED {name}")

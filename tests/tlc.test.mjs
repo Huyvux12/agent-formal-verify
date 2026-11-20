@@ -300,6 +300,18 @@ test("reach uses one worker and disables deadlock only for witness searches", ()
   includes(calls[1], "-deadlock");
 });
 
+test("each TLC run gets its own existing java.io.tmpdir", () => {
+  const { dir, matrix } = matrixFixture(["spec a/One.tla", "run first | N=1", "run second | N=2"], [
+    'for arg; do case "$arg" in -Djava.io.tmpdir=*) tmp=${arg#-Djava.io.tmpdir=}; [ -d "$tmp" ] && echo "$tmp" >> "$TASK_TRACE";; esac; done',
+    'echo "Model checking completed. No error has been found."',
+    'echo "4 distinct states found"',
+  ].join("\n"));
+  assert.equal(matrix().status, 0);
+  const tmpdirs = existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8").trim().split("\n") : [];
+  assert.equal(tmpdirs.length, 2, `java.io.tmpdir per launch: ${JSON.stringify(tmpdirs)}`);
+  assert.notEqual(tmpdirs[0], tmpdirs[1]);
+});
+
 test("reach does not confuse a runtime error with an unreachable state", () => {
   const { matrix } = reachFixture(["spec a/One.tla", "reach Full | n=1", "run n=1 | N=1"], 'echo "Error: undefined operator Full"; exit 1');
   const result = matrix();
@@ -350,6 +362,24 @@ test("the matrix runner strips trailing spaces and tabs before | in run labels",
   includes(result.stdout, "PASS One multi  word 4 distinct states found\n");
   const filtered = matrix(["small-case"]);
   assert.equal(filtered.stdout, "FAIL run 'before-spec' before any spec line\nPASS One small-case 4 distinct states found\nSUMMARY 1 of 1 runs passed, 4 distinct states in total\n");
+});
+
+test("invalid TLC_TIMEOUT settings are reported as unavailable without starting TLC", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun n=1 | N=1\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  for (const value of ["0", "-5", "abc", "4294967296"]) {
+    const result = run(dir, "tlc-matrix.sh", [join(dir, "One.matrix")], {
+      JAVA: fakeTlc(dir, 'echo started >> "$TASK_TRACE"'),
+      TLC_JAR: join(dir, "tools.jar"),
+      TLC_TIMEOUT: value,
+    });
+    assert.equal(result.status, 3, value);
+    assert.ok(result.stdout.startsWith("UNAVAILABLE "), result.stdout);
+    includes(result.stdout, "TLC_TIMEOUT");
+  }
+  assert.equal(existsSync(join(dir, "calls")), false);
 });
 
 test("the matrix runner deletes each run directory as soon as the run finishes", () => {
@@ -405,6 +435,61 @@ function assertProcessStopped(pid) {
   assert.ok(isStopped(pid), `expected child process ${pid} to stop`);
 }
 
+test("timed-out TLC runs terminate their child process and report ordinary failure or incomplete reach", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nreach Full | n=1\nrun n=1 | N=1\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const pidFile = join(dir, "child.pid");
+  const java = fakeTlc(dir, [
+    'echo "Progress(1) at 2026-11-18 00:00:01: 100 states generated"',
+    'echo "$$" > "$TASK_PID_FILE"',
+    'exec sleep 30',
+  ].join("\n"));
+  const result = run(dir, "tlc-matrix.sh", [join(dir, "One.matrix")], {
+    JAVA: java,
+    TLC_JAR: join(dir, "tools.jar"),
+    TLC_TIMEOUT: "1s",
+    TASK_PID_FILE: pidFile,
+  });
+  assert.equal(result.status, 1);
+  includes(result.stdout, "FAIL One n=1: TLC timed out after 1s; set TLC_TIMEOUT to change the limit");
+  includes(result.stdout, "Progress(1)");
+  includes(result.stdout, "FAIL One reach Full n=1: TLC did not complete the reach check");
+  excludes(result.stdout, "the model never reaches this state");
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  assertProcessStopped(pid);
+});
+
+test("long TLC runs forward elapsed time and Progress updates to stderr without changing stdout parsing", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun n=1 | N=1\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const java = fakeTlc(dir, [
+    'echo "Progress(42) at 2026-11-18 00:00:01: 1,000 states generated, 500 distinct states found, 100 states left on queue."',
+    'sleep 0.25',
+    'echo "Model checking completed. No error has been found."',
+    'echo "500 distinct states found"',
+  ].join("\n"));
+  const script = [
+    "import sys",
+    `sys.path.insert(0, ${JSON.stringify(scripts)})`,
+    "import tlc",
+    "tlc.PROGRESS_DELAY = 0.05",
+    "tlc.PROGRESS_INTERVAL = 0.05",
+    `sys.argv = ['tlc.py', ${JSON.stringify(join(dir, "One.matrix"))}]`,
+    "sys.exit(tlc.main())",
+  ].join("; ");
+  const result = spawnSync("python3", ["-B", "-c", script], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, JAVA: java, TLC_JAR: join(dir, "tools.jar") },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "PASS One n=1 500 distinct states found\nSUMMARY 1 of 1 runs passed, 500 distinct states in total\n");
+  assert.match(result.stderr, /\[tlc\] One n=1: \d+s elapsed: Progress\(42\)/);
+});
 test("SIGTERM stops TLC and the processes it started, cleans temporary directories and ends the runner by SIGTERM", async () => {
   const dir = fixture();
   const customTmp = join(dir, "nested", "signal-tmp");
