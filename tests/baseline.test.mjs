@@ -157,6 +157,11 @@ test("a TLA+ Spec that loses fairness is changed", () => {
   assertChanged(recordedThenEdited(null, "matrix", tla(" /\\ WF_vars(Consume)", "")), "matrix", "changed definition BoundedQueue.tla Spec");
 });
 
+test("a TLA+ subscript that Spec names under [][...]_ and WF_ is changed", () => {
+  const outcome = recordedThenEdited(null, "matrix", tla("vars == <<next, consumed>>", "vars == <<next>>"));
+  assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla vars");
+});
+
 test("a weakened TLA+ property is changed", () => {
   const outcome = recordedThenEdited(null, "matrix", tla("next <= consumed + Window", "next <= consumed + Window + 1"));
   assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla InWindow");

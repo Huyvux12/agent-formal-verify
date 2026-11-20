@@ -119,7 +119,7 @@ def blank_tla_comments(text):
 DEFINITION = re.compile(r"(?:LOCAL\s+)?(\w*[A-Za-z]\w*)\s*(?:\((?:[^()]|\([^()]*\))*\)|\[(?:[^\[\]]|\[[^\[\]]*\])*\])?\s*==")
 MODULE_LEVEL = re.compile(r"-{4,}|={4,}|(?:EXTENDS|VARIABLES?|CONSTANTS?|ASSUME|ASSUMPTION|AXIOM|THEOREM|LEMMA|PROPOSITION|COROLLARY|INSTANCE|RECURSIVE|USE|HIDE)\b")
 IDENTIFIER = re.compile(r"\w*[A-Za-z]\w*")
-SUBSCRIPT = r"_(?:\w+|<<[^>]*>>)"
+SUBSCRIPT = r"_(\w+|<<[^>]*>>)"
 SPEC_ACTIONS = re.compile(rf"\[\]\[[^\]]*\]{SUBSCRIPT}|[WS]F{SUBSCRIPT}\s*\([^()]*\)")
 
 
@@ -244,7 +244,8 @@ def tla_module_surface(directory, spec, operators):
         header, _, body = bodies[key].partition("==")
         body = STRING.sub('""', body)
         if key == scopes[root]["Spec"]:
-            body = SPEC_ACTIONS.sub(" ", body)
+            # Keep the subscript, such as vars: it decides which steps may stutter and what fairness requires.
+            body = SPEC_ACTIONS.sub(lambda form: f" {form[1] or form[2]} ", body)
         if "[" in header:
             # A function definition such as F[x \in S] == ... references S in its header.
             body = f"{header} {body}"
