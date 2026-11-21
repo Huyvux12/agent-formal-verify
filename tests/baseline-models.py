@@ -66,10 +66,13 @@ Within == Allowed(x)
 
 
 def fairness_subscript(work):
-    project = work / "subscript"
-    project.mkdir()
-    spec, matrix, record = project / "One.tla", project / "One.matrix", work / "subscript.json"
-    spec.write_text(r"""---- MODULE One ----
+    plain = r"Spec == Init /\ [][Next]_vars /\ WF_vars(Next)"
+    quantified = "Step(p) == Next\n" + r"Spec == Init /\ [][Next]_<<x, aux>> /\ \A p \in {1} : WF_vars(Step(p))"
+    for name, fairness in (("subscript", plain), ("quantified", quantified)):
+        project = work / name
+        project.mkdir()
+        spec, matrix, record = project / "One.tla", project / "One.matrix", work / f"{name}.json"
+        spec.write_text(r"""---- MODULE One ----
 EXTENDS Naturals
 VARIABLES x, aux
 vars == <<x, aux>>
@@ -77,16 +80,16 @@ Init == x = 0 /\ aux = 0
 Inc == x < 3 /\ x' = x + 1 /\ UNCHANGED aux
 Spin == aux' = 1 - aux /\ UNCHANGED x
 Next == Inc \/ Spin
-Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
+""" + fairness + """
 Done == <>(x = 3)
 ====
 """)
-    matrix.write_text("spec One.tla\ncheck PROPERTIES Done\nrun base |\n")
-    assert "Temporal properties were violated" in run(1, "tlc-matrix.sh", matrix)
-    run(0, "baseline.py", "record", record, matrix)
-    spec.write_text(spec.read_text().replace("vars == <<x, aux>>", "vars == <<x>>"))
-    run(0, "tlc-matrix.sh", matrix)
-    assert "changed definition One.tla vars" in run(1, "baseline.py", "compare", record)
+        matrix.write_text("spec One.tla\ncheck PROPERTIES Done\nrun base |\n")
+        assert "Temporal properties were violated" in run(1, "tlc-matrix.sh", matrix)
+        run(0, "baseline.py", "record", record, matrix)
+        spec.write_text(spec.read_text().replace("vars == <<x, aux>>", "vars == <<x>>"))
+        run(0, "tlc-matrix.sh", matrix)
+        assert "changed definition One.tla vars" in run(1, "baseline.py", "compare", record)
 
 
 def tla_layout(work):
