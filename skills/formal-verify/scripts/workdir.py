@@ -124,13 +124,21 @@ def stop_process(process):
     """Terminate a spawned subprocess and the processes it started, keeping them in the caller's process group."""
     if process.poll() is not None:
         return
-    # List the descendants before the child stops, because its exit moves them out of its tree.
-    descendants = _descendants(process.pid)
-    with suppress(ProcessLookupError):
-        process.terminate()
-    for pid in descendants:
-        with suppress(OSError):
-            os.kill(pid, signal.SIGTERM)
+    # Freeze the tree before signalling it: a stopped process cannot start another or leave its children orphaned.
+    frozen = [process.pid]
+    try:
+        with suppress(ProcessLookupError):
+            process.send_signal(signal.SIGSTOP)
+        while new := [pid for pid in _descendants(process.pid) if pid not in frozen]:
+            frozen += new
+            for pid in new:
+                with suppress(OSError):
+                    os.kill(pid, signal.SIGSTOP)
+    finally:
+        for signum in (signal.SIGTERM, signal.SIGCONT):
+            for pid in frozen:
+                with suppress(OSError):
+                    os.kill(pid, signum)
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
