@@ -157,6 +157,29 @@ test("a TLA+ Spec that loses fairness is changed", () => {
   assertChanged(recordedThenEdited(null, "matrix", tla(" /\\ WF_vars(Consume)", "")), "matrix", "changed definition BoundedQueue.tla Spec");
 });
 
+test("a TLA+ subscript that Spec names under [][...]_ and WF_ is changed", () => {
+  const outcome = recordedThenEdited(null, "matrix", tla("vars == <<next, consumed>>", "vars == <<next>>"));
+  assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla vars");
+});
+
+test("a TLA+ subscript is followed in a fairness definition, under a quantifier and after spaces", () => {
+  const spec = "Spec == Init /\\ [][Next]_vars /\\ WF_vars(Claim) /\\ WF_vars(Consume)";
+  const shapes = [
+    "Fairness == WF_vars(Claim) /\\ WF_vars(Consume)\nSpec == Init /\\ [][Next]_<<next, consumed>> /\\ Fairness",
+    "Act(k) == Claim \\/ Consume\nSpec == Init /\\ [][Next]_<<next, consumed>> /\\ \\A k \\in {1} : WF_vars(Act(k))",
+    "Spec == Init /\\ [] [Next]_vars",
+    "Spec == Init /\\ [][Next]_<<next, consumed>> /\\ []<><<Consume>>_vars",
+  ];
+  for (const shape of shapes) {
+    const setup = (files) => {
+      edit(files.spec, "UNCHANGED vars", "UNCHANGED <<next, consumed>>");
+      edit(files.spec, spec, shape);
+    };
+    const outcome = recordedThenEdited(setup, "matrix", tla("vars == <<next, consumed>>", "vars == <<next>>"));
+    assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla vars");
+  }
+});
+
 test("a weakened TLA+ property is changed", () => {
   const outcome = recordedThenEdited(null, "matrix", tla("next <= consumed + Window", "next <= consumed + Window + 1"));
   assertChanged(outcome, "matrix", "changed definition BoundedQueue.tla InWindow");
