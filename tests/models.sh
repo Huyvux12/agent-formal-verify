@@ -315,19 +315,20 @@ bash "$scripts/lean-check.sh" "$work/frozen-opaque" Model/Frozen.lean
 # private definition's matcher only when a proof uses them, so a proof edit can
 # remove them. A recursive body sits in an auxiliary: _f for structural
 # recursion, _unary or _mutual for well-founded recursion, _unsafe_rec for the
-# code that runs, which a noncomputable definition lacks.
+# code that runs, which a noncomputable definition lacks. Each edit below names
+# the declaration that must report it; isOdd's body sits in isEven._mutual.
 mkdir -p "$work/frozen-recursive/Model"
 cp "$examples/lean-template"/{lakefile.toml,lake-manifest.json,lean-toolchain} "$work/frozen-recursive/"
 cat > "$work/frozen-recursive/original" <<'EOF'
 namespace Frozen
-def halve (a b : Nat) : Nat := if a < 2 then b else halve (a - 2) (b + 1)
+noncomputable def halve (a b : Nat) : Nat := if a < 2 then b else halve (a - 2) (b + 1)
 termination_by a
 decreasing_by omega
 partial def countDown (n : Nat) : Nat := if n = 0 then 0 else countDown (n - 1) + 1
 mutual
-def isEven (n : Nat) : Bool := if n = 0 then true else isOdd (n - 1)
+noncomputable def isEven (n : Nat) : Bool := if n = 0 then true else isOdd (n - 1)
 termination_by n
-def isOdd (n : Nat) : Bool := if n = 0 then false else isEven (n - 1)
+noncomputable def isOdd (n : Nat) : Bool := if n = 0 then false else isEven (n - 1)
 termination_by n
 end
 def double : Nat → Nat
@@ -351,7 +352,7 @@ bash "$scripts/lean-check.sh" "$work/frozen-recursive" --freeze Model/Frozen.lea
 sed -e 's|^decreasing_by omega$|decreasing_by all_goals omega|' -e 's|induction n using double.induct <;>|induction n <;>|' \
   -e 's|:= by simp \[steps\]|:= rfl|' "$work/frozen-recursive/original" > "$work/frozen-recursive/Model/Frozen.lean"
 bash "$scripts/lean-check.sh" "$work/frozen-recursive" Model/Frozen.lean
-for edit in 'halve s|(b + 1)|(b + 2)|' 'countDown s|countDown (n - 1) + 1|countDown (n - 1) + 2|' 'isOdd s|then false|then true|' \
+for edit in 'halve s|(b + 1)|(b + 2)|' 'countDown s|countDown (n - 1) + 1|countDown (n - 1) + 2|' 'isEven s|then false|then true|' \
   'triple s|triple n + 3|triple n + 4|'; do
   sed "${edit#* }" "$work/frozen-recursive/original" > "$work/frozen-recursive/Model/Frozen.lean"
   rejected bash "$scripts/lean-check.sh" "$work/frozen-recursive" Model/Frozen.lean | tee "$work/frozen-recursive.out"
