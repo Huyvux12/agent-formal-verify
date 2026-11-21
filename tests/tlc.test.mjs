@@ -427,9 +427,9 @@ function isStopped(pid) {
   return !ps.error && ps.status === 0 && (ps.stdout.trim() === "" || ps.stdout.trim().startsWith("Z"));
 }
 
-function markedProcesses(text) {
+function processesWhere(match) {
   const listing = spawnSync("ps", ["-A", "-ww", "-o", "pid=,command="], { encoding: "utf8" }).stdout;
-  return listing.split("\n").filter((line) => line.includes(text)).map((line) => Number(line.trim().split(/\s+/)[0]));
+  return listing.split("\n").map((line) => line.trim().split(/\s+/)).filter(([pid, ...command]) => pid && match(command.join(" "))).map(([pid]) => Number(pid));
 }
 
 function waitFor(condition) {
@@ -581,9 +581,10 @@ test("SIGTERM also stops processes started while the runner is stopping TLC", as
     "spawn &",
     "wait",
   ].join("\n"));
+  const marked = () => processesWhere((command) => command === marker);
   const probe = spawn("sleep", [nap]);
   try {
-    assert.ok(waitFor(() => markedProcesses(marker).includes(probe.pid)), "the process search must find a marked sleep");
+    assert.ok(waitFor(() => marked().includes(probe.pid)), "the process search must find a marked sleep");
   } finally {
     probe.kill("SIGKILL");
   }
@@ -614,11 +615,11 @@ test("SIGTERM also stops processes started while the runner is stopping TLC", as
   try {
     assert.equal(code.signalName, "SIGTERM", JSON.stringify(code));
     assert.ok(existsSync(psCalls), "the runner must list processes with ps");
-    assert.ok(!existsSync(doneFile), "TLC's processes finished starting others before the runner was signalled");
-    assert.ok(waitFor(() => markedProcesses(marker).length === 0), `still running: ${markedProcesses(marker)}`);
+    assert.ok(!existsSync(doneFile), "TLC's processes started all their sleeps before the runner stopped them, so nothing was checked");
+    assert.ok(waitFor(() => marked().length === 0), `still running: ${marked()}`);
   } finally {
-    for (const text of [dir, marker]) {
-      for (const pid of markedProcesses(text)) {
+    for (const find of [() => processesWhere((command) => command.includes(dir)), marked]) {
+      for (const pid of find()) {
         try {
           process.kill(pid, "SIGKILL");
         } catch {
