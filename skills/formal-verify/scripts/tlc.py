@@ -21,6 +21,7 @@ Usage: tlc-matrix.sh <matrix-file> [label-substring]
   TLC_CACHE=<dir>    where the pinned jar lives (default ~/.cache/tla)
   JAVA=<path>        the java binary (default: java on PATH)
   TLC_WORKERS=<n>    TLC worker threads (default auto)
+  TLC_TIMEOUT=<lim>  per-run time limit, e.g. 90s, 30m, 1h (default 60m)
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -122,10 +124,55 @@ class Unavailable(Exception):
     pass
 
 
+DEFAULT_TIMEOUT = "60m"
+TIME_UNITS = {"": 1, "s": 1, "m": 60, "h": 3600}
+PROGRESS_DELAY = 15.0
+PROGRESS_INTERVAL = 30.0
+
+
+def parse_timeout(raw):
+    """Parse a positive integer duration with optional s/m/h unit into (normalized_label, seconds)."""
+    limit = re.fullmatch(r"\+?0*([1-9][0-9]{0,9})([smh]?)", raw)
+    if not limit or int(limit[1]) >= 2**32:
+        raise Unavailable(
+            f"UNAVAILABLE TLC_TIMEOUT={raw!r} is not a run time limit; set a whole number from 1 to 4294967295 "
+            "with an optional unit s, m or h, such as 90s or 20m, or unset it for sixty minutes"
+        )
+    unit = limit[2] or "s"
+    return limit[1] + unit, int(limit[1]) * TIME_UNITS[limit[2]]
+
+
+def _read_progress(log_path, offset, partial):
+    """Read newly written complete lines from tlc.log and return (new_offset, new_partial, latest_progress)."""
+    latest = ""
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as stream:
+            stream.seek(offset)
+            chunk = stream.read()
+            new_offset = stream.tell()
+    except OSError:
+        return offset, partial, ""
+    if not chunk:
+        return new_offset, partial, ""
+    text = partial + chunk
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith(("\n", "\r")):
+        new_partial = lines.pop()
+    else:
+        new_partial = ""
+    for line in lines:
+        stripped = line.strip()
+        if "Progress(" in stripped:
+            latest = stripped
+    return new_offset, new_partial, latest
+
+
 class Tlc:
     """The pinned TLC, checked once; tlc-tools.sh owns the pin and the readiness checks."""
 
     def __init__(self):
+        timeout_raw = os.environ.get("TLC_TIMEOUT", "").strip() or DEFAULT_TIMEOUT
+        self.limit, self.timeout_seconds = parse_timeout(timeout_raw)
         done = subprocess.run(
             ["bash", "-c", 'source "$1/tlc-tools.sh" && require_tlc_runtime && tlc_jar_ready && printf "%s\\n%s\\n" "$JAVA" "$TLC_JAR"',
              "bash", str(HERE)], capture_output=True, text=True, check=False)
@@ -135,24 +182,55 @@ class Tlc:
         self.workers = os.environ.get("TLC_WORKERS") or "auto"
         self._warned_disk = False
 
-    def run(self, directory, module, config, reach):
-        """Run TLC on module in directory with config; return its exit status and log."""
+    def run(self, directory, module, config, reach, workers=None, progress_label=""):
+        """Run TLC on module in directory with config; return (exit_status, log, timed_out)."""
         if not self._warned_disk:
             self._warned_disk = True
             workdir.warn_runtime()
         log = directory / "tlc.log"
         (directory / "MC.cfg").write_text(config, encoding="utf-8")
-        command = [self.java, "-XX:+UseParallelGC", "-cp", self.jar, "tlc2.TLC", "-workers", "1" if reach else self.workers,
+        chosen_workers = workers if workers is not None else ("1" if reach else self.workers)
+        # TLC unpacks its standard modules into java.io.tmpdir and deletes them on exit, so concurrent runs must not share it.
+        java_tmp = directory / "java"
+        java_tmp.mkdir(exist_ok=True)
+        command = [self.java, "-XX:+UseParallelGC", f"-Djava.io.tmpdir={java_tmp}", "-cp", self.jar, "tlc2.TLC", "-workers", chosen_workers,
                    *(["-deadlock"] if reach else []), "-cleanup", "-metadir", str(directory / "states"),
                    "-config", str(directory / "MC.cfg"), str(directory / f"{module}.tla")]
+        start = time.monotonic()
+        deadline = start + self.timeout_seconds
+        next_report = start + PROGRESS_DELAY
+        offset, partial, latest = 0, "", ""
+        timed_out = False
         with log.open("w", encoding="utf-8") as stream:
             process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT)
             try:
-                status = process.wait()
+                while True:
+                    now = time.monotonic()
+                    remaining = deadline - now
+                    if remaining <= 0:
+                        workdir.stop_process(process)
+                        timed_out = True
+                        break
+                    if now >= next_report:
+                        offset, partial, found = _read_progress(log, offset, partial)
+                        if found:
+                            latest = found
+                        elapsed = int(now - start)
+                        prefix = f"[tlc] {progress_label}: " if progress_label else "[tlc] "
+                        body = f"{elapsed}s elapsed: {latest}" if latest else f"{elapsed}s elapsed"
+                        sys.stderr.write(f"{prefix}{body}\n")
+                        sys.stderr.flush()
+                        next_report = now + PROGRESS_INTERVAL
+                    wait_for = min(remaining, max(0.05, next_report - time.monotonic()))
+                    try:
+                        process.wait(timeout=wait_for)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
             except BaseException:
                 workdir.stop_process(process)
                 raise
-        return status, read_raw(log)
+        return process.returncode, read_raw(log), timed_out
 
 
 class Outcome(Enum):
@@ -371,20 +449,32 @@ def run_task(checker, matrix_dir, task, work, source=None):
         if not task.check_deadlock:
             config += "CHECK_DEADLOCK FALSE\n"
         if not operator:
-            status, log = checker.run(directory, name, config + "\n".join(check.line for check in task.checks) + "\n", reach=False)
+            status, log, timed_out = checker.run(
+                directory, name, config + "\n".join(check.line for check in task.checks) + "\n",
+                reach=False, progress_label=f"{name} {run.label}",
+            )
             shutil.rmtree(directory / "states", ignore_errors=True)
-            return ordinary(name, run, status, log, directory / "tlc.log")
+            return ordinary(name, run, status, log, directory / "tlc.log", checker.limit if timed_out else None)
         wrapper = f"Reach{uuid.uuid4().hex}"
         invariant = f"{wrapper}Negated"
         (directory / f"{wrapper}.tla").write_text(f"---- MODULE {wrapper} ----\nEXTENDS {name}\n{invariant} == ~{operator}\n====\n", encoding="utf-8")
-        status, log = checker.run(directory, wrapper, config + f"INVARIANT {invariant}\n", reach=True)
-        return witness(name, run, operator, invariant, status, log)
+        # Exhaustive UNREACHED checks in reach: mutations do not depend on shortest-trace determinism.
+        reach_workers = checker.workers if source is not None else "1"
+        status, log, timed_out = checker.run(
+            directory, wrapper, config + f"INVARIANT {invariant}\n",
+            reach=True, workers=reach_workers, progress_label=f"{name} reach {operator} {run.label}",
+        )
+        return witness(name, run, operator, invariant, status, log, checker.limit if timed_out else None)
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
 
 
-def ordinary(name, run, status, log, log_path):
+def ordinary(name, run, status, log, log_path, timeout_limit=None):
+    if timeout_limit:
+        tail = tuple(line for line in log.split("\n") if line.strip())[-10:]
+        return Result(Outcome.FAIL, name, run.label,
+                      detail=f"TLC timed out after {timeout_limit}; set TLC_TIMEOUT to change the limit", lines=tail)
     if status == 0 and "No error has been found" in log:
         found = re.findall(r"[0-9,]* distinct states found", log)
         states = found[-1] if found else ""
@@ -394,7 +484,11 @@ def ordinary(name, run, status, log, log_path):
                   lines=(*errors[1:5], *reduced_trace(log_path, log)))
 
 
-def witness(name, run, operator, invariant, status, log):
+def witness(name, run, operator, invariant, status, log, timeout_limit=None):
+    if timeout_limit:
+        tail = tuple(line for line in log.split("\n") if line.strip())[-10:]
+        return Result(Outcome.INCOMPLETE, name, run.label, operator,
+                      lines=(f"TLC timed out after {timeout_limit}; set TLC_TIMEOUT to change the limit", *tail))
     lines = log.split("\n")
     length = 0
     if status == 12 and f"Error: Invariant {invariant} is violated by the initial state:" in lines:
