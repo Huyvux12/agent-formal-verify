@@ -427,6 +427,19 @@ function isStopped(pid) {
   return !ps.error && ps.status === 0 && (ps.stdout.trim() === "" || ps.stdout.trim().startsWith("Z"));
 }
 
+function processesWhere(match) {
+  const listing = spawnSync("ps", ["-A", "-ww", "-o", "pid=,command="], { encoding: "utf8" }).stdout;
+  return listing.split("\n").map((line) => line.trim().split(/\s+/)).filter(([pid, ...command]) => pid && match(command.join(" "))).map(([pid]) => Number(pid));
+}
+
+function waitFor(condition) {
+  const deadline = Date.now() + 1000;
+  while (!condition() && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  }
+  return condition();
+}
+
 function assertProcessStopped(pid) {
   const deadline = Date.now() + 1000;
   while (!isStopped(pid) && Date.now() < deadline) {
@@ -539,31 +552,52 @@ test("SIGTERM stops TLC and the processes it started, cleans temporary directori
   assert.equal(code.signalName, "SIGTERM", JSON.stringify(code));
 });
 
-test("SIGTERM also stops processes that TLC starts while the runner is stopping it", async () => {
+test("SIGTERM also stops processes started while the runner is stopping TLC", async () => {
   const dir = fixture();
   writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
   writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun hang | N=1\n");
   writeFileSync(join(dir, "tools.jar"), "user supplied");
-  const pidsFile = join(dir, "started.pids");
+  const realPs = spawnSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).stdout.trim();
+  assert.ok(realPs, "ps must be on PATH");
+  const psCalls = join(dir, "ps.calls");
+  // Hold each listing back after ps takes it, so processes started meanwhile are missing from it.
+  command(dir, "ps", `listing=$("${realPs}" "$@")\nsleep 0.2\necho call >> "${psCalls}"\nprintf '%s\\n' "$listing"`);
+  const nap = `30.${process.pid}${Date.now() % 100000}`;
+  const marker = `sleep ${nap}`;
   const readyFile = join(dir, "ready");
+  const doneFile = join(dir, "done");
   const java = fakeTlc(dir, [
-    'i=0',
-    'while [ "$i" -lt 300 ]; do',
-    '  sleep 30 &',
-    '  echo "$!" >> "$TASK_PIDS_FILE"',
-    '  i=$((i + 1))',
-    '  if [ "$i" = 5 ]; then echo ready > "$TASK_READY_FILE"; fi',
-    'done',
-    'wait',
+    "spawn() {",
+    "  i=0",
+    '  while [ "$i" -lt 200 ]; do',
+    '    sleep "$TASK_NAP" &',
+    "    i=$((i + 1))",
+    '    if [ "$i" = 5 ]; then echo ready > "$TASK_READY_FILE"; fi',
+    "    sleep 0.02",
+    "  done",
+    '  echo done > "$TASK_DONE_FILE"',
+    "  wait",
+    "}",
+    "spawn &",
+    "wait",
   ].join("\n"));
+  const marked = () => processesWhere((command) => command === marker);
+  const probe = spawn("sleep", [nap]);
+  try {
+    assert.ok(waitFor(() => marked().includes(probe.pid)), "the process search must find a marked sleep");
+  } finally {
+    probe.kill("SIGKILL");
+  }
   const code = await new Promise((resolve) => {
     const child = spawn("python3", [join(scripts, "tlc.py"), join(dir, "One.matrix")], {
       env: {
         ...process.env,
+        PATH: `${join(dir, "bin")}:${process.env.PATH}`,
         JAVA: java,
         TLC_JAR: join(dir, "tools.jar"),
-        TASK_PIDS_FILE: pidsFile,
+        TASK_NAP: nap,
         TASK_READY_FILE: readyFile,
+        TASK_DONE_FILE: doneFile,
         FORMAL_MIN_FREE_GIB: "0",
       },
     });
@@ -578,12 +612,21 @@ test("SIGTERM also stops processes that TLC starts while the runner is stopping 
       resolve({ exitCode, signalName });
     });
   });
-  const started = readFileSync(pidsFile, "utf8").trim().split("\n").map(Number);
   try {
     assert.equal(code.signalName, "SIGTERM", JSON.stringify(code));
-    for (const pid of started) assertProcessStopped(pid);
+    assert.ok(existsSync(psCalls), "the runner must list processes with ps");
+    assert.ok(!existsSync(doneFile), "TLC's processes started all their sleeps before the runner stopped them, so nothing was checked");
+    assert.ok(waitFor(() => marked().length === 0), `still running: ${marked()}`);
   } finally {
-    for (const pid of started) if (!isStopped(pid)) process.kill(pid, "SIGKILL");
+    for (const find of [() => processesWhere((command) => command.includes(dir)), marked]) {
+      for (const pid of find()) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    }
   }
 });
 
@@ -656,8 +699,8 @@ test("Ctrl-C stops a shell loop that runs the matrix runner", async () => {
   assert.equal(result.signalName, "SIGINT", JSON.stringify(result));
 });
 
-test("SIGKILL and SIGHUP sent to the runner process group still stop TLC", async () => {
-  for (const sig of ["SIGHUP", "SIGKILL"]) {
+test("SIGTERM, SIGHUP and SIGKILL sent to the runner process group still stop TLC", async () => {
+  for (const sig of ["SIGTERM", "SIGHUP", "SIGKILL"]) {
     const dir = fixture();
     writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
     writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun hang | N=1\n");
