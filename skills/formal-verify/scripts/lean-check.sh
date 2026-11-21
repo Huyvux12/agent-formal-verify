@@ -100,6 +100,23 @@ private def hasTheoremParent (env : Environment) : Name → Bool
   | .str parent _ | .num parent _ =>
     (match env.find? parent with | some (.thmInfo _) => true | _ => false) || hasTheoremParent env parent
 
+private def body? : Lean.ConstantInfo → Option Lean.Expr
+  | .defnInfo v => some v.value
+  | .opaqueInfo v => some v.value
+  | _ => none
+
+-- Lean 4.20 numbers hygienic binder names and abstracted proofs across the whole module, so an
+-- auxiliary body is recorded without them: adding a declaration above it must not change it.
+private partial def positionFree : Lean.Expr → Lean.Expr
+  | .lam _ t b i => .lam .anonymous (positionFree t) (positionFree b) i
+  | .forallE _ t b i => .forallE .anonymous (positionFree t) (positionFree b) i
+  | .letE _ t v b d => .letE .anonymous (positionFree t) (positionFree v) (positionFree b) d
+  | .app f a => .app (positionFree f) (positionFree a)
+  | .mdata m e => .mdata m (positionFree e)
+  | .proj s i e => .proj s i (positionFree e)
+  | e@(.const (.str _ s) _) => if s.startsWith "_proof_" then .const `_proof [] else e
+  | e => e
+
 private def oneLine (s : String) : String :=
   (s.foldl (fun (acc, gap) c =>
     if c.isWhitespace then (acc, true) else ((if gap then acc.push ' ' else acc).push c, false)) ("", false)).1
@@ -147,6 +164,11 @@ open Lean Elab Command in
     unless extra.isEmpty do IO.println s!"AXIOMS '{name}' depends on axioms: {extra}"
     let userName := (privateToUserName? name).getD name
     if userName.isInternalDetail && hasTheoremParent env name && (← findDeclarationRanges? name).isNone then continue
+    -- Lean generates a reserved name, such as an equation lemma, only when a proof uses it.
+    if isReservedName env name then continue
+    -- Its check misses the equations of a private definition's matcher.
+    if let .str parent _ := name then
+      if Meta.isMatcherCore env parent && (← findDeclarationRanges? name).isNone then continue
     let info := (env.find? name).get!
     let kind := match info with
       | .thmInfo _ => "theorem"
@@ -157,10 +179,14 @@ open Lean Elab Command in
       | .recInfo _ => "recursor"
       | .quotInfo _ => "quotient"
       | .axiomInfo _ => "axiom"
-    let value := match info with
-      | .defnInfo v => toJson (reprStr v.value)
-      | .opaqueInfo v => toJson (reprStr v.value)
-      | _ => Json.null
+    -- A recursive body can sit in an auxiliary: _f for structural recursion, _unary or _mutual
+    -- for well-founded recursion, and _unsafe_rec for the code that runs, the only body a partial def has.
+    let value := match body? info with
+      | some v => toJson <| [`_f, `_unary, `_mutual, `_unsafe_rec].foldl (init := reprStr v) fun acc aux =>
+          match (env.find? (name ++ aux)).bind body? with
+          | some auxBody => acc ++ s!"\n{aux}: {reprStr (positionFree auxBody)}"
+          | none => acc
+      | none => Json.null
     let pp ← liftTermElabM <| Meta.ppExpr info.type
     let record := Json.mkObj [
       ("module", toJson env.header.moduleNames[idx.toNat]!.toString),

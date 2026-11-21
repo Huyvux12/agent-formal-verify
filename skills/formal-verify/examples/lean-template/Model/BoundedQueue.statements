@@ -11,13 +11,6 @@
       "valueHash": "e4bb08954609a0a6c94443004be6dfe6c3c5ddf1e7d4565fb28ca3e7c3b2c3a7"
     },
     {
-      "name": "BoundedQueue.Invariant.eq_1",
-      "kind": "theorem",
-      "type": "∀ (w : Nat) (s : BoundedQueue.State), BoundedQueue.Invariant w s = (s.consumed ≤ s.next ∧ s.next ≤ s.consumed + w)",
-      "typeHash": "0206d5c005c8713f1ae3d80e748afe65aa3ca4c719821ef4556cb11846ac103a",
-      "valueHash": null
-    },
-    {
       "name": "BoundedQueue.State",
       "kind": "inductive",
       "type": "Type",
@@ -179,13 +172,6 @@
       "valueHash": "bd3dc3f1382ed19a578267073024d6fbc246b465d6e7c14b0aed9787c0cbeef7"
     },
     {
-      "name": "BoundedQueue.init.eq_1",
-      "kind": "theorem",
-      "type": "BoundedQueue.init = { next := 0, consumed := 0 }",
-      "typeHash": "5e405f4acd1a41903fdd240d23ad3be5e67fb0883e48136d1ace01dfa756fdc9",
-      "valueHash": null
-    },
-    {
       "name": "BoundedQueue.instDecidableEqState",
       "kind": "definition",
       "type": "DecidableEq BoundedQueue.State",
@@ -239,7 +225,7 @@
       "kind": "definition",
       "type": "Nat → Nat → List BoundedQueue.State",
       "typeHash": "1b888cc781cb5cb759ba80328d78e9d5fe802b4262f2dd96e56fcd3f39051dd4",
-      "valueHash": "459af6e24a2e05103f5abfdb228d5605251413977a8b547c5fb70f373022771c"
+      "valueHash": "0f2a5b83b101545a02abe280a78d5d139cfc4ab01102f894da0b3bf3342f8961"
     },
     {
       "name": "BoundedQueue.reachable.match_1",
