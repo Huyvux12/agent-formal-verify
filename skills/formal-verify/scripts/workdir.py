@@ -292,20 +292,41 @@ def warn_runtime():
     sys.stderr.flush()
 
 
-def main():
-    action = sys.argv[1] if len(sys.argv) == 2 else ""
+def run_inherited(command):
+    """Run a command on this process's streams and return its exit status as a shell reports it."""
     try:
-        if action == "report":
+        process = subprocess.Popen(command)
+    except OSError as error:
+        print(f"cannot run {command[0]}: {error}", file=sys.stderr)
+        return 127
+    try:
+        status = process.wait()
+    except BaseException:
+        stop_process(process)
+        raise
+    return 128 - status if status < 0 else status
+
+
+def main():
+    action = sys.argv[1] if len(sys.argv) > 1 else ""
+    try:
+        # A shell script runs a long step through here so that its signal trap can stop the step's whole process tree.
+        if action == "run" and len(sys.argv) > 2:
+            with signal_cleanup():
+                return run_inherited(sys.argv[2:])
+        if action == "report" and len(sys.argv) == 2:
             for line in format_report(inspect_storage()):
                 print(line)
             return 0
-        if action == "warn":
+        if action == "warn" and len(sys.argv) == 2:
             warn_runtime()
             return 0
     except TempDirError as error:
         print(error)
         return 1
-    print("usage: workdir.py <report|warn>", file=sys.stderr)
+    except SignalTerminated as error:
+        error.exit()
+    print("usage: workdir.py <report|warn> | workdir.py run <command> [<argument> ...]", file=sys.stderr)
     return 2
 
 
