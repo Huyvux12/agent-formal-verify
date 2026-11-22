@@ -137,10 +137,11 @@ class Kani:
         if done.returncode or not done.stdout.startswith(f"Kani Rust Verifier {self.version} (cargo plugin)\n"):
             raise Unavailable(f"Kani {self.version} is required; {remedy}")
 
-    def run(self, *arguments, cwd=None):
+    def run(self, *arguments, cwd=None, tmpdir=None):
+        env = self.env if tmpdir is None else self.env | {"TMPDIR": str(tmpdir)}
         try:
             # The driver selects Cargo mode from argv[0]; the Cargo wrapper can auto-install.
-            return workdir.run_captured(["cargo-kani", *arguments], executable=str(self.driver), env=self.env, cwd=cwd)
+            return workdir.run_captured(["cargo-kani", *arguments], executable=str(self.driver), env=env, cwd=cwd)
         except OSError as error:
             raise CheckError(f"cannot execute Kani: {error}") from error
 
@@ -189,8 +190,12 @@ class Kani:
 
 
 def invoke(crate, work, kani, *arguments, cwd=None):
+    # Kani's tools, such as goto-cc, write their own temporary files to TMPDIR. Keep those in the
+    # work directory, which the runner removes even when it stops a tool partway.
+    tmpdir = work / "tmp"
+    tmpdir.mkdir(parents=True, exist_ok=True)
     return kani.run("--manifest-path", str(crate / "Cargo.toml"),
-                    "--target-dir", str(work / "target"), "-Z", "stubbing", *arguments, cwd=cwd or crate)
+                    "--target-dir", str(work / "target"), "-Z", "stubbing", *arguments, cwd=cwd or crate, tmpdir=tmpdir)
 
 
 def read_json(path):
