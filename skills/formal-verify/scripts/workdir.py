@@ -156,12 +156,13 @@ def stop_process(process):
         return
     # Freeze the tree before signalling it: a stopped process cannot start another or leave its children orphaned.
     frozen = [process.pid]
+    interrupted = None
+    listing_deadline = time.monotonic() + PS_TIMEOUT
     try:
         with suppress(ProcessLookupError):
             process.send_signal(signal.SIGSTOP)
         if process.returncode is not None:
             return
-        listing_deadline = time.monotonic() + PS_TIMEOUT
         for _ in range(MAX_LISTINGS):
             listed = _descendants(process.pid, max(0, listing_deadline - time.monotonic()))
             if listed is None:
@@ -177,6 +178,13 @@ def stop_process(process):
         else:
             sys.stderr.write(f"WARN the checker kept starting processes through {MAX_LISTINGS} ps listings; "
                              "processes it started later may still be running\n")
+    except (KeyboardInterrupt, SignalTerminated) as error:
+        # A signal that cuts the listings short would leave children unfound, and once SIGTERM ends the checker
+        # no later stop can find them. The checker is still stopped, so list them once more, finish this stop,
+        # then raise the signal.
+        interrupted = error
+        listed = _descendants(process.pid, max(0, listing_deadline - time.monotonic()))
+        frozen += [pid for pid in listed or () if pid not in frozen]
     finally:
         # send_signal reaps a checker that exited since poll and signals nothing; its pid is then free for reuse.
         if process.returncode is not None:
@@ -203,9 +211,17 @@ def stop_process(process):
             process.wait()
         # A descendant that ignores SIGTERM, as one that inherits an ignored SIGTERM does, gets SIGKILL as the checker does.
         if survivors:
-            for pid in _running(survivors):
+            # A signal during this listing must not skip the SIGKILL, so the stop asks each pid directly instead.
+            try:
+                running = _running(survivors)
+            except (KeyboardInterrupt, SignalTerminated) as error:
+                interrupted = interrupted or error
+                running = [pid for pid in survivors if _exists(pid)]
+            for pid in running:
                 with suppress(OSError):
                     os.kill(pid, signal.SIGKILL)
+    if interrupted is not None:
+        raise interrupted
 
 
 def _running(pids):
