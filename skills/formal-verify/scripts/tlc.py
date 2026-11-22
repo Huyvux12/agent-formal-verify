@@ -198,39 +198,37 @@ class Tlc:
                    "-config", str(directory / "MC.cfg"), str(directory / f"{module}.tla")]
         start = time.monotonic()
         deadline = start + self.timeout_seconds
-        next_report = start + PROGRESS_DELAY
-        offset, partial, latest = 0, "", ""
-        timed_out = False
+
+        def watch(process):
+            """Wait for TLC, report its progress and stop it at the deadline; return its status and whether it timed out."""
+            next_report = start + PROGRESS_DELAY
+            offset, partial, latest = 0, "", ""
+            while True:
+                now = time.monotonic()
+                remaining = deadline - now
+                if remaining <= 0:
+                    workdir.stop_process(process)
+                    return process.returncode, True
+                if now >= next_report:
+                    offset, partial, found = _read_progress(log, offset, partial)
+                    if found:
+                        latest = found
+                    elapsed = int(now - start)
+                    prefix = f"[tlc] {progress_label}: " if progress_label else "[tlc] "
+                    body = f"{elapsed}s elapsed: {latest}" if latest else f"{elapsed}s elapsed"
+                    sys.stderr.write(f"{prefix}{body}\n")
+                    sys.stderr.flush()
+                    next_report = now + PROGRESS_INTERVAL
+                wait_for = min(remaining, max(0.05, next_report - time.monotonic()))
+                try:
+                    process.wait(timeout=wait_for)
+                    return process.returncode, False
+                except subprocess.TimeoutExpired:
+                    continue
+
         with log.open("w", encoding="utf-8") as stream:
-            process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT)
-            try:
-                while True:
-                    now = time.monotonic()
-                    remaining = deadline - now
-                    if remaining <= 0:
-                        workdir.stop_process(process)
-                        timed_out = True
-                        break
-                    if now >= next_report:
-                        offset, partial, found = _read_progress(log, offset, partial)
-                        if found:
-                            latest = found
-                        elapsed = int(now - start)
-                        prefix = f"[tlc] {progress_label}: " if progress_label else "[tlc] "
-                        body = f"{elapsed}s elapsed: {latest}" if latest else f"{elapsed}s elapsed"
-                        sys.stderr.write(f"{prefix}{body}\n")
-                        sys.stderr.flush()
-                        next_report = now + PROGRESS_INTERVAL
-                    wait_for = min(remaining, max(0.05, next_report - time.monotonic()))
-                    try:
-                        process.wait(timeout=wait_for)
-                        break
-                    except subprocess.TimeoutExpired:
-                        continue
-            except BaseException:
-                workdir.stop_process(process)
-                raise
-        return process.returncode, read_raw(log), timed_out
+            returncode, timed_out = workdir.guarded(command, watch, stdout=stream, stderr=subprocess.STDOUT)
+        return returncode, read_raw(log), timed_out
 
 
 class Outcome(Enum):

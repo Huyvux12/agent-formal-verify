@@ -32,6 +32,8 @@ SKIP_MOUNT_PREFIXES = (
 )
 
 _warned_runtime = False
+# While guarded starts a process, the signals that signal_cleanup catches wait here until the process can be stopped.
+_deferred = None
 # Bounds on one stop: how long its ps listings of the checker's descendants may take together,
 # and how many it takes before signalling what it found, in case a process keeps starting others.
 PS_TIMEOUT = 5
@@ -88,6 +90,9 @@ def signal_cleanup():
         if state["caught"]:
             return
         state["caught"] = True
+        if _deferred is not None:
+            _deferred.append(signum)
+            return
         raise SignalTerminated(signum)
 
     signals = [signal.SIGINT, signal.SIGTERM]
@@ -237,21 +242,38 @@ def _exists(pid):
     return True
 
 
-def run_captured(command, **kwargs):
-    """Run a command in the caller's process group and terminate it cleanly on interruption."""
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        **kwargs,
-    )
+def guarded(command, body, **kwargs):
+    """Start a command with Popen, return body(process), and stop the process if anything, a signal included, ends body early.
+
+    A signal that arrives while Popen runs, which waits for the command to start, is raised only once the
+    process exists. From then until body returns, every point where a signal handler can run is inside the
+    try that stops the process, which a context manager's __enter__ could not guarantee.
+    """
+    global _deferred
+    _deferred = deferred = []
     try:
-        stdout, stderr = process.communicate()
+        process = subprocess.Popen(command, **kwargs)
+    except BaseException:
+        _deferred = None
+        if not deferred:
+            raise
+        raise SignalTerminated(deferred[0]) from None
+    try:
+        _deferred = None
+        if deferred:
+            raise SignalTerminated(deferred[0])
+        return body(process)
     except BaseException:
         stop_process(process)
         raise
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def run_captured(command, **kwargs):
+    """Run a command in the caller's process group and terminate it cleanly on interruption."""
+    def collect(process):
+        stdout, stderr = process.communicate()
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    return guarded(command, collect, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs)
 
 
 def _min_free_gib(default):
@@ -382,16 +404,18 @@ def warn_runtime():
 
 def run_inherited(command):
     """Run a command on this process's streams and return its exit status as a shell reports it."""
+    started = []
+
+    def wait(process):
+        started.append(process)
+        return process.wait()
     try:
-        process = subprocess.Popen(command)
+        status = guarded(command, wait)
     except OSError as error:
+        if started:
+            raise
         print(f"cannot run {command[0]}: {error}", file=sys.stderr)
         return 127
-    try:
-        status = process.wait()
-    except BaseException:
-        stop_process(process)
-        raise
     return 128 - status if status < 0 else status
 
 
