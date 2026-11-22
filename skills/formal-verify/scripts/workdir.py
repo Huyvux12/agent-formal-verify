@@ -215,12 +215,12 @@ def _exists(pid):
     return True
 
 
-@contextmanager
-def guarded(command, **kwargs):
-    """Start a command with Popen and stop it if anything, a signal included, ends the block early.
+def guarded(command, body, **kwargs):
+    """Start a command with Popen, return body(process), and stop the process if anything, a signal included, ends body early.
 
     A signal that arrives while Popen runs, which waits for the command to start, is raised only once the
-    process exists, so the command never outlives a signal that ends this process.
+    process exists. From then until body returns, every point where a signal handler can run is inside the
+    try that stops the process, which a context manager's __enter__ could not guarantee.
     """
     global _deferred
     _deferred = deferred = []
@@ -235,7 +235,7 @@ def guarded(command, **kwargs):
         _deferred = None
         if deferred:
             raise SignalTerminated(deferred[0])
-        yield process
+        return body(process)
     except BaseException:
         stop_process(process)
         raise
@@ -243,9 +243,10 @@ def guarded(command, **kwargs):
 
 def run_captured(command, **kwargs):
     """Run a command in the caller's process group and terminate it cleanly on interruption."""
-    with guarded(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs) as process:
+    def collect(process):
         stdout, stderr = process.communicate()
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    return guarded(command, collect, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs)
 
 
 def _min_free_gib(default):
@@ -376,12 +377,15 @@ def warn_runtime():
 
 def run_inherited(command):
     """Run a command on this process's streams and return its exit status as a shell reports it."""
-    process = None
+    started = []
+
+    def wait(process):
+        started.append(process)
+        return process.wait()
     try:
-        with guarded(command) as process:
-            status = process.wait()
+        status = guarded(command, wait)
     except OSError as error:
-        if process is not None:
+        if started:
             raise
         print(f"cannot run {command[0]}: {error}", file=sys.stderr)
         return 127

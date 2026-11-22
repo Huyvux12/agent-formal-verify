@@ -198,18 +198,17 @@ class Tlc:
                    "-config", str(directory / "MC.cfg"), str(directory / f"{module}.tla")]
         start = time.monotonic()
         deadline = start + self.timeout_seconds
-        next_report = start + PROGRESS_DELAY
-        offset, partial, latest = 0, "", ""
-        timed_out = False
-        with log.open("w", encoding="utf-8") as stream, \
-                workdir.guarded(command, stdout=stream, stderr=subprocess.STDOUT) as process:
+
+        def watch(process):
+            """Wait for TLC, report its progress and stop it at the deadline; return its status and whether it timed out."""
+            next_report = start + PROGRESS_DELAY
+            offset, partial, latest = 0, "", ""
             while True:
                 now = time.monotonic()
                 remaining = deadline - now
                 if remaining <= 0:
                     workdir.stop_process(process)
-                    timed_out = True
-                    break
+                    return process.returncode, True
                 if now >= next_report:
                     offset, partial, found = _read_progress(log, offset, partial)
                     if found:
@@ -223,10 +222,13 @@ class Tlc:
                 wait_for = min(remaining, max(0.05, next_report - time.monotonic()))
                 try:
                     process.wait(timeout=wait_for)
-                    break
+                    return process.returncode, False
                 except subprocess.TimeoutExpired:
                     continue
-        return process.returncode, read_raw(log), timed_out
+
+        with log.open("w", encoding="utf-8") as stream:
+            returncode, timed_out = workdir.guarded(command, watch, stdout=stream, stderr=subprocess.STDOUT)
+        return returncode, read_raw(log), timed_out
 
 
 class Outcome(Enum):
