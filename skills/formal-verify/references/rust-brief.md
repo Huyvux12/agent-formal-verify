@@ -72,7 +72,7 @@ python3 <skill-dir>/scripts/mutate.py /absolute/path/to/crate/src/Name.mutations
 
 Append fully qualified harness names to check only those properties. The helper
 prints one verdict per harness with the unwind bound and number of checks. It
-requires a complete Kani 0.68.0 bundle and Python 3. It checks and invokes the
+requires a complete Kani 0.68.0 bundle and Python 3.9 or later. It checks and invokes the
 bundle's driver directly, without invoking the auto-installing Cargo wrapper.
 A registered Cargo installer is not required after setup. Relative `KANI_HOME`
 paths resolve against the caller's directory before any temporary work begins.
