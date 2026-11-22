@@ -136,9 +136,10 @@ private def unhygienic (n : Lean.Name) : Lean.Name :=
   if n.hasMacroScopes then .anonymous else n
 
 -- A name keeps its macro scopes in a prefix when Lean adds a suffix to a hygienic name, as in a helper's match_1.
-private def erased : Lean.Name → Lean.Name
-  | n@(.str p s) => if n.hasMacroScopes then n.eraseMacroScopes else .str (erased p) s
-  | n@(.num p i) => if n.hasMacroScopes then n.eraseMacroScopes else .num (erased p) i
+private def erased (n : Lean.Name) : Lean.Name :=
+  if n.hasMacroScopes then n.eraseMacroScopes else match n with
+  | .str p s => .str (erased p) s
+  | .num p i => .num (erased p) i
   | n => n
 
 private def levelFree : Lean.Level → Lean.Level
@@ -167,7 +168,8 @@ private partial def positionFree : Lean.Expr → Lean.Expr
 -- and those of the hygienic constants they refer to in turn, each once.
 open Lean in
 private def followed (env : Environment) (roots : List Expr) : String := Id.run do
-  let mut queue : Array Name := roots.foldl (fun acc e => acc ++ e.getUsedConstants.filter fun c => erased c != c) #[]
+  let hygienic (e : Expr) := e.getUsedConstants.filter fun c => erased c != c
+  let mut queue := roots.foldl (fun acc e => acc ++ hygienic e) #[]
   let mut seen : Array Name := #[]
   let mut out := ""
   let mut i := 0
@@ -180,7 +182,7 @@ private def followed (env : Environment) (roots : List Expr) : String := Id.run 
     let parts := info.type :: (body? info).toList
     out := out ++ s!"\n{erased n}: {reprStr (parts.map positionFree)}"
     for e in parts do
-      queue := queue ++ e.getUsedConstants.filter fun c => erased c != c && !seen.contains c
+      queue := queue ++ hygienic e
   return out
 
 private def oneLine (s : String) : String :=
@@ -250,8 +252,9 @@ open Lean Elab Command in
     let value := match body? info with
       | some v =>
         let auxes := [`_f, `_unary, `_mutual, `_unsafe_rec].filterMap fun aux => ((env.find? (name ++ aux)).bind body?).map (aux, ·)
-        toJson <| auxes.foldl (init := reprStr (positionFree v)) (fun acc (aux, auxBody) =>
-          acc ++ s!"\n{aux}: {reprStr (positionFree auxBody)}") ++ followed env (v :: auxes.map (·.2))
+        let bodies := auxes.foldl (init := reprStr (positionFree v)) fun acc (aux, auxBody) =>
+          acc ++ s!"\n{aux}: {reprStr (positionFree auxBody)}"
+        toJson (bodies ++ followed env (v :: auxes.map (·.2)))
       | none => Json.null
     let pp ← liftTermElabM <| Meta.ppExpr info.type
     let record := Json.mkObj [
