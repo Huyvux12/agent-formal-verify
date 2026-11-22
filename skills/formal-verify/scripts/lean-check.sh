@@ -41,7 +41,9 @@ else
 fi
 trap 'rm -rf "$work"' EXIT
 log=$work/build.log
-command -v python3 > /dev/null || { echo "UNAVAILABLE python3 is required to check frozen Lean statements; install Python 3"; exit 3; }
+# shellcheck source=skills/formal-verify/scripts/python-tools.sh
+source "$HERE/python-tools.sh"
+require_python || exit 3
 python3 "$HERE/workdir.py" warn
 # Lake builds a module named by its source path and rejects a path that no
 # library owns, so naming every source leaves no file unchecked. Its query

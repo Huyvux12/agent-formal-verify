@@ -33,6 +33,25 @@ test("missing runtimes and hash tools are unavailable with their remedies", () =
   }
 });
 
+test("helpers report a python3 older than 3.9 as unavailable before running it", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.matrix"), "");
+  command(dir, "python3", "echo 3.8.20\nexit 1");
+  const java = command(dir, "java", "exit 0");
+  const cases = [
+    ["bash", [join(scripts, "tlc-matrix.sh"), join(dir, "One.matrix")]],
+    ["bash", [join(scripts, "kani-check.sh"), dir]],
+    ["bash", [join(scripts, "setup.sh"), "rust"]],
+    ["bash", [join(scripts, "setup.sh"), "storage"]],
+    ["/bin/bash", ["-c", 'source "$1"; require_tlc_runtime', "bash", join(scripts, "tlc-tools.sh")]],
+  ];
+  for (const [shell, args] of cases) {
+    const result = spawnSync(shell, args, { encoding: "utf8", env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, JAVA: java } });
+    assert.equal(result.status, 3, args.join(" ") + ": " + result.stdout + result.stderr);
+    assert.equal(result.stdout, "UNAVAILABLE python3 is Python 3.8.20; install Python 3.9 or later\n", args.join(" "));
+  }
+});
+
 test("helper usage errors exit 2", () => {
   const dir = fixture();
   for (const [script, args] of [["lean-check.sh", []], ["tlc-matrix.sh", []], ["mutate.py", []], ["setup.sh", ["lean"]], ["workdir.py", []]]) {

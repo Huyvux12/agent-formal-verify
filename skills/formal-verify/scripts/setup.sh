@@ -4,6 +4,8 @@
 # Ensures one tool is ready; system runtimes must already be installed.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=skills/formal-verify/scripts/python-tools.sh
+source "$HERE/python-tools.sh"
 
 report_storage() {
   if command -v python3 > /dev/null 2>&1; then
@@ -22,7 +24,7 @@ case ${1:-} in
     ;;
   rust)
     [ "$#" -eq 1 ] || { echo "usage: setup.sh rust"; exit 2; }
-    command -v python3 > /dev/null || { echo "UNAVAILABLE python3 is required; install Python 3"; exit 3; }
+    require_python || exit 3
     python3 "$HERE/kani.py" ready
     report_storage
     ;;
@@ -43,7 +45,7 @@ case ${1:-} in
     ;;
   storage)
     [ "$#" -eq 1 ] || { echo "usage: setup.sh storage"; exit 2; }
-    command -v python3 > /dev/null || { echo "UNAVAILABLE python3 is required; install Python 3"; exit 3; }
+    require_python || exit 3
     python3 "$HERE/workdir.py" report
     ;;
   *) echo "usage: setup.sh tla | setup.sh lean <lake-project-dir> | setup.sh rust | setup.sh storage"; exit 2 ;;

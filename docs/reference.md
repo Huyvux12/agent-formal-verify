@@ -50,7 +50,7 @@ Installing the plugin adds skills and helpers. Run setup to prepare the verifica
 
 ## Runtime setup and tool pins
 
-The [setup skill](../skills/setup/SKILL.md) prepares a working JDK, Python 3, a SHA256 tool, elan, Lean, Rust, Kani and the pinned TLC JAR. It reuses existing prerequisites and installs missing ones through your package manager or the upstream documented installer, within your installation constraints. It prepares all three verification tools and needs no target repository.
+The [setup skill](../skills/setup/SKILL.md) prepares a working JDK, Python 3.9 or later, a SHA256 tool, elan, Lean, Rust, Kani and the pinned TLC JAR. It reuses existing prerequisites and installs missing ones through your package manager or the upstream documented installer, within your installation constraints. It prepares all three verification tools and needs no target repository.
 
 [Tool setup](../skills/formal-verify/references/setup.md) is the reference for everything after that first run: how verification prepares a changed Lean pin or tool version without a setup rerun, what global installations share, where caches live, the version pins, the direct helper commands, environment settings and CI.
 

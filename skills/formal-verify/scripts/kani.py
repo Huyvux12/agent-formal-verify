@@ -80,13 +80,15 @@ class CrateSources:
 
         def ignore(directory, names):
             # Cargo tags each build directory, including one left behind after the target directory moved.
+            # A dangling symlink, such as an editor's lock file, is skipped here because copytree's
+            # ignore_dangling_symlinks reaches only the top directory before Python 3.10.
             return [name for name in names if name == ".git" or Path(directory) / name in self.outputs
-                    or (Path(directory) / name / "CACHEDIR.TAG").is_file()]
+                    or (Path(directory) / name / "CACHEDIR.TAG").is_file()
+                    or (Path(directory) / name).is_symlink() and not (Path(directory) / name).exists()]
 
         for root in self.roots:
             if self.roots.isdisjoint(root.parents):
-                shutil.copytree(root, destination / root.relative_to(anchor), ignore=ignore,
-                                ignore_dangling_symlinks=True)
+                shutil.copytree(root, destination / root.relative_to(anchor), ignore=ignore)
         return destination / crate.relative_to(anchor)
 
 
