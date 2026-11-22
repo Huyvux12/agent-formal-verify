@@ -557,6 +557,61 @@ test("SIGTERM stops TLC and the processes it started, cleans temporary directori
   assert.ok(code.stopped < 1500, JSON.stringify(code));
 });
 
+test("SIGTERM that arrives while the runner starts TLC still stops TLC and the processes it started", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun hang | N=1\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const pidFile = join(dir, "child.pid");
+  const grandchildPidFile = join(dir, "grandchild.pid");
+  const readyFile = join(dir, "ready");
+  const java = fakeTlc(dir, [
+    'sleep 30 &',
+    'echo "$!" > "$TASK_GRANDCHILD_PID_FILE"',
+    'echo "$$" > "$TASK_PID_FILE"',
+    'echo ready > "$TASK_READY_FILE"',
+    'wait',
+  ].join("\n"));
+  const tlc = join(scripts, "tlc.py");
+  const script = [
+    "import os, runpy, signal, subprocess, sys, time",
+    `sys.path.insert(0, ${JSON.stringify(scripts)})`,
+    "real_init = subprocess.Popen.__init__",
+    "def init(self, args, *rest, **kwargs):",
+    "    real_init(self, args, *rest, **kwargs)",
+    "    if 'tlc2.TLC' in args:",
+    "        while not os.path.exists(os.environ.get('TASK_READY_FILE')):",
+    "            time.sleep(0.02)",
+    // The signal handler runs inside Popen, as it does when a signal lands while Popen waits for TLC to start.
+    "        os.kill(os.getpid(), signal.SIGTERM)",
+    "        time.sleep(0.3)",
+    "subprocess.Popen.__init__ = init",
+    `sys.argv = [${JSON.stringify(tlc)}, ${JSON.stringify(join(dir, "One.matrix"))}]`,
+    `runpy.run_path(${JSON.stringify(tlc)}, run_name='__main__')`,
+  ].join("\n");
+  const result = spawnSync("python3", ["-B", "-c", script], {
+    encoding: "utf8",
+    timeout: 10000,
+    env: {
+      ...process.env,
+      JAVA: java,
+      TLC_JAR: join(dir, "tools.jar"),
+      TASK_PID_FILE: pidFile,
+      TASK_GRANDCHILD_PID_FILE: grandchildPidFile,
+      TASK_READY_FILE: readyFile,
+      FORMAL_MIN_FREE_GIB: "0",
+    },
+  });
+  assert.ok(existsSync(grandchildPidFile) && existsSync(pidFile), result.stderr);
+  const pids = [pidFile, grandchildPidFile].map((file) => Number(readFileSync(file, "utf8").trim()));
+  try {
+    assert.equal(result.signal, "SIGTERM", result.stderr);
+    for (const pid of pids) assertProcessStopped(pid);
+  } finally {
+    killAll(...pids);
+  }
+});
+
 test("SIGTERM also stops processes started while the runner is stopping TLC, through every generation", async () => {
   const dir = fixture();
   writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");

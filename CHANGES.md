@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+A `SIGINT`, `SIGTERM` or `SIGHUP` that reaches the Python runners while they start a checker, such as TLC, Kani or a Lean build step, now stops that checker and the processes it started. Before this change, such a signal could end the runner while `Popen` waited for the checker to start, or just after, before the runner held the checker, and the checker kept running. The runners now start each checker through `workdir.guarded`, which holds a signal until the checker is known and then stops it.
+
 When the Python runners stop a checker, each `ps` listing of the processes it started now has five seconds to answer, and one stop takes at most fifty listings. When either limit is reached, the runner signals the processes it has found and prints a warning to `stderr` that others may still be running. Before this change, a `ps` that hung kept the checker suspended and the runner waiting, and a process that kept starting others, such as one whose `SIGSTOP` failed, kept the runner listing forever.
 
 The Rust checker and the mutation runner now give the tools that Kani runs, such as `goto-cc`, a `TMPDIR` inside the runner's working directory. Before this change those tools wrote their temporary files straight into `TMPDIR`, and a check stopped partway could leave them there; the runner's cleanup now removes them with its working directory.
