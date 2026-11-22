@@ -97,6 +97,27 @@ jobs:
       - name: Check the examples and their mutations with TLC, Lean and Kani
         run: bash tests/models.sh
 
+  # The models job uses the template's pin. Lean 4.20.0 is the oldest pin the
+  # helpers support, and it numbers hygienic names and match helpers differently.
+  lean-oldest:
+    name: Lean regressions on the oldest supported pin
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install elan
+        uses: leanprover/lean-action@ba3fdfe5c4476c925da13bf11a005ddb47e47aee # v1.7.1
+        with:
+          auto-config: false
+          use-github-cache: false
+          lake-package-directory: skills/formal-verify/examples/lean-template
+      - name: Install Lean 4.20.0
+        run: elan toolchain install leanprover/lean4:v4.20.0
+      - name: Check Lean declaration discovery, freezing and mutation coverage on Lean 4.20.0
+        run: bash tests/lean-mutations.sh leanprover/lean4:v4.20.0
+
   links:
     name: Documentation links
     runs-on: ubuntu-latest
