@@ -10,12 +10,17 @@ TLC_CACHE=${TLC_CACHE:-$HOME/.cache/tla}
 TLC_JAR_SUPPLIED=${TLC_JAR:+yes}
 TLC_JAR=${TLC_JAR:-$TLC_CACHE/tla2tools-$TLA_VERSION.jar}
 
+python_tools=${BASH_SOURCE[0]%/*}/python-tools.sh
+[[ ${BASH_SOURCE[0]} == */* ]] || python_tools=python-tools.sh
+# shellcheck source=skills/formal-verify/scripts/python-tools.sh
+source "$python_tools"
+
 require_tlc_runtime() {
   if ! "$JAVA" -version > /dev/null 2>&1; then
     echo "UNAVAILABLE $JAVA has no runtime; install a JDK and set JAVA to its java binary"
     return 3
   fi
-  command -v python3 > /dev/null || { echo "UNAVAILABLE python3 is not on PATH; install Python 3"; return 3; }
+  require_python
 }
 
 check_tlc_jar() {

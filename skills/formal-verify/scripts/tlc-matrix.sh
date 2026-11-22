@@ -5,5 +5,7 @@
 # runner and documents the matrix file and its environment settings.
 # Usage: tlc-matrix.sh <matrix-file> [label-substring]
 [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { echo "usage: tlc-matrix.sh <matrix-file> [label-substring]"; exit 2; }
-command -v python3 > /dev/null || { echo "UNAVAILABLE python3 is not on PATH; install Python 3"; exit 3; }
+# shellcheck source=skills/formal-verify/scripts/python-tools.sh
+source "$(dirname "$0")/python-tools.sh"
+require_python || exit 3
 exec python3 "$(dirname "$0")/tlc.py" "$@"
