@@ -99,7 +99,7 @@ test("a second Ctrl-C while Kani's readiness check is stopped still stops the pr
   assert.ok(realPs, "ps must be on PATH");
   // Hold each listing back so the second Ctrl-C arrives while the runner is stopping the driver.
   command(dir, "ps", `sleep 0.5\nexec "${realPs}" "$@"`);
-  const code = await new Promise((resolve) => {
+  const outcome = await new Promise((resolve) => {
     const child = spawn("python3", [join(scripts, "kani.py"), "ready"], {
       env: { ...process.env, KANI_HOME: join(dir, "kani"), PATH: `${join(dir, "bin")}:${process.env.PATH}` },
     });
@@ -124,7 +124,7 @@ test("a second Ctrl-C while Kani's readiness check is stopped still stops the pr
     const deadline = Date.now() + 1000;
     while (running() && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     assert.ok(!running(), `the driver's sleep ${pid} is still running`);
-    assert.equal(code.signalName, "SIGINT", JSON.stringify(code));
+    assert.equal(outcome.signalName, "SIGINT", JSON.stringify(outcome));
   } finally {
     for (const signal of ["SIGCONT", "SIGKILL"]) {
       try {
