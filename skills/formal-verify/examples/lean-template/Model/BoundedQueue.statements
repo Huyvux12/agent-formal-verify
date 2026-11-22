@@ -113,14 +113,7 @@
       "kind": "definition",
       "type": "Nat → Nat → List (BoundedQueue.State × BoundedQueue.State)",
       "typeHash": "3c10f9d3b1db7f38259addbb30531e138707750920468a6f0851dd61966e35c3",
-      "valueHash": "1873f9ca445879e8c3bc5389b38b4f911d1d129389d188cfab47e4f600845eb0"
-    },
-    {
-      "name": "BoundedQueue.badPairs.match_1",
-      "kind": "definition",
-      "type": "(motive : Option BoundedQueue.State → Sort u_1) → (t : Option BoundedQueue.State) → ((t' : BoundedQueue.State) → motive (some t')) → (Unit → motive none) → motive t",
-      "typeHash": "86b39c3224ee84b96ee95188ee32c35cb2e462824167025457bd44bd64bc4159",
-      "valueHash": "b366da63938957fe7343b5fd4271deb5aa1dff2830dc6efaff9213b5ec84dc9e"
+      "valueHash": "6ce67dfbb15813a86c37263f09c1f27d0acb1c3a7b81b2a036ec1ec82d4bc8af"
     },
     {
       "name": "BoundedQueue.claim",
@@ -183,14 +176,7 @@
       "kind": "definition",
       "type": "(x x_1 : BoundedQueue.State) → Decidable (x = x_1)",
       "typeHash": "374541636a2ec028265455e19e18411bb5843e5f6acc04db6f6b9d946232582b",
-      "valueHash": "52f07219a0c340534f831ef02cb0a7bc759db29bf0cf24e25fa6a08ab7d93098"
-    },
-    {
-      "name": "BoundedQueue.instDecidableEqState.decEq.match_1",
-      "kind": "definition",
-      "type": "(motive : BoundedQueue.State → BoundedQueue.State → Sort u_1) → (x x_1 : BoundedQueue.State) → ((a a_1 b b_1 : Nat) → motive { next := a, consumed := a_1 } { next := b, consumed := b_1 }) → motive x x_1",
-      "typeHash": "58f216cf9aa6c076d1babc96ae4889d2c8e9ada8970ed2104836ed918380783e",
-      "valueHash": "62c2a5cbd75329899ba2657d5c85e920f58c81e595a781ab40db1af7e10266ec"
+      "valueHash": "5d1b9130a095c5ef0acc5a587ddb6140987141484cabf3fdf45a5c587773051b"
     },
     {
       "name": "BoundedQueue.instDecidableInvariant",
@@ -225,14 +211,7 @@
       "kind": "definition",
       "type": "Nat → Nat → List BoundedQueue.State",
       "typeHash": "ba325d9d339b281c7edc5f19b115da5124ade8a48c1c6893b70d682942b3be97",
-      "valueHash": "393ccd0fc1cdef43ece5bd856aa16e7f81aeb99899057d24ee1a32ec6fc5c1c5"
-    },
-    {
-      "name": "BoundedQueue.reachable.match_1",
-      "kind": "definition",
-      "type": "(motive : Nat → Sort u_1) → (x : Nat) → (Unit → motive 0) → ((steps : Nat) → motive steps.succ) → motive x",
-      "typeHash": "2889dd827821a9bd02e9ac7899c7a9b04cd532980dd52202371f4f01071eeb2f",
-      "valueHash": "e09b58e02ee77ecfe3252d3464c76cb9e0e8d14a1aac702abe612126faf6247c"
+      "valueHash": "02787cf905579809486b08283c771b24ec4ff4cc2941ecb55651278f9c4ec3fb"
     },
     {
       "name": "BoundedQueue.vectors",
