@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The Rust checker and the mutation runner now give the tools that Kani runs, such as `goto-cc`, a `TMPDIR` inside the runner's working directory. Before this change those tools wrote their temporary files straight into `TMPDIR`, and a check stopped partway could leave them there; the runner's cleanup now removes them with its working directory.
+
 The Rust checker now handles `SIGINT`, `SIGTERM` and `SIGHUP` while Kani checks the bundle's version as it does during a check: it stops the driver and the processes the driver started, ignores a second signal while it does, and ends by the signal. Before this change, a `SIGTERM` or `SIGHUP` there left the driver's processes running, a Ctrl-C printed a traceback, and a second Ctrl-C ended the stop early.
 
 `lean-check.sh` now stops its running build on `SIGTERM`, `SIGHUP` or `SIGINT`, with every process the build started, such as Lake and the Lean compiler, before it removes its temporary directory and ends by the same signal. Before this change, a `SIGTERM` sent to the script alone left Lake and Lean running. It runs each build step through `workdir.py run`, which stops a command's process tree as the Python runners do.
