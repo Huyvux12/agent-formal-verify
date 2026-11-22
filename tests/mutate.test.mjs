@@ -194,7 +194,7 @@ function leanMutations(model, frozen, baseline, mutations, outcomes) {
   command(dir, "elan", [
     '[ "$4" = "--version" ] && { echo version >> "$TASK_TRACE"; exit 0; }',
     '[ "$6" = query ] && { echo "$TASK_PROJECT/.lake/build/lib/lean/Model/Step.olean"; exit 0; }',
-    '[[ "$8" == */Audit.lean ]] && { echo "$TASK_AUDIT"; echo "AUDITED 1 declarations"; exit 0; }',
+    '[ "${10}" = audit ] && { echo "$TASK_AUDIT"; echo "AUDITED 1 declarations"; exit 0; }',
     '[ "$4" = --print-prefix ] && { echo "$TASK_PROJECT"; exit 0; }',
     '[ "$6" = env ] && [ "$7" != lean ] && { shift 6; exec "$@"; }',
     'echo analyse >> "$TASK_TRACE"',

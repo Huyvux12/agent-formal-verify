@@ -344,4 +344,23 @@ if bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"; then
   exit 1
 fi
 grep -q '^FROZEN Step.pick: statement changed$' "$work/check"
+
+# The mutation runner and the frozen record share one notion of a statement. A theorem that states a
+# match of the same shape as a definition's shares that definition's match helper, and a mutation that
+# changes the definition's match gives the theorem a helper of its own. The theorem's statement is
+# unchanged, so its failing proof detects the mutation.
+cat > "$work/Model/Step.lean" <<'EOF'
+namespace Step
+def f (n : Nat) : Nat :=
+  match n with
+  | 0 => 1
+  | k + 1 => k
+theorem t (n : Nat) : (match n with | 0 => 1 | k + 1 => k) = f n := by
+  cases n <;> rfl
+end Step
+EOF
+printf 'mutation f gains an arm\n-   | k + 1 => k\n+   | 1 => 0\n+   | k + 2 => k + 1\n' > "$work/Model/Step.mutations"
+bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
+python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result" || { cat "$work/result"; echo 'FAIL a shared match helper made an unchanged theorem statement read as changed'; exit 1; }
+grep -q '^DETECTED f gains an arm: proof/check fails: theorem Step.t$' "$work/result"
 echo 'ok: qualified coverage and proof-sensitivity reporting checked with real Lean'

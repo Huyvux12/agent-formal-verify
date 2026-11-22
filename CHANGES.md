@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+The Lean mutation runner now compares a theorem's, example's or `#guard`'s statement in the form the frozen record uses: match helpers by their content, hygienic names and universe levels without their numbers, and no binder names. Before this change, it compared Lean's raw types, so a mutation that changed which match helper an unchanged statement shared, such as one that changed the shape of an earlier definition's `match`, read as a changed statement and gave the mutation no verdict, while the frozen record showed the statement unchanged. The Lean checker's audit and the mutation runner's analysis are now one program, `scripts/lean-analysis.lean`, instead of a Lean file that `lean-check.sh` wrote out on each run and a separate `lean-mutations.lean`. Records and `lean-check.sh` output are unchanged.
+
+
 The trace reducer `scripts/tlc-trace.py` is now `scripts/tlc_trace.py`, which the matrix runner imports instead of running in a second Python process. Its command line is unchanged. A TLC log that holds bytes that are not UTF-8 now has its trace reduced with those bytes replaced; before this change, the reducer stopped with a decoding error and the runner printed the log's last 40 lines instead.
 
 The Python runners now hold back `SIGINT`, `SIGTERM` and `SIGHUP` while they stop a checker, and end by the signal once the stop has finished. The stop no longer handles a signal at each of its steps. One effect is visible: a Ctrl-C during a stop, such as the TLC timeout stop, no longer shortens the two seconds that the checker's processes get to exit after `SIGTERM` before `SIGKILL`.

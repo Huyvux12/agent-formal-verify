@@ -78,7 +78,7 @@ function leanFixture(log, { status = 0, audit = audited, files = [] } = {}) {
     `[ "$3" = "lean" ] && { echo "${dir}"; exit 0; }`,
     '[ "$7" = python3 ] && { shift 6; exec "$@"; }',
     'if [[ "$8" == */lean-replay.lean ]]; then echo replay >> "$TASK_TRACE"; sed "s/^/replaying /" "$AFV_REPLAY_MODULES"; [ -z "$TASK_REPLAY" ] || { echo "$TASK_REPLAY"; exit 1; }; exit 0; fi',
-    'if [ "$6" = "env" ]; then echo audit >> "$TASK_TRACE"; grep "^import" "$8"; printf "%s\\n" "$TASK_AUDIT"; exit 0; fi',
+    'if [ "${10}" = "audit" ]; then echo audit >> "$TASK_TRACE"; sed "s/^/module /" "${@: -1}"; printf "%s\\n" "$TASK_AUDIT"; exit 0; fi',
     'shift 6; printf "%s\\n" "$@" > "$TASK_BUILT"',
     `[ ${status} -ne 0 ] || for target; do target=\${target#"$TASK_PROJECT/"}; echo "$TASK_PROJECT/.lake/build/lib/lean/\${target%.lean:olean}.olean"; done`,
     `cat "${join(logs, log)}" >&2; exit ${status}`,
@@ -112,14 +112,14 @@ test("the Lean checker fails when the audit reports no declarations", () => {
   for (const audit of ["error: unknown constant", "AUDITED 0 declarations"]) {
     const { result } = leanFixture("lake-search.log", { audit });
     assert.equal(result.status, 1);
-    includes(result.stdout, "the axiom audit did not run or found no declarations:\nimport Lean\nimport Model\nimport Model.Sub\n" + audit);
+    includes(result.stdout, "the axiom audit did not run or found no declarations:\nmodule Model\nmodule Model.Sub\n" + audit);
   }
 });
 
 test("the Lean checker builds every project source by path and audits only the modules Lake reports for them", () => {
   const { dir, project, result } = leanFixture("lake-search.log", { audit: "AUDITED 0 declarations" });
   assert.equal(readFileSync(join(dir, "built"), "utf8"), `${project}/Model.lean:olean\n${project}/Model/Sub.lean:olean\n`);
-  includes(result.stdout, "import Lean\nimport Model\nimport Model.Sub\nAUDITED 0");
+  includes(result.stdout, "module Model\nmodule Model.Sub\nAUDITED 0");
 });
 
 test("the Lean checker explains a source file that no library owns, without auditing", () => {
