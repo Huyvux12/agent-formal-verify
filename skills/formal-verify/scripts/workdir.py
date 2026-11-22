@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,15 +102,24 @@ def signal_cleanup():
             signal.signal(signum, handler)
 
 
-def _descendants(pid):
-    """Return the pids of every process below pid in one ps snapshot, or none when ps cannot run."""
+def _listing(columns):
+    """Return each process's fields for the ps columns, in one snapshot, or None when ps fails."""
     try:
-        listing = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, check=False).stdout
+        done = subprocess.run(["ps", "-A", "-o", columns], capture_output=True, text=True, check=False)
     except OSError:
-        return []
+        return None
+    if done.returncode:
+        return None
+    return [line.split() for line in done.stdout.splitlines()]
+
+
+def _descendants(pid):
+    """Return the pids of every process below pid in one ps snapshot, or None when ps fails."""
+    listing = _listing("pid=,ppid=")
+    if listing is None:
+        return None
     children = {}
-    for line in listing.splitlines():
-        fields = line.split()
+    for fields in listing:
         if len(fields) == 2 and fields[0].isdigit() and fields[1].isdigit():
             children.setdefault(int(fields[1]), []).append(int(fields[0]))
     found, pending = [], [pid]
@@ -131,7 +141,14 @@ def stop_process(process):
             process.send_signal(signal.SIGSTOP)
         if process.returncode is not None:
             return
-        while new := [pid for pid in _descendants(process.pid) if pid not in frozen]:
+        while True:
+            listed = _descendants(process.pid)
+            if listed is None:
+                sys.stderr.write("WARN ps cannot list the processes that the checker started; they may still be running\n")
+                break
+            new = [pid for pid in listed if pid not in frozen]
+            if not new:
+                break
             frozen += new
             for pid in new:
                 with suppress(OSError):
@@ -144,6 +161,7 @@ def stop_process(process):
             for pid in frozen:
                 with suppress(OSError):
                     os.kill(pid, signum)
+    deadline = time.monotonic() + 2
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
@@ -152,6 +170,34 @@ def stop_process(process):
         except ProcessLookupError:
             pass
         process.wait()
+    # A descendant that ignores SIGTERM, as one that inherits an ignored SIGTERM does, gets SIGKILL as the checker does.
+    survivors = [pid for pid in frozen if pid != process.pid]
+    while survivors:
+        survivors = _running(survivors)
+        if not survivors or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    for pid in survivors:
+        with suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+
+
+def _running(pids):
+    """Return the pids that still run. A zombie has exited, though a parent that never reaps keeps its pid."""
+    listing = _listing("pid=,stat=")
+    if listing is None:
+        return [pid for pid in pids if _exists(pid)]
+    running = {int(fields[0]) for fields in listing
+               if len(fields) == 2 and fields[0].isdigit() and not fields[1].startswith("Z")}
+    return [pid for pid in pids if pid in running]
+
+
+def _exists(pid):
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def run_captured(command, **kwargs):

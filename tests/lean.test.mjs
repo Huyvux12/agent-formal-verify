@@ -395,3 +395,11 @@ test("frozen statements work with the existing system Python", () => {
   assert.equal(frozen.status, 0, frozen.stdout + frozen.stderr);
   assert.equal(check(["Model.lean"]).status, 0);
 });
+
+test("the Lean checker reports a python3 older than 3.9 as unavailable before building", () => {
+  const { dir, check } = leanFixture("lake-search.log");
+  command(dir, "python3", "echo 3.8.20\nexit 1");
+  const result = check(["Model.lean"]);
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.equal(result.stdout, "UNAVAILABLE python3 is Python 3.8.20; install Python 3.9 or later\n");
+});

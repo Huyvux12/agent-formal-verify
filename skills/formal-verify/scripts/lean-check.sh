@@ -41,7 +41,9 @@ else
 fi
 trap 'rm -rf "$work"' EXIT
 log=$work/build.log
-command -v python3 > /dev/null || { echo "UNAVAILABLE python3 is required to check frozen Lean statements; install Python 3"; exit 3; }
+# shellcheck source=skills/formal-verify/scripts/python-tools.sh
+source "$HERE/python-tools.sh"
+require_python || exit 3
 python3 "$HERE/workdir.py" warn
 # Each build step runs as a background job through workdir.py, so a signal's trap can stop the step and
 # every process it started (elan runs lake, which runs lean) and then end the script by the same signal.
