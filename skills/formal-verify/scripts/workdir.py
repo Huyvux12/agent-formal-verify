@@ -187,9 +187,10 @@ def stop_process(process):
                 process.kill()
             process.wait()
         # A descendant that ignores SIGTERM, as one that inherits an ignored SIGTERM does, gets SIGKILL as the checker does.
-        for pid in _running(survivors) if survivors else ():
-            with suppress(OSError):
-                os.kill(pid, signal.SIGKILL)
+        if survivors:
+            for pid in _running(survivors):
+                with suppress(OSError):
+                    os.kill(pid, signal.SIGKILL)
 
 
 def _running(pids):
