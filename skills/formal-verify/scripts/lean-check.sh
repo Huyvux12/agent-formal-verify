@@ -127,10 +127,22 @@ private def body? : Lean.ConstantInfo → Option Lean.Expr
   | .opaqueInfo v => some v.value
   | _ => none
 
--- Lean 4.20 numbers hygienic binder names and abstracted proofs across the whole module, so each
--- type and value is recorded without them: adding a declaration above it must not change it.
+-- Lean 4.20 numbers hygienic names (binders, universe parameters, the helpers that deriving
+-- adds) and abstracted proofs across the whole module, so each type and value is recorded
+-- without those numbers: adding a declaration above it must not change it.
 private def unhygienic (n : Lean.Name) : Lean.Name :=
   if n.hasMacroScopes then .anonymous else n
+
+private def levelFree : Lean.Level → Lean.Level
+  | .succ l => .succ (levelFree l)
+  | .max a b => .max (levelFree a) (levelFree b)
+  | .imax a b => .imax (levelFree a) (levelFree b)
+  | .param n => .param n.eraseMacroScopes
+  | l => l
+
+private def abstractedProof : Lean.Name → Bool
+  | .str _ s => s.startsWith "_proof_" && s.length > 7 && (s.drop 7).all Char.isDigit
+  | _ => false
 
 private partial def positionFree : Lean.Expr → Lean.Expr
   | .lam n t b i => .lam (unhygienic n) (positionFree t) (positionFree b) i
@@ -139,7 +151,8 @@ private partial def positionFree : Lean.Expr → Lean.Expr
   | .app f a => .app (positionFree f) (positionFree a)
   | .mdata m e => .mdata m (positionFree e)
   | .proj s i e => .proj s i (positionFree e)
-  | e@(.const (.str _ s) _) => if s.startsWith "_proof_" then .const `_proof [] else e
+  | .sort l => .sort (levelFree l)
+  | .const n ls => if abstractedProof n then .const `_proof [] else .const n.eraseMacroScopes (ls.map levelFree)
   | e => e
 
 private def oneLine (s : String) : String :=
@@ -216,7 +229,7 @@ open Lean Elab Command in
     let record := Json.mkObj [
       ("module", toJson env.header.moduleNames[idx.toNat]!.toString),
       ("name", toJson userName.toString), ("kind", toJson kind),
-      ("typeExpr", toJson (reprStr (info.levelParams, positionFree info.type))),
+      ("typeExpr", toJson (reprStr (info.levelParams.map (·.eraseMacroScopes), positionFree info.type))),
       ("valueExpr", value), ("type", toJson pp.pretty)]
     IO.println s!"STATEMENT {record.compress}"
     if info matches .thmInfo _ then theorems := theorems.push (name, userName, idx)

@@ -254,10 +254,21 @@ fi
 grep -q '^UNCOVERED theorem Step.witness$' "$work/result"
 
 # Lean 4.20 numbers hygienic names and abstracted proofs across the whole module,
-# so declarations added above a frozen definition must leave its record alone,
-# while an edit to its body still fails.
+# so declarations added above frozen ones must leave their records alone, while an
+# edit to a frozen body still fails. Deriving and an enumeration add hygienic names.
 frozen_double() {
-  { echo 'namespace Step'; cat; echo 'def double : Nat → Nat'; echo '  | 0 => 0'; echo "  | n + 1 => double n + $1"; echo 'end Step'; } > "$work/Model/Step.lean"
+  {
+    echo 'namespace Step'
+    cat
+    echo 'def double : Nat → Nat'
+    echo '  | 0 => 0'
+    echo "  | n + 1 => double n + $1"
+    echo 'structure Pair where'
+    echo '  a : Nat'
+    echo 'deriving BEq, Repr'
+    echo 'inductive Color | red | green'
+    echo 'end Step'
+  } > "$work/Model/Step.lean"
 }
 frozen_double 2 < /dev/null
 bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null

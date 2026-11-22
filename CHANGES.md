@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-The Lean checker now records each frozen declaration's type and value without the hygienic binder names and `_proof_<n>` references that Lean 4.20 numbers across the whole module. Before this change, on Lean 4.20.0, adding a declaration or editing a proof above a frozen recursive definition failed its check with `definition value changed`, although the Lean brief allows both edits. User-written binder names are still recorded. Every record frozen before this change reports its declarations as changed; review the model and run `--freeze` again. The Lean template's record is frozen again.
+The Lean checker now records each frozen declaration's type and value without the numbers that Lean 4.20 gives across the whole module to hygienic names, such as binder names, universe parameters and the helpers that `deriving` adds, and to abstracted proofs named `_proof_` and a number. Before this change, on Lean 4.20.0, adding a declaration or editing a proof above a frozen recursive definition, structure with derived instances or enumeration failed its check with `statement changed`, although the Lean brief allows both edits. User-written names are still recorded. A record frozen before this change can report some of its declarations as changed; review them and run `--freeze` again. The Lean template's record is frozen again.
 
 The Rust checker now handles `SIGINT`, `SIGTERM` and `SIGHUP` while Kani checks the bundle's version as it does during a check: it stops the driver and the processes the driver started, ignores a second signal while it does, and ends by the signal. Before this change, a `SIGTERM` or `SIGHUP` there left the driver's processes running, a Ctrl-C printed a traceback, and a second Ctrl-C ended the stop early.
 
