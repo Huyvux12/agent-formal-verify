@@ -376,10 +376,13 @@ def warn_runtime():
 
 def run_inherited(command):
     """Run a command on this process's streams and return its exit status as a shell reports it."""
+    process = None
     try:
         with guarded(command) as process:
             status = process.wait()
     except OSError as error:
+        if process is not None:
+            raise
         print(f"cannot run {command[0]}: {error}", file=sys.stderr)
         return 127
     return 128 - status if status < 0 else status
