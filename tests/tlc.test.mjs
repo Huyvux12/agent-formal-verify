@@ -576,7 +576,7 @@ test("SIGTERM also stops processes started while the runner is stopping TLC, thr
     `echo "$n" >> "${listings}"`,
     `touch "${dir}/go-$n"`,
     "i=0",
-    `while [ "$n" -lt 3 ] && [ ! -e "${dir}/started-$((n + 1))" ] && [ "$i" -lt 500 ]; do sleep 0.01; i=$((i + 1)); done`,
+    `while [ "$n" -lt 3 ] && [ ! -s "${dir}/started-$((n + 1))" ] && [ "$i" -lt 500 ]; do sleep 0.01; i=$((i + 1)); done`,
     `printf '%s\\n' "$listing"`,
   ].join("\n"));
   const nap = `30.${process.pid}${Date.now() % 100000}`;
@@ -618,7 +618,8 @@ test("SIGTERM also stops processes started while the runner is stopping TLC, thr
     const timer = setInterval(() => {
       if (existsSync(started(1)) && readFileSync(started(1), "utf8").endsWith("\n")) {
         clearInterval(timer);
-        child.kill("SIGTERM");
+        // The runner needs a moment after it starts TLC to reach the code that stops it on a signal; see #152.
+        setTimeout(() => child.kill("SIGTERM"), 200);
       }
     }, 20);
     child.on("close", (exitCode, signalName) => {
