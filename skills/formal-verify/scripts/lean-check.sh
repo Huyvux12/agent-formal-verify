@@ -150,13 +150,13 @@ private def levelFree : Lean.Level → Lean.Level
   | l => l
 
 -- Lean shares one match helper among the matches of the same shape in a module, so a declaration added
--- above can change which helper a match uses. A record names every helper alike and carries its content.
-private def matcherName : Lean.Name → Bool
-  | .str _ s => s.startsWith "match_" && s.length > 6 && (s.drop 6).all Char.isDigit
-  | _ => false
-
-private def shown (n : Lean.Name) : Lean.Name :=
-  if matcherName (erased n) then `_match else erased n
+-- above can change which helper a match uses, and the splitter that the split tactic uses with it. A record
+-- names every helper alike, and each declaration Lean derives from a helper by its suffix, and carries
+-- their content.
+private def shown (env : Lean.Environment) (n : Lean.Name) : Lean.Name :=
+  if Lean.Meta.isMatcherCore env n then `_match else match n with
+  | .str p s => if Lean.Meta.isMatcherCore env ((Lean.privateToUserName? p).getD p) then .str `_match s else erased n
+  | _ => erased n
 
 private def abstractedProof : Lean.Name → Bool
   | .str _ s => s.startsWith "_proof_" && s.length > 7 && (s.drop 7).all Char.isDigit
@@ -173,19 +173,20 @@ private partial def nameless : Lean.Expr → Lean.Expr
   | .proj s i e => .proj s i (nameless e)
   | e => e
 
-private partial def positionFree : Lean.Expr → Lean.Expr
-  | .lam n t b i => .lam (unhygienic n) (positionFree t) (positionFree b) i
-  | .forallE n t b i => .forallE (unhygienic n) (positionFree t) (positionFree b) i
-  | .letE n t v b d => .letE (unhygienic n) (positionFree t) (positionFree v) (positionFree b) d
+private partial def positionFree (env : Lean.Environment) : Lean.Expr → Lean.Expr
+  | .lam n t b i => .lam (unhygienic n) (positionFree env t) (positionFree env b) i
+  | .forallE n t b i => .forallE (unhygienic n) (positionFree env t) (positionFree env b) i
+  | .letE n t v b d => .letE (unhygienic n) (positionFree env t) (positionFree env v) (positionFree env b) d
   | e@(.app f a) => match e.getAppFn with
     | head@(.const n _) =>
-      if shown n == `_match then Lean.mkAppN (positionFree head) (e.getAppArgs.map (positionFree ∘ nameless))
-      else .app (positionFree f) (positionFree a)
-    | _ => .app (positionFree f) (positionFree a)
-  | .mdata m e => .mdata m (positionFree e)
-  | .proj s i e => .proj s i (positionFree e)
+      if (shown env n).getRoot == `_match then
+        Lean.mkAppN (positionFree env head) (e.getAppArgs.map (positionFree env ∘ nameless))
+      else .app (positionFree env f) (positionFree env a)
+    | _ => .app (positionFree env f) (positionFree env a)
+  | .mdata m e => .mdata m (positionFree env e)
+  | .proj s i e => .proj s i (positionFree env e)
   | .sort l => .sort (levelFree l)
-  | .const n ls => if abstractedProof (erased n) then .const `_proof [] else .const (shown n) (ls.map levelFree)
+  | .const n ls => if abstractedProof (erased n) then .const `_proof [] else .const (shown env n) (ls.map levelFree)
   | e => e
 
 -- A recursive body can sit in an auxiliary: _f for structural recursion, _unary or _mutual
@@ -199,7 +200,7 @@ private def auxBodies (env : Lean.Environment) (name : Lean.Name) : List (String
 -- Proofs stay out, as in every record.
 open Lean in
 private def followed (env : Environment) (roots : List Expr) : String := Id.run do
-  let unrecorded (e : Expr) := e.getUsedConstants.filter fun c => shown c != c && !abstractedProof (erased c)
+  let unrecorded (e : Expr) := e.getUsedConstants.filter fun c => shown env c != c && !abstractedProof (erased c)
   let mut queue := roots.foldl (fun acc e => acc ++ unrecorded e) #[]
   let mut seen : Array Name := #[]
   let mut out := ""
@@ -211,8 +212,8 @@ private def followed (env : Environment) (roots : List Expr) : String := Id.run 
     seen := seen.push n
     let some info := env.find? n | continue
     let parts := info.type :: (body? info).toList ++ (auxBodies env n).map (·.2)
-    let shape := if shown n == `_match then nameless else id
-    out := out ++ s!"\n{shown n}: {reprStr (parts.map (positionFree ∘ shape))}"
+    let shape := if (shown env n).getRoot == `_match then nameless else id
+    out := out ++ s!"\n{shown env n}: {reprStr (parts.map (positionFree env ∘ shape))}"
     for e in parts do
       queue := queue ++ unrecorded e
   return out
@@ -283,15 +284,15 @@ open Lean Elab Command in
     let value := match body? info with
       | some v =>
         let auxes := auxBodies env name
-        let bodies := auxes.foldl (init := reprStr (positionFree v)) fun acc (aux, auxBody) =>
-          acc ++ s!"\n{aux}: {reprStr (positionFree auxBody)}"
+        let bodies := auxes.foldl (init := reprStr (positionFree env v)) fun acc (aux, auxBody) =>
+          acc ++ s!"\n{aux}: {reprStr (positionFree env auxBody)}"
         toJson (bodies ++ followed env (v :: auxes.map (·.2)))
       | none => Json.null
     let pp ← liftTermElabM <| Meta.ppExpr info.type
     let record := Json.mkObj [
       ("module", toJson env.header.moduleNames[idx.toNat]!.toString),
       ("name", toJson userName.toString), ("kind", toJson kind),
-      ("typeExpr", toJson (reprStr (info.levelParams.map (·.eraseMacroScopes), positionFree info.type) ++ followed env [info.type])),
+      ("typeExpr", toJson (reprStr (info.levelParams.map (·.eraseMacroScopes), positionFree env info.type) ++ followed env [info.type])),
       ("valueExpr", value), ("type", toJson pp.pretty)]
     IO.println s!"STATEMENT {record.compress}"
     if info matches .thmInfo _ then theorems := theorems.push (name, userName, idx)
