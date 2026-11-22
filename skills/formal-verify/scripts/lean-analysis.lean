@@ -254,6 +254,13 @@ private def declarations (instances : Array (Nat × Nat)) : CommandElabM (Array 
   return result
 
 
+-- Print the errors in a message log to stderr, and say whether there were any.
+private def printErrors (log : Lean.MessageLog) : IO Bool := do
+  let errors := log.toList.filter (·.severity == .error)
+  for msg in errors do
+    IO.eprint (← msg.toString)
+  return !errors.isEmpty
+
 open Lean Elab in
 unsafe def runAudit (freezing : Bool) (moduleList : String) : IO UInt32 := do
   let modules ← IO.FS.lines moduleList
@@ -262,15 +269,12 @@ unsafe def runAudit (freezing : Bool) (moduleList : String) : IO UInt32 := do
   let inputCtx := Parser.mkInputContext text "<audit>"
   let (header, parserState, messages) ← Parser.parseHeader inputCtx
   let (env, messages) ← processHeader header {} messages inputCtx
-  let mut state ← IO.processCommands inputCtx parserState (Command.mkState env messages {})
-  unless state.commandState.messages.hasErrors do
-    state := (← (Frontend.runCommandElabM (audit freezing)).run { inputCtx } |>.run state).2
-  let mut status := 0
-  for msg in state.commandState.messages.toList do
-    if msg.severity == .error then
-      status := 1
-      IO.eprint (← msg.toString)
-  return status
+  -- An import that fails, such as two modules that declare one name, stops the audit with Lean's error.
+  if ← printErrors messages then return 1
+  let state ← IO.processCommands inputCtx parserState (Command.mkState env messages {})
+  if ← printErrors state.commandState.messages then return 1
+  let (_, state) ← (Frontend.runCommandElabM (audit freezing)).run { inputCtx } |>.run state
+  return if ← printErrors state.commandState.messages then 1 else 0
 
 open Lean Elab Command in
 unsafe def analyze (path : String) : IO UInt32 := do
