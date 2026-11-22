@@ -102,17 +102,24 @@ def signal_cleanup():
             signal.signal(signum, handler)
 
 
-def _descendants(pid):
-    """Return the pids of every process below pid in one ps snapshot, or None when ps fails."""
+def _listing(columns):
+    """Return each process's fields for the ps columns, in one snapshot, or None when ps fails."""
     try:
-        done = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, check=False)
+        done = subprocess.run(["ps", "-A", "-o", columns], capture_output=True, text=True, check=False)
     except OSError:
         return None
     if done.returncode:
         return None
+    return [line.split() for line in done.stdout.splitlines()]
+
+
+def _descendants(pid):
+    """Return the pids of every process below pid in one ps snapshot, or None when ps fails."""
+    listing = _listing("pid=,ppid=")
+    if listing is None:
+        return None
     children = {}
-    for line in done.stdout.splitlines():
-        fields = line.split()
+    for fields in listing:
         if len(fields) == 2 and fields[0].isdigit() and fields[1].isdigit():
             children.setdefault(int(fields[1]), []).append(int(fields[0]))
     found, pending = [], [pid]
@@ -165,14 +172,24 @@ def stop_process(process):
         process.wait()
     # A descendant that ignores SIGTERM, as one that inherits an ignored SIGTERM does, gets SIGKILL as the checker does.
     survivors = [pid for pid in frozen if pid != process.pid]
-    while time.monotonic() < deadline:
-        survivors = [pid for pid in survivors if _exists(pid)]
-        if not survivors:
+    while survivors:
+        survivors = _running(survivors)
+        if not survivors or time.monotonic() >= deadline:
             break
         time.sleep(0.05)
     for pid in survivors:
         with suppress(OSError):
             os.kill(pid, signal.SIGKILL)
+
+
+def _running(pids):
+    """Return the pids that still run. A zombie has exited, though a parent that never reaps keeps its pid."""
+    listing = _listing("pid=,stat=")
+    if listing is None:
+        return [pid for pid in pids if _exists(pid)]
+    running = {int(fields[0]) for fields in listing
+               if len(fields) == 2 and fields[0].isdigit() and not fields[1].startswith("Z")}
+    return [pid for pid in pids if pid in running]
 
 
 def _exists(pid):

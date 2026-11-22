@@ -522,6 +522,7 @@ test("SIGTERM stops TLC and the processes it started, cleans temporary directori
     'echo ready > "$TASK_READY_FILE"',
     'wait',
   ].join("\n"));
+  let signalled;
   const code = await new Promise((resolve) => {
     const child = spawn("python3", [join(scripts, "tlc.py"), join(dir, "One.matrix")], {
       env: {
@@ -538,18 +539,22 @@ test("SIGTERM stops TLC and the processes it started, cleans temporary directori
     const timer = setInterval(() => {
       if (existsSync(readyFile)) {
         clearInterval(timer);
+        signalled = Date.now();
         child.kill("SIGTERM");
       }
     }, 20);
     child.on("close", (exitCode, signalName) => {
       clearInterval(timer);
-      resolve({ exitCode, signalName });
+      resolve({ exitCode, signalName, stopped: Date.now() - signalled });
     });
   });
   assertProcessStopped(Number(readFileSync(pidFile, "utf8").trim()));
   assertProcessStopped(Number(readFileSync(grandchildPidFile, "utf8").trim()));
   assert.deepEqual(readdirSync(customTmp), []);
   assert.equal(code.signalName, "SIGTERM", JSON.stringify(code));
+  // TLC and its sleep die on SIGTERM, so the runner must not wait out the two seconds it allows,
+  // even where nothing reaps the dead processes, as in a container whose first process never does.
+  assert.ok(code.stopped < 1500, JSON.stringify(code));
 });
 
 test("SIGTERM also stops processes started while the runner is stopping TLC", async () => {
