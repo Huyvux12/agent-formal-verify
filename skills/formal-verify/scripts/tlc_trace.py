@@ -10,7 +10,7 @@ whose value differs from the previous state. The first state prints every
 variable. A "Back to state" line (a liveness lasso) is printed as is.
 Exits 1 when the log holds no trace.
 
-Usage: tlc-trace.py [tlc.log]
+Usage: tlc_trace.py [tlc.log]
 """
 import re
 import sys
@@ -47,17 +47,23 @@ def states(lines):
         yield title, values
 
 
+def reduce(lines):
+    """Return the printed lines of the first error trace, or None when the log holds no trace."""
+    out, prev, found = [], {}, False
+    for title, values in states(lines):
+        found = True
+        out.append(f"--- {title}")
+        out += [f"    {var} = {value}" for var, value in values.items() if prev.get(var) != value]
+        prev = values or prev
+    return "\n".join(out).split("\n") if found else None
+
+
 def main():
     with (open(sys.argv[1], encoding="utf-8") if len(sys.argv) > 1 else nullcontext(sys.stdin)) as src:
-        prev, found = {}, False
-        for title, values in states(src):
-            found = True
-            print(f"--- {title}")
-            for var, value in values.items():
-                if prev.get(var) != value:
-                    print(f"    {var} = {value}")
-            prev = values or prev
-    sys.exit(0 if found else 1)
+        reduced = reduce(src)
+    if reduced is None:
+        sys.exit(1)
+    print("\n".join(reduced))
 
 
 if __name__ == "__main__":

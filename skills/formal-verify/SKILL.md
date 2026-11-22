@@ -71,7 +71,7 @@ If a system prerequisite such as Java or elan is missing, use the [setup skill](
 Read the [helper reference](references/helpers.md) before you interpret a helper's output. The helpers:
 
 - The setup helper, [`scripts/setup.sh`](scripts/setup.sh): verifies the pinned TLC JAR (`tla`), checks Kani (`rust`), and installs a missing Lean toolchain (`lean`).
-- The matrix runner, [`scripts/tlc-matrix.sh`](scripts/tlc-matrix.sh) and [`scripts/tlc-trace.py`](scripts/tlc-trace.py): run TLC across a `.matrix` of constants and reduce failing traces. Template: [`examples/tla-template/`](examples/tla-template/BoundedQueue.tla).
+- The matrix runner, [`scripts/tlc-matrix.sh`](scripts/tlc-matrix.sh) and [`scripts/tlc_trace.py`](scripts/tlc_trace.py): run TLC across a `.matrix` of constants and reduce failing traces. Template: [`examples/tla-template/`](examples/tla-template/BoundedQueue.tla).
 - The Lean checker, [`scripts/lean-check.sh`](scripts/lean-check.sh): builds and audits `.lean` models, checks `<Property>.witness` theorems, replays modules through `leanchecker`, and freezes specifications with `--freeze`. Template: [`examples/lean-template/Model/BoundedQueue.lean`](examples/lean-template/Model/BoundedQueue.lean).
 - The Rust checker, [`scripts/kani-check.sh`](scripts/kani-check.sh): runs the pinned Kani across the crate's proof harnesses and prints concrete playback tests. Template: [`examples/kani-template/`](examples/kani-template/src/lib.rs).
 - The mutation runner, [`scripts/mutate.py`](scripts/mutate.py): tests `<Name>.mutations` against copied models (`DETECTED`, `MISSED`, `UNCOVERED`).

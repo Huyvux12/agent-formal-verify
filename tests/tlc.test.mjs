@@ -50,7 +50,7 @@ test("TLC setup accepts an explicitly supplied local JAR", () => {
 });
 
 function reduce(log) {
-  return spawnSync("python3", [join(scripts, "tlc-trace.py"), join(logs, log)], { encoding: "utf8" });
+  return spawnSync("python3", [join(scripts, "tlc_trace.py"), join(logs, log)], { encoding: "utf8" });
 }
 
 test("the trace reducer shows only changed variables for an invariant violation", () => {
