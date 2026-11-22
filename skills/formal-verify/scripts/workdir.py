@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -102,13 +103,15 @@ def signal_cleanup():
 
 
 def _descendants(pid):
-    """Return the pids of every process below pid in one ps snapshot, or none when ps cannot run."""
+    """Return the pids of every process below pid in one ps snapshot, or None when ps fails."""
     try:
-        listing = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, check=False).stdout
+        done = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, check=False)
     except OSError:
-        return []
+        return None
+    if done.returncode:
+        return None
     children = {}
-    for line in listing.splitlines():
+    for line in done.stdout.splitlines():
         fields = line.split()
         if len(fields) == 2 and fields[0].isdigit() and fields[1].isdigit():
             children.setdefault(int(fields[1]), []).append(int(fields[0]))
@@ -131,7 +134,14 @@ def stop_process(process):
             process.send_signal(signal.SIGSTOP)
         if process.returncode is not None:
             return
-        while new := [pid for pid in _descendants(process.pid) if pid not in frozen]:
+        while True:
+            listed = _descendants(process.pid)
+            if listed is None:
+                sys.stderr.write("WARN ps cannot list the processes that the checker started; they may still be running\n")
+                break
+            new = [pid for pid in listed if pid not in frozen]
+            if not new:
+                break
             frozen += new
             for pid in new:
                 with suppress(OSError):
@@ -144,6 +154,7 @@ def stop_process(process):
             for pid in frozen:
                 with suppress(OSError):
                     os.kill(pid, signum)
+    deadline = time.monotonic() + 2
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
@@ -152,6 +163,21 @@ def stop_process(process):
         except ProcessLookupError:
             pass
         process.wait()
+    # A descendant that ignores SIGTERM, as one that inherits an ignored SIGTERM does, gets SIGKILL as the checker does.
+    survivors = frozen[1:]
+    while (survivors := [pid for pid in survivors if _exists(pid)]) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    for pid in survivors:
+        with suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+
+
+def _exists(pid):
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def run_captured(command, **kwargs):
