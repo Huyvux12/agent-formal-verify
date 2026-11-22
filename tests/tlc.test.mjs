@@ -825,102 +825,41 @@ test("stopping a checker also kills a process it started that ignores SIGTERM", 
   }
 });
 
-test("an interrupt during the stop's wait still kills a process the checker started that ignores SIGTERM", () => {
-  const dir = fixture();
-  const { result, pid, checker } = stopChecker(dir, '(trap "" TERM; exec sleep 30) & echo "$!" > "$1"; wait', [
-    "import signal",
-    "signal.signal(signal.SIGINT, signal.default_int_handler)",
-    // The interrupt lands once, in the wait that gives the checker and its descendants time to exit, after the checker exited.
-    "real_wait = subprocess.Popen.wait",
-    "interrupted = []",
-    "def wait(self, timeout=None):",
-    "    if timeout == 2 and not interrupted:",
-    "        interrupted.append(real_wait(self))",
-    "        raise KeyboardInterrupt",
-    "    return real_wait(self, timeout)",
-    "subprocess.Popen.wait = wait",
-    // As the TLC runner does, a stop that a signal interrupts is followed by a second stop.
-    "real_stop = workdir.stop_process",
-    "def stop(process):",
-    "    try:",
-    "        real_stop(process)",
-    "    except KeyboardInterrupt:",
-    "        print('interrupted')",
-    "        real_stop(process)",
-    "workdir.stop_process = stop",
-  ]);
-  try {
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(result.stdout.trim().split("\n"), ["interrupted", "-15"]);
-    assertProcessStopped(pid);
-  } finally {
-    killAll(pid, checker);
-  }
-});
+for (const [scenario, where] of [
+  ["wait", "while the stop waits for the checker to exit"],
+  ["first-listing", "during the stop's first ps listing"],
+  ["kill-listing", "during the ps listing before the stop's SIGKILL"],
+]) {
+  test(`a signal ${where} is raised after the stop, which still kills a process the checker started that ignores SIGTERM`, () => {
+    const dir = fixture();
+    const result = spawnSync("python3", ["-B", join(logs, "stop-under-signal.py"), scripts, scenario, dir], {
+      encoding: "utf8",
+      timeout: 15000,
+      env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}` },
+    });
+    const [outcome, child, checker] = result.stdout.trim().split("\n");
+    try {
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(outcome, "SignalTerminated(2)");
+      assertProcessStopped(Number(child));
+      assertProcessStopped(Number(checker));
+    } finally {
+      killAll(Number(child), Number(checker));
+    }
+  });
+}
 
-test("an interrupt during the stop's first ps listing still kills a process the checker started that ignores SIGTERM", () => {
+test("an error during the stop's listings still sends the checker SIGTERM and SIGCONT", () => {
   const dir = fixture();
-  const { result, pid, checker } = stopChecker(dir, '(trap "" TERM; exec sleep 30) & echo "$!" > "$1"; wait', [
-    "import signal",
-    "signal.signal(signal.SIGINT, signal.default_int_handler)",
-    // The interrupt lands in the first listing, before it finds the checker's child.
-    "real_descendants = workdir._descendants",
-    "calls = []",
-    "def descendants(pid, timeout):",
-    "    calls.append(pid)",
-    "    if len(calls) == 1:",
-    "        raise KeyboardInterrupt",
-    "    return real_descendants(pid, timeout)",
-    "workdir._descendants = descendants",
-    // As the TLC runner does, a stop that a signal interrupts is followed by a second stop.
-    "real_stop = workdir.stop_process",
-    "def stop(process):",
-    "    try:",
-    "        real_stop(process)",
-    "    except KeyboardInterrupt:",
-    "        print('interrupted')",
-    "        real_stop(process)",
-    "workdir.stop_process = stop",
-  ]);
-  try {
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout.trim().split("\n")[0], "interrupted");
-    assertProcessStopped(pid);
-  } finally {
-    killAll(pid, checker);
-  }
-});
-
-test("an interrupt during the listing before the stop's SIGKILL still kills a process the checker started that ignores SIGTERM", () => {
-  const dir = fixture();
-  // The checker ignores SIGTERM too, so the wait runs out and the first survivor listing is the one before SIGKILL.
-  const { result, pid, checker } = stopChecker(dir, 'trap "" TERM; sleep 30 & echo "$!" > "$1"; wait', [
-    "import signal",
-    "signal.signal(signal.SIGINT, signal.default_int_handler)",
-    "real_running = workdir._running",
-    "calls = []",
-    "def running(pids):",
-    "    calls.append(pids)",
-    "    if len(calls) == 1:",
-    "        raise KeyboardInterrupt",
-    "    return real_running(pids)",
-    "workdir._running = running",
-    "real_stop = workdir.stop_process",
-    "def stop(process):",
-    "    try:",
-    "        real_stop(process)",
-    "    except KeyboardInterrupt:",
-    "        print('interrupted')",
-    "        real_stop(process)",
-    "workdir.stop_process = stop",
-  ]);
-  try {
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(result.stdout.trim().split("\n"), ["interrupted", "-9"]);
-    assertProcessStopped(pid);
-  } finally {
-    killAll(pid, checker);
-  }
+  command(dir, "ps", "exit 1");
+  const result = spawnSync("python3", ["-B", join(logs, "stop-after-error.py"), scripts], {
+    encoding: "utf8",
+    timeout: 15000,
+    env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}` },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  // The warning that ps failed cannot be written to the closed stderr, so the stop raises, after resuming the checker.
+  assert.deepEqual(result.stdout.trim().split("\n"), ["raised BrokenPipeError", "-15"]);
 });
 
 test("stopping a checker warns when ps cannot list the processes it started", () => {

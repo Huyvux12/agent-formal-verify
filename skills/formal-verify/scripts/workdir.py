@@ -38,6 +38,8 @@ _deferred = None
 # and how many it takes before signalling what it found, in case a process keeps starting others.
 PS_TIMEOUT = 5
 MAX_LISTINGS = 50
+# The termination signals that signal_cleanup converts and that a stop holds back until it finishes.
+HANDLED = (signal.SIGINT, signal.SIGTERM, *((signal.SIGHUP,) if hasattr(signal, "SIGHUP") else ()))
 
 
 class TempDirError(Exception):
@@ -95,10 +97,7 @@ def signal_cleanup():
             return
         raise SignalTerminated(signum)
 
-    signals = [signal.SIGINT, signal.SIGTERM]
-    if hasattr(signal, "SIGHUP"):
-        signals.append(signal.SIGHUP)
-    for signum in signals:
+    for signum in HANDLED:
         current = signal.getsignal(signum)
         if current is signal.SIG_IGN:
             continue
@@ -151,12 +150,25 @@ def _descendants(pid, timeout):
 
 
 def stop_process(process):
-    """Terminate a spawned subprocess and the processes it started, keeping them in the caller's process group."""
+    """Terminate a spawned subprocess and the processes it started, keeping them in the caller's process group.
+
+    The termination signals that signal_cleanup handles are blocked for the whole stop, so a signal that arrives
+    meanwhile is raised once every process is gone and no step of the stop is cut short.
+    """
     if process.poll() is not None:
         return
+    # Save the mask before blocking: a handler that runs inside the blocking call can raise, and must leave it restored.
+    blocked = signal.pthread_sigmask(signal.SIG_BLOCK, ())
+    try:
+        signal.pthread_sigmask(signal.SIG_BLOCK, HANDLED)
+        _stop(process)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
+
+
+def _stop(process):
     # Freeze the tree before signalling it: a stopped process cannot start another or leave its children orphaned.
     frozen = [process.pid]
-    interrupted = None
     listing_deadline = time.monotonic() + PS_TIMEOUT
     try:
         with suppress(ProcessLookupError):
@@ -178,14 +190,8 @@ def stop_process(process):
         else:
             sys.stderr.write(f"WARN the checker kept starting processes through {MAX_LISTINGS} ps listings; "
                              "processes it started later may still be running\n")
-    except (KeyboardInterrupt, SignalTerminated) as error:
-        # A signal that cuts the listings short would leave children unfound, and once SIGTERM ends the checker
-        # no later stop can find them. The checker is still stopped, so list them once more, finish this stop,
-        # then raise the signal.
-        interrupted = error
-        listed = _descendants(process.pid, max(0, listing_deadline - time.monotonic()))
-        frozen += [pid for pid in listed or () if pid not in frozen]
     finally:
+        # An error in the listings, such as a warning that cannot be written, must not leave the frozen tree suspended.
         # send_signal reaps a checker that exited since poll and signals nothing; its pid is then free for reuse.
         if process.returncode is not None:
             frozen.remove(process.pid)
@@ -195,33 +201,21 @@ def stop_process(process):
                     os.kill(pid, signum)
     survivors = [pid for pid in frozen if pid != process.pid]
     deadline = time.monotonic() + 2
-    # A signal that ends the wait early still leads to the SIGKILL pass: a second stop finds the checker reaped
-    # and returns, and the descendants it leaves are no longer the checker's to find.
-    try:
-        with suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=2)
-        while survivors and time.monotonic() < deadline:
-            survivors = _running(survivors)
-            if survivors:
-                time.sleep(0.05)
-    finally:
-        if process.returncode is None:
-            with suppress(ProcessLookupError):
-                process.kill()
-            process.wait()
-        # A descendant that ignores SIGTERM, as one that inherits an ignored SIGTERM does, gets SIGKILL as the checker does.
+    with suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=2)
+    while survivors and time.monotonic() < deadline:
+        survivors = _running(survivors)
         if survivors:
-            # A signal during this listing must not skip the SIGKILL, so the stop asks each pid directly instead.
-            try:
-                running = _running(survivors)
-            except (KeyboardInterrupt, SignalTerminated) as error:
-                interrupted = interrupted or error
-                running = [pid for pid in survivors if _exists(pid)]
-            for pid in running:
-                with suppress(OSError):
-                    os.kill(pid, signal.SIGKILL)
-    if interrupted is not None:
-        raise interrupted
+            time.sleep(0.05)
+    if process.returncode is None:
+        with suppress(ProcessLookupError):
+            process.kill()
+        process.wait()
+    # A descendant that ignores SIGTERM, as one that inherits an ignored SIGTERM does, gets SIGKILL as the checker does.
+    if survivors:
+        for pid in _running(survivors):
+            with suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
 
 
 def _running(pids):
