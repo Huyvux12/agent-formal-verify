@@ -151,6 +151,7 @@ def stop_process(process):
         return
     # Freeze the tree before signalling it: a stopped process cannot start another or leave its children orphaned.
     frozen = [process.pid]
+    interrupted = None
     try:
         with suppress(ProcessLookupError):
             process.send_signal(signal.SIGSTOP)
@@ -172,6 +173,13 @@ def stop_process(process):
         else:
             sys.stderr.write(f"WARN the checker kept starting processes through {MAX_LISTINGS} ps listings; "
                              "processes it started later may still be running\n")
+    except (KeyboardInterrupt, SignalTerminated) as error:
+        # A signal that cuts the listings short would leave children unfound, and once SIGTERM ends the checker
+        # no later stop can find them. The checker is still stopped, so list them once more, finish this stop,
+        # then raise the signal.
+        interrupted = error
+        listed = _descendants(process.pid, PS_TIMEOUT)
+        frozen += [pid for pid in listed or () if pid not in frozen]
     finally:
         # send_signal reaps a checker that exited since poll and signals nothing; its pid is then free for reuse.
         if process.returncode is not None:
@@ -201,6 +209,8 @@ def stop_process(process):
             for pid in _running(survivors):
                 with suppress(OSError):
                     os.kill(pid, signal.SIGKILL)
+    if interrupted is not None:
+        raise interrupted
 
 
 def _running(pids):
