@@ -38,7 +38,8 @@ from enum import Enum
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-import workdir
+import processes
+import storage
 
 HERE = Path(__file__).resolve().parent
 CHECK_KINDS = ("INVARIANT", "INVARIANTS", "PROPERTY", "PROPERTIES")
@@ -186,7 +187,7 @@ class Tlc:
         """Run TLC on module in directory with config; return (exit_status, log, timed_out)."""
         if not self._warned_disk:
             self._warned_disk = True
-            workdir.warn_runtime()
+            storage.warn_runtime()
         log = directory / "tlc.log"
         (directory / "MC.cfg").write_text(config, encoding="utf-8")
         chosen_workers = workers if workers is not None else ("1" if reach else self.workers)
@@ -207,7 +208,7 @@ class Tlc:
                 now = time.monotonic()
                 remaining = deadline - now
                 if remaining <= 0:
-                    workdir.stop_process(process)
+                    processes.stop_process(process)
                     return process.returncode, True
                 if now >= next_report:
                     offset, partial, found = _read_progress(log, offset, partial)
@@ -227,7 +228,7 @@ class Tlc:
                     continue
 
         with log.open("w", encoding="utf-8") as stream:
-            returncode, timed_out = workdir.guarded(command, watch, stdout=stream, stderr=subprocess.STDOUT)
+            returncode, timed_out = processes.guarded(command, watch, stdout=stream, stderr=subprocess.STDOUT)
         return returncode, read_raw(log), timed_out
 
 
@@ -546,14 +547,14 @@ def main():
         print(error)
         return 3
     try:
-        with workdir.signal_cleanup(), tempfile.TemporaryDirectory(dir=workdir.ensure_temp_root()) as work:
+        with processes.signal_cleanup(), tempfile.TemporaryDirectory(dir=storage.ensure_temp_root()) as work:
             runner = Runner(tlc, Path(matrix).resolve().parent, only, lambda result: print("\n".join(render(result)), flush=True), Path(work))
             for task in MatrixPlan(matrix):
                 runner.check(task)
-    except workdir.TempDirError as error:
+    except storage.TempDirError as error:
         print(error)
         return 1
-    except workdir.SignalTerminated as error:
+    except processes.SignalTerminated as error:
         error.exit()
     if runner.runs_total == 0:
         matching = f"matching '{only}' " if only else ""

@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, sys.argv[1])
-import workdir
+import processes
 
 checker = subprocess.Popen(["sleep", "30"])
 out = os.fdopen(os.dup(1), "w")
@@ -20,7 +20,7 @@ reader, writer = os.pipe()
 os.close(reader)
 os.dup2(writer, 2)
 try:
-    workdir.stop_process(checker)
+    processes.stop_process(checker)
     ending = "returned"
 except OSError as error:
     ending = f"raised {type(error).__name__}"

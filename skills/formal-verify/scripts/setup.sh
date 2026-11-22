@@ -9,7 +9,7 @@ source "$HERE/python-tools.sh"
 
 report_storage() {
   if command -v python3 > /dev/null 2>&1; then
-    python3 "$HERE/workdir.py" report
+    python3 "$HERE/storage.py" report
   fi
 }
 
@@ -46,7 +46,7 @@ case ${1:-} in
   storage)
     [ "$#" -eq 1 ] || { echo "usage: setup.sh storage"; exit 2; }
     require_python || exit 3
-    python3 "$HERE/workdir.py" report
+    python3 "$HERE/storage.py" report
     ;;
   *) echo "usage: setup.sh tla | setup.sh lean <lake-project-dir> | setup.sh rust | setup.sh storage"; exit 2 ;;
 esac

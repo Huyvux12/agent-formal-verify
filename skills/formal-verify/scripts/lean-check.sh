@@ -44,8 +44,8 @@ log=$work/build.log
 # shellcheck source=skills/formal-verify/scripts/python-tools.sh
 source "$HERE/python-tools.sh"
 require_python || exit 3
-python3 "$HERE/workdir.py" warn
-# Each build step runs as a background job through workdir.py, so a signal's trap can stop the step and
+python3 "$HERE/storage.py" warn
+# Each build step runs as a background job through processes.py, so a signal's trap can stop the step and
 # every process it started (elan runs lake, which runs lean) and then end the script by the same signal.
 # The trap finds the step in the job table, which holds it from the moment it starts.
 stop_step() {
@@ -64,7 +64,7 @@ trap 'stop_step INT' INT
 trap 'stop_step TERM' TERM
 trap 'stop_step HUP' HUP
 run_step() {
-  python3 "$HERE/workdir.py" run "$@" &
+  python3 "$HERE/processes.py" run "$@" &
   wait "$!"
 }
 # Lake builds a module named by its source path and rejects a path that no

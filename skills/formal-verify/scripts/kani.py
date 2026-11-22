@@ -14,7 +14,8 @@ from enum import IntEnum
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-import workdir
+import processes
+import storage
 
 STATUSES = {"Success", "Failure", "Unreachable", "Undetermined", "Satisfied", "Unsatisfiable"}
 # Statuses that pass and statuses that refute the property, by check category; any other is inconclusive.
@@ -141,14 +142,14 @@ class Kani:
         env = self.env if tmpdir is None else self.env | {"TMPDIR": str(tmpdir)}
         try:
             # The driver selects Cargo mode from argv[0]; the Cargo wrapper can auto-install.
-            return workdir.run_captured(["cargo-kani", *arguments], executable=str(self.driver), env=env, cwd=cwd)
+            return processes.run_captured(["cargo-kani", *arguments], executable=str(self.driver), env=env, cwd=cwd)
         except OSError as error:
             raise CheckError(f"cannot execute Kani: {error}") from error
 
     def cargo_metadata(self, crate, resolve=False):
         """Read package declarations; resolve only when finding the full local source graph."""
         try:
-            done = workdir.run_captured(
+            done = processes.run_captured(
                 [str(self.cargo), "metadata", *([] if resolve else ["--no-deps"]), "--format-version", "1",
                  "--manifest-path", str(crate / "Cargo.toml")],
                 cwd=crate, env=self.env)
@@ -347,8 +348,8 @@ def main():
         return 0
     crate, selected = Path(arguments.crate).resolve(), arguments.harnesses
     try:
-        temp_root = workdir.ensure_temp_root()
-        workdir.warn_runtime()
+        temp_root = storage.ensure_temp_root()
+        storage.warn_runtime()
         with tempfile.TemporaryDirectory(prefix="formal-kani-", dir=temp_root) as temporary:
             work = Path(temporary)
             try:
@@ -372,7 +373,7 @@ def main():
                     print(outcome.output.rstrip())
             print(f"SUMMARY {passed} of {len(names)} harnesses passed")
             return 0 if passed == len(names) else 1
-    except workdir.TempDirError as error:
+    except storage.TempDirError as error:
         print(error)
         return 1
 
@@ -380,7 +381,7 @@ def main():
 if __name__ == "__main__":
     # The readiness check runs Kani too, so a second signal while it is stopped must be ignored there as well.
     try:
-        with workdir.signal_cleanup():
+        with processes.signal_cleanup():
             sys.exit(main())
-    except workdir.SignalTerminated as error:
+    except processes.SignalTerminated as error:
         error.exit()

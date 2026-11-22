@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Michael Denyer
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { command, excludes, fixture, includes, leanPin, logs, removeFixtures, run, writeLeanProject } from "./helpers.mjs";
+import { assertProcessStopped, command, excludes, fixture, includes, leanPin, logs, removeFixtures, run, scripts, writeLeanProject } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
@@ -402,4 +403,39 @@ test("the Lean checker reports a python3 older than 3.9 as unavailable before bu
   const result = check(["Model.lean"]);
   assert.equal(result.status, 3, result.stdout + result.stderr);
   assert.equal(result.stdout, "UNAVAILABLE python3 is Python 3.8.20; install Python 3.9 or later\n");
+});
+
+test("lean-check.sh honors TMPDIR, and on SIGTERM stops its build and the processes it started, cleans its temp dir and ends by SIGTERM", async () => {
+  const dir = fixture();
+  const project = join(dir, "lean");
+  const leanTmp = join(dir, "lean-tmp");
+  writeLeanProject(project);
+  writeFileSync(join(project, "Model.lean"), "def x : Nat := 1\n");
+  const readyFile = join(dir, "elan.ready");
+  command(dir, "elan", [
+    '[ "$4" = "--version" ] && exit 0',
+    'sleep 15 &',
+    'echo "$$ $!" > "$TASK_READY_FILE"',
+    'wait',
+  ].join("\n"));
+  const start = Date.now();
+  const code = await new Promise((resolve) => {
+    const child = spawn("bash", [join(scripts, "lean-check.sh"), project], {
+      env: { ...process.env, PATH: join(dir, "bin") + ":" + process.env.PATH, TMPDIR: leanTmp, TASK_READY_FILE: readyFile, FORMAL_MIN_FREE_GIB: "0" },
+    });
+    const timer = setInterval(() => {
+      if (existsSync(readyFile) && readFileSync(readyFile, "utf8").endsWith("\n")) {
+        clearInterval(timer);
+        child.kill("SIGTERM");
+      }
+    }, 20);
+    child.on("close", (exitCode, signalName) => {
+      clearInterval(timer);
+      resolve({ exitCode, signalName });
+    });
+  });
+  assert.ok(Date.now() - start < 4000, "lean-check.sh waited for child instead of exiting promptly on SIGTERM");
+  for (const pid of readFileSync(readyFile, "utf8").trim().split(" ")) assertProcessStopped(Number(pid));
+  assert.deepEqual(readdirSync(leanTmp), []);
+  assert.equal(code.signalName, "SIGTERM", JSON.stringify(code));
 });
