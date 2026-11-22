@@ -157,8 +157,10 @@ def stop_process(process):
     """
     if process.poll() is not None:
         return
-    blocked = signal.pthread_sigmask(signal.SIG_BLOCK, HANDLED)
+    # Save the mask before blocking: a handler that runs inside the blocking call can raise, and must leave it restored.
+    blocked = signal.pthread_sigmask(signal.SIG_BLOCK, ())
     try:
+        signal.pthread_sigmask(signal.SIG_BLOCK, HANDLED)
         _stop(process)
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
@@ -168,30 +170,35 @@ def _stop(process):
     # Freeze the tree before signalling it: a stopped process cannot start another or leave its children orphaned.
     frozen = [process.pid]
     listing_deadline = time.monotonic() + PS_TIMEOUT
-    with suppress(ProcessLookupError):
-        process.send_signal(signal.SIGSTOP)
-    # send_signal reaps a checker that exited since poll and signals nothing; its pid is then free for reuse.
-    if process.returncode is not None:
-        return
-    for _ in range(MAX_LISTINGS):
-        listed = _descendants(process.pid, max(0, listing_deadline - time.monotonic()))
-        if listed is None:
-            sys.stderr.write("WARN ps cannot list the processes that the checker started; they may still be running\n")
-            break
-        new = [pid for pid in listed if pid not in frozen]
-        if not new:
-            break
-        frozen += new
-        for pid in new:
-            with suppress(OSError):
-                os.kill(pid, signal.SIGSTOP)
-    else:
-        sys.stderr.write(f"WARN the checker kept starting processes through {MAX_LISTINGS} ps listings; "
-                         "processes it started later may still be running\n")
-    for signum in (signal.SIGTERM, signal.SIGCONT):
-        for pid in frozen:
-            with suppress(OSError):
-                os.kill(pid, signum)
+    try:
+        with suppress(ProcessLookupError):
+            process.send_signal(signal.SIGSTOP)
+        if process.returncode is not None:
+            return
+        for _ in range(MAX_LISTINGS):
+            listed = _descendants(process.pid, max(0, listing_deadline - time.monotonic()))
+            if listed is None:
+                sys.stderr.write("WARN ps cannot list the processes that the checker started; they may still be running\n")
+                break
+            new = [pid for pid in listed if pid not in frozen]
+            if not new:
+                break
+            frozen += new
+            for pid in new:
+                with suppress(OSError):
+                    os.kill(pid, signal.SIGSTOP)
+        else:
+            sys.stderr.write(f"WARN the checker kept starting processes through {MAX_LISTINGS} ps listings; "
+                             "processes it started later may still be running\n")
+    finally:
+        # An error in the listings, such as a warning that cannot be written, must not leave the frozen tree suspended.
+        # send_signal reaps a checker that exited since poll and signals nothing; its pid is then free for reuse.
+        if process.returncode is not None:
+            frozen.remove(process.pid)
+        for signum in (signal.SIGTERM, signal.SIGCONT):
+            for pid in frozen:
+                with suppress(OSError):
+                    os.kill(pid, signum)
     survivors = [pid for pid in frozen if pid != process.pid]
     deadline = time.monotonic() + 2
     with suppress(subprocess.TimeoutExpired):

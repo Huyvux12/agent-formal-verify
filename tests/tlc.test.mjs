@@ -849,6 +849,19 @@ for (const [scenario, where] of [
   });
 }
 
+test("an error during the stop's listings still sends the checker SIGTERM and SIGCONT", () => {
+  const dir = fixture();
+  command(dir, "ps", "exit 1");
+  const result = spawnSync("python3", ["-B", join(logs, "stop-after-error.py"), scripts], {
+    encoding: "utf8",
+    timeout: 15000,
+    env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}` },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  // The warning that ps failed cannot be written to the closed stderr, so the stop raises, after resuming the checker.
+  assert.deepEqual(result.stdout.trim().split("\n"), ["raised BrokenPipeError", "-15"]);
+});
+
 test("stopping a checker warns when ps cannot list the processes it started", () => {
   const dir = fixture();
   command(dir, "ps", "exit 1");
