@@ -12,6 +12,14 @@ Stay in the target repository and run each helper with `bash` and its absolute p
 
 Every runner writes its temporary state into `TMPDIR` (failing cleanly with `FAIL` if an explicitly set `TMPDIR` cannot be created or written) and removes its working directories between matrix runs and on `SIGINT`, `SIGTERM` or `SIGHUP`. Lean builds write into the model project's `.lake` directory, while `lean-check.sh` places its temporary build log in `TMPDIR`. `setup.sh` (`tla`, `rust`, `lean`, and `storage`) reports `TEMP_DIR` free space, warns when the active temporary volume has less than `FORMAL_MIN_FREE_GIB` free (default `64` GiB), and lists larger writable `EXTERNAL_VOLUME` mounts so heavy runs can redirect `TMPDIR` onto an external disk. Checkers also warn once on `stderr` before starting when active temporary space drops below `10` GiB (or `FORMAL_MIN_FREE_GIB` when set).
 
+To stop a checker, a runner suspends the checker and every process it started, then sends them `SIGTERM` and resumes them, so none can start another process meanwhile. This takes a few `ps` calls, a few tens of milliseconds. A runner killed with `SIGKILL` in that time cannot resume them, so the checker and the processes suspended so far stay suspended until something ends them. `SIGINT`, `SIGTERM` and `SIGHUP` do not cause this, because the runner handles them and finishes the stop. To find suspended processes, list those whose state starts with `T`, such as TLC's `java`, `kani-driver`, `cbmc`, `lake` or `lean`:
+
+```shell
+ps -A -o stat,pid,ppid,command | grep '^T'
+```
+
+End each one with `kill -KILL <pid>`, or with `kill -TERM <pid>` followed by `kill -CONT <pid>` to let it clean up first.
+
 ## TLA+ and TLC
 
 The setup helper needs a JDK, Python 3.9 or later as `python3`, and `sha256sum` or `shasum` to verify the TLC JAR. If `java` on PATH has no runtime, as with the macOS stub, set `JAVA` to a working JDK's `java` binary. Copy the [TLA+ template](../examples/tla-template/BoundedQueue.tla) with its `BoundedQueue.matrix` and `BoundedQueue.mutations` into the project to start a spec.
