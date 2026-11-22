@@ -164,8 +164,11 @@ def stop_process(process):
             pass
         process.wait()
     # A descendant that ignores SIGTERM, as one that inherits an ignored SIGTERM does, gets SIGKILL as the checker does.
-    survivors = frozen[1:]
-    while (survivors := [pid for pid in survivors if _exists(pid)]) and time.monotonic() < deadline:
+    survivors = [pid for pid in frozen if pid != process.pid]
+    while time.monotonic() < deadline:
+        survivors = [pid for pid in survivors if _exists(pid)]
+        if not survivors:
+            break
         time.sleep(0.05)
     for pid in survivors:
         with suppress(OSError):
