@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { afterEach, test } from "node:test";
 import { command, excludes, fixture, includes, logs, removeFixtures, run, scripts } from "./helpers.mjs";
@@ -237,6 +237,18 @@ test("Kani uses the complete pinned bundle without a registered installer", () =
   const result = runKani(dir, "setup.sh", ["rust"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   excludes(calls(dir), "auto-install");
+});
+
+test("temporary files that Kani's tools leave in TMPDIR go with the runner's work directory", () => {
+  const { dir } = kaniFixture("success");
+  const tmp = join(dir, "tmp");
+  mkdirSync(tmp);
+  // A tool stopped partway, such as goto-cc, leaves its temporary file behind.
+  const driver = join(bundle(dir), "bin/kani-driver");
+  writeFileSync(driver, `#!${python}\nimport os, sys\nif sys.argv[1:] != ["--version"]:\n    open(os.path.join(os.environ.get("TMPDIR"), "goto-cc-left"), "w").close()\n${DRIVER}`);
+  const result = runKani(dir, "kani-check.sh", [dir], { TMPDIR: tmp, FORMAL_MIN_FREE_GIB: "0" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(readdirSync(tmp), []);
 });
 
 test("Kani keeps rustup toolchain libraries a parent cargo exports away from the bundled toolchain", () => {
