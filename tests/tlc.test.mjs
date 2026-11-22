@@ -664,6 +664,35 @@ test("a second interrupt while the runner stops TLC does not leave TLC suspended
   assert.deepEqual(result.stdout.trim().split("\n"), ["interrupted", "exited -15"]);
 });
 
+test("stopping a checker that exits just after the runner checks it sends no signal to its freed pid", () => {
+  const script = [
+    "import os, signal, subprocess, sys",
+    `sys.path.insert(0, ${JSON.stringify(scripts)})`,
+    "import workdir",
+    "checker = subprocess.Popen(['true'])",
+    "os.waitid(os.P_PID, checker.pid, os.WEXITED | os.WNOWAIT)",
+    "# The first poll misses the exit, as it does when the checker exits right after it.",
+    "polls = []",
+    "real_poll = checker.poll",
+    "def poll():",
+    "    polls.append(1)",
+    "    return None if len(polls) == 1 else real_poll()",
+    "checker.poll = poll",
+    "sent = []",
+    "real_kill = os.kill",
+    "def kill(pid, signum):",
+    "    if pid != checker.pid:",
+    "        return real_kill(pid, signum)",
+    "    sent.append(signal.Signals(signum).name)",
+    "os.kill = kill",
+    "workdir.stop_process(checker)",
+    "print(checker.returncode, sent)",
+  ].join("\n");
+  const result = spawnSync("python3", ["-B", "-c", script], { cwd: root, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "0 []");
+});
+
 test("Ctrl-C stops a shell loop that runs the matrix runner", async () => {
   const dir = fixture();
   writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
