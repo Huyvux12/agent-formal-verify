@@ -53,7 +53,7 @@ def body(process):
 with processes.signal_cleanup():
     try:
         outcome = processes.guarded(["bash", "-c", checkers[scenario], "checker", str(child_pid)], body,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except processes.SignalTerminated as error:
         outcome = f"SignalTerminated({error.signum})"
 print(outcome)

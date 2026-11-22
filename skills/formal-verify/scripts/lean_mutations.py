@@ -40,7 +40,7 @@ def _checked_record(model, project):
 def _analyze(model, project, toolchain):
     """Get Lean's declaration identities and error positions, never infer them from source text."""
     done = processes.run_captured(["elan", "run", toolchain, "lake", "--dir", str(project), "env", "lean", "--run",
-                                 str(HERE / "lean-mutations.lean"), str(model)])
+                                   str(HERE / "lean-mutations.lean"), str(model)])
     output = done.stdout + done.stderr
     records = [line.removeprefix("AFV_LEAN ") for line in done.stdout.splitlines() if line.startswith("AFV_LEAN ")]
     if done.returncode != 0 or len(records) != 1:
