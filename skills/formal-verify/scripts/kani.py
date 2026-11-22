@@ -344,7 +344,7 @@ def main():
     try:
         temp_root = workdir.ensure_temp_root()
         workdir.warn_runtime()
-        with workdir.signal_cleanup(), tempfile.TemporaryDirectory(prefix="formal-kani-", dir=temp_root) as temporary:
+        with tempfile.TemporaryDirectory(prefix="formal-kani-", dir=temp_root) as temporary:
             work = Path(temporary)
             try:
                 bounds = discover(crate, work, kani)
@@ -370,9 +370,12 @@ def main():
     except workdir.TempDirError as error:
         print(error)
         return 1
-    except workdir.SignalTerminated as error:
-        error.exit()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # The readiness check runs Kani too, so a second signal while it is stopped must be ignored there as well.
+    try:
+        with workdir.signal_cleanup():
+            sys.exit(main())
+    except workdir.SignalTerminated as error:
+        error.exit()

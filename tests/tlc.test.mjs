@@ -824,7 +824,7 @@ test("tlc-matrix warns on stderr once per run when FORMAL_MIN_FREE_GIB exceeds a
   assert.equal(mutated.stderr.match(/WARN low free space on temp dir/g)?.length, 1, mutated.stderr);
 });
 
-test("lean-check.sh honors TMPDIR, exits promptly on SIGTERM, and cleans its temp dir", async () => {
+test("lean-check.sh honors TMPDIR, and on SIGTERM stops its build and the processes it started, cleans its temp dir and ends by SIGTERM", async () => {
   const dir = fixture();
   const project = join(dir, "lean");
   const leanTmp = join(dir, "lean-tmp");
@@ -833,25 +833,28 @@ test("lean-check.sh honors TMPDIR, exits promptly on SIGTERM, and cleans its tem
   const readyFile = join(dir, "elan.ready");
   command(dir, "elan", [
     '[ "$4" = "--version" ] && exit 0',
-    'echo ready > "$TASK_READY_FILE"',
-    'exec sleep 15',
+    'sleep 15 &',
+    'echo "$$ $!" > "$TASK_READY_FILE"',
+    'wait',
   ].join("\n"));
   const start = Date.now();
-  await new Promise((resolve) => {
+  const code = await new Promise((resolve) => {
     const child = spawn("bash", [join(scripts, "lean-check.sh"), project], {
       env: { ...process.env, PATH: join(dir, "bin") + ":" + process.env.PATH, TMPDIR: leanTmp, TASK_READY_FILE: readyFile, FORMAL_MIN_FREE_GIB: "0" },
     });
     const timer = setInterval(() => {
-      if (existsSync(readyFile)) {
+      if (existsSync(readyFile) && readFileSync(readyFile, "utf8").endsWith("\n")) {
         clearInterval(timer);
         child.kill("SIGTERM");
       }
     }, 20);
-    child.on("close", () => {
+    child.on("close", (exitCode, signalName) => {
       clearInterval(timer);
-      resolve();
+      resolve({ exitCode, signalName });
     });
   });
   assert.ok(Date.now() - start < 4000, "lean-check.sh waited for child instead of exiting promptly on SIGTERM");
+  for (const pid of readFileSync(readyFile, "utf8").trim().split(" ")) assertProcessStopped(Number(pid));
   assert.deepEqual(readdirSync(leanTmp), []);
+  assert.equal(code.signalName, "SIGTERM", JSON.stringify(code));
 });

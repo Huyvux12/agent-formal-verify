@@ -45,6 +45,28 @@ log=$work/build.log
 source "$HERE/python-tools.sh"
 require_python || exit 3
 python3 "$HERE/workdir.py" warn
+# Each build step runs as a background job through workdir.py, so a signal's trap can stop the step and
+# every process it started (elan runs lake, which runs lean) and then end the script by the same signal.
+# The trap finds the step in the job table, which holds it from the moment it starts.
+stop_step() {
+  trap '' INT TERM HUP
+  local running
+  running=$(jobs -p)
+  if [ -n "$running" ]; then
+    kill -TERM "$running" 2> /dev/null
+    wait
+  fi
+  rm -rf "$work"
+  trap - EXIT "$1"
+  kill -"$1" "$$"
+}
+trap 'stop_step INT' INT
+trap 'stop_step TERM' TERM
+trap 'stop_step HUP' HUP
+run_step() {
+  python3 "$HERE/workdir.py" run "$@" &
+  wait "$!"
+}
 # Lake builds a module named by its source path and rejects a path that no
 # library owns, so naming every source leaves no file unchecked. Its query
 # command prints the .olean of each, which names the modules to audit without
@@ -72,7 +94,7 @@ else
     < <(find "$dir" -name '*.lean' -not -path "$dir/.lake/*" -not -name lakefile.lean | sort)
   [ "${#sources[@]}" -gt 0 ] || { echo "FAIL $dir has no .lean file to check"; exit 1; }
 fi
-elan run "$toolchain" lake --dir "$dir" query "${sources[@]/%/:olean}" > "$work/oleans" 2> "$log"
+run_step elan run "$toolchain" lake --dir "$dir" query "${sources[@]/%/:olean}" > "$work/oleans" 2> "$log"
 status=$?
 # Lean quotes sorry with backticks or straight quotes depending on the version.
 sorry='^(warning|error): .*: declaration uses .sorry.'
@@ -86,7 +108,7 @@ audit_status=0
 : > "$work/audit.out"
 if [ "$status" -eq 0 ]; then
   # The module of each source, in source order, for the audit's imports and the frozen records.
-  if ! elan run "$toolchain" lake --dir "$dir" env python3 "$HERE/lean-layout.py" \
+  if ! run_step elan run "$toolchain" lake --dir "$dir" env python3 "$HERE/lean-layout.py" \
       "$work/oleans" "$work/modules" "$work/libraries" > "$work/layout.log" 2>&1; then
     echo "FAIL $scope: cannot resolve Lake's module layout"
     cat "$work/layout.log"
@@ -212,7 +234,7 @@ open Lean Elab Command in
   IO.println s!"AUDITED {audited} declarations"
 EOF
   } > "$work/Audit.lean"
-  AFV_FREEZE=$freeze elan run "$toolchain" lake --dir "$dir" env lean "$work/Audit.lean" > "$work/audit.out" 2>&1
+  AFV_FREEZE=$freeze run_step elan run "$toolchain" lake --dir "$dir" env lean "$work/Audit.lean" > "$work/audit.out" 2>&1
   audit_status=$?
   grep -qE '^AUDITED [0-9]+ declarations$' "$work/audit.out" || audit_status=1
   if grep -q '^AUDITED 0 declarations$' "$work/audit.out"; then
@@ -280,7 +302,7 @@ if [ -x "$(elan run "$toolchain" lean --print-prefix)/bin/leanchecker" ]; then
   done < <(sed -n 's/^IMPORTED //p' "$work/audit.out")
   sort -u "$work/replay-modules" -o "$work/replay-modules"
   replay=passed
-  AFV_REPLAY_MODULES="$work/replay-modules" elan run "$toolchain" lake --dir "$dir" env lean "$HERE/lean-replay.lean" > "$work/replay.out" 2>&1 || replay=failed
+  AFV_REPLAY_MODULES="$work/replay-modules" run_step elan run "$toolchain" lake --dir "$dir" env lean "$HERE/lean-replay.lean" > "$work/replay.out" 2>&1 || replay=failed
 fi
 case $replay in
   passed) echo "REPLAYED $(grep -c '^replaying ' "$work/replay.out") modules through the Lean kernel" ;;
