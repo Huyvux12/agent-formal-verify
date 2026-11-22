@@ -851,6 +851,50 @@ test("stopping a checker stops listing after a bounded number of ps calls and wa
   }
 });
 
+test("stopping a checker leaves behind a ps that does not die after its timeout, signals the checker and warns", () => {
+  const dir = fixture();
+  const stuck = join(dir, "stuck");
+  command(dir, "ps", `echo "$$" >> "${stuck}"\nexec sleep 30`);
+  const start = Date.now();
+  // No stand-in can survive SIGKILL, so the runner's kill of ps does nothing, as for a ps in uninterruptible sleep.
+  const { result, pid, checker } = stopChecker(dir, 'sleep 30 & echo "$!" > "$1"; wait', [
+    "workdir.PS_TIMEOUT = 0.5",
+    "real_kill = subprocess.Popen.kill",
+    "subprocess.Popen.kill = lambda self: None if self.args[0] == 'ps' else real_kill(self)",
+  ]);
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "-15");
+    includes(result.stderr, "WARN ps cannot list the processes that the checker started; they may still be running");
+    assert.ok(Date.now() - start < 6000, `the stop took ${Date.now() - start} ms`);
+  } finally {
+    killAll(pid, checker, ...readFileSync(stuck, "utf8").split("\n").filter(Boolean).map(Number));
+  }
+});
+
+test("stopping a checker bounds the time that all its ps listings take together", () => {
+  const dir = fixture();
+  const realPs = spawnSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).stdout.trim();
+  const listings = join(dir, "listings");
+  // Each slow listing names one more child of the checker, so only the time bound ends the listings.
+  // The pids are above every system's pid limit, so their signals reach no process.
+  command(dir, "ps", [
+    `"${realPs}" "$@"`,
+    `case "$*" in *ppid*) sleep 0.3; echo x >> "${listings}"; echo "$((5000000 + $(wc -l < "${listings}"))) $(cat "${join(dir, "sleep.pid.checker")}")" ;; esac`,
+  ].join("\n"));
+  const start = Date.now();
+  const { result, pid, checker } = stopChecker(dir, 'sleep 30 & echo "$!" > "$1"; wait', ["workdir.PS_TIMEOUT = 1"]);
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "-15");
+    includes(result.stderr, "WARN ps cannot list the processes that the checker started; they may still be running");
+    assert.ok(readFileSync(listings, "utf8").split("\n").filter(Boolean).length <= 4);
+    assert.ok(Date.now() - start < 6000, `the stop took ${Date.now() - start} ms`);
+  } finally {
+    killAll(pid, checker);
+  }
+});
+
 test("Ctrl-C stops a shell loop that runs the matrix runner", async () => {
   const dir = fixture();
   writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
