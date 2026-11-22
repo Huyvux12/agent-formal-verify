@@ -32,8 +32,8 @@ SKIP_MOUNT_PREFIXES = (
 )
 
 _warned_runtime = False
-# Bounds on one stop: how long one ps listing may take, and how many listings it takes
-# before signalling what it found, in case a process keeps starting others.
+# Bounds on one stop: how long its ps listings of the checker's descendants may take together,
+# and how many it takes before signalling what it found, in case a process keeps starting others.
 PS_TIMEOUT = 5
 MAX_LISTINGS = 50
 
@@ -106,21 +106,31 @@ def signal_cleanup():
             signal.signal(signum, handler)
 
 
-def _listing(columns):
-    """Return each process's fields for the ps columns, in one snapshot, or None when ps fails."""
+def _listing(columns, timeout=PS_TIMEOUT):
+    """Return each process's fields for the ps columns, in one snapshot, or None when ps fails or takes too long."""
     try:
-        done = subprocess.run(["ps", "-A", "-o", columns], capture_output=True, text=True, check=False,
-                              timeout=PS_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
+        process = subprocess.Popen(["ps", "-A", "-o", columns], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   text=True)
+    except OSError:
         return None
-    if done.returncode:
+    try:
+        stdout = process.communicate(timeout=timeout)[0]
+    except subprocess.TimeoutExpired:
+        stdout = None
+    finally:
+        if process.returncode is None:
+            process.kill()
+            # A ps in uninterruptible sleep cannot die until its read returns, so it is left behind, not waited for.
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=1)
+    if stdout is None or process.returncode:
         return None
-    return [line.split() for line in done.stdout.splitlines()]
+    return [line.split() for line in stdout.splitlines()]
 
 
-def _descendants(pid):
-    """Return the pids of every process below pid in one ps snapshot, or None when ps fails."""
-    listing = _listing("pid=,ppid=")
+def _descendants(pid, timeout):
+    """Return the pids of every process below pid in one ps snapshot, or None when ps fails or takes too long."""
+    listing = _listing("pid=,ppid=", timeout)
     if listing is None:
         return None
     children = {}
@@ -146,8 +156,9 @@ def stop_process(process):
             process.send_signal(signal.SIGSTOP)
         if process.returncode is not None:
             return
+        listing_deadline = time.monotonic() + PS_TIMEOUT
         for _ in range(MAX_LISTINGS):
-            listed = _descendants(process.pid)
+            listed = _descendants(process.pid, max(0, listing_deadline - time.monotonic()))
             if listed is None:
                 sys.stderr.write("WARN ps cannot list the processes that the checker started; they may still be running\n")
                 break
