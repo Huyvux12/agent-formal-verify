@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-When a signal interrupts the Python runners while they stop a checker, as a Ctrl-C during the TLC timeout stop does, the stop still sends `SIGKILL` to the checker and to every process it found that still runs. Before this change, the interrupted stop skipped that step, and the second stop that follows found the checker reaped and returned, so a process that the checker started and that ignores `SIGTERM` kept running after the runner exited.
+When a signal interrupts the Python runners while they wait for a stopped checker and its processes to exit, as a Ctrl-C during the TLC timeout stop can, the stop still sends `SIGKILL` to the checker and to every process it found that still runs. Before this change, the interrupted stop skipped that step, and the second stop that follows found the checker reaped and returned, so a process that the checker started and that ignores `SIGTERM` kept running after the runner exited.
 
 When the Python runners stop a checker, each `ps` listing of the processes it started now has five seconds to answer, and one stop takes at most fifty listings. When either limit is reached, the runner signals the processes it has found and prints a warning to `stderr` that others may still be running. Before this change, a `ps` that hung kept the checker suspended and the runner waiting, and a process that kept starting others, such as one whose `SIGSTOP` failed, kept the runner listing forever.
 
