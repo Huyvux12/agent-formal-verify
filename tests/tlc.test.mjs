@@ -790,7 +790,7 @@ test("stopping a checker stops listing after a bounded number of ps calls and wa
   // The pids are above every system's pid limit, so their signals reach no process.
   command(dir, "ps", [
     `"${realPs}" "$@"`,
-    'case "$*" in *ppid*) echo x >> "' + listings + '"; echo "$((5000000 + $(wc -l < "' + listings + '"))) $(cat "' + join(dir, "sleep.pid.checker") + '")" ;; esac',
+    `case "$*" in *ppid*) echo x >> "${listings}"; echo "$((5000000 + $(wc -l < "${listings}"))) $(cat "${join(dir, "sleep.pid.checker")}")" ;; esac`,
   ].join("\n"));
   const { result, pid, checker } = stopChecker(dir, 'sleep 30 & echo "$!" > "$1"; wait', ["workdir.MAX_LISTINGS = 5"]);
   try {
