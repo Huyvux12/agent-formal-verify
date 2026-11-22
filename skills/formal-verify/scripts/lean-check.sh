@@ -156,7 +156,7 @@ private def matcherName : Lean.Name → Bool
   | _ => false
 
 private def shown (n : Lean.Name) : Lean.Name :=
-  if matcherName n then `_match else erased n
+  if matcherName (erased n) then `_match else erased n
 
 private def abstractedProof : Lean.Name → Bool
   | .str _ s => s.startsWith "_proof_" && s.length > 7 && (s.drop 7).all Char.isDigit
@@ -170,7 +170,7 @@ private partial def positionFree : Lean.Expr → Lean.Expr
   | .mdata m e => .mdata m (positionFree e)
   | .proj s i e => .proj s i (positionFree e)
   | .sort l => .sort (levelFree l)
-  | .const n ls => if abstractedProof n then .const `_proof [] else .const (shown n) (ls.map levelFree)
+  | .const n ls => if abstractedProof (erased n) then .const `_proof [] else .const (shown n) (ls.map levelFree)
   | e => e
 
 -- A shared match helper takes its binder names from whichever match Lean made it for, so they are not recorded.
@@ -183,11 +183,18 @@ private partial def nameless : Lean.Expr → Lean.Expr
   | .proj s i e => .proj s i (nameless e)
   | e => e
 
+-- A recursive body can sit in an auxiliary: _f for structural recursion, _unary or _mutual
+-- for well-founded recursion, and _unsafe_rec for the code that runs, the only body a partial def has.
+-- Lean appends the suffix after a hygienic name's macro scopes, where ++ would put it before them.
+private def auxBodies (env : Lean.Environment) (name : Lean.Name) : List (String × Lean.Expr) :=
+  ["_f", "_unary", "_mutual", "_unsafe_rec"].filterMap fun aux => ((env.find? (.str name aux)).bind body?).map (aux, ·)
+
 -- A hygienic constant or a match helper has no record of its own, so a record that refers to one carries its
 -- type and value, and those of the hygienic constants and helpers they refer to in turn, each once.
+-- Proofs stay out, as in every record.
 open Lean in
 private def followed (env : Environment) (roots : List Expr) : String := Id.run do
-  let unrecorded (e : Expr) := e.getUsedConstants.filter fun c => shown c != c
+  let unrecorded (e : Expr) := e.getUsedConstants.filter fun c => shown c != c && !abstractedProof (erased c)
   let mut queue := roots.foldl (fun acc e => acc ++ unrecorded e) #[]
   let mut seen : Array Name := #[]
   let mut out := ""
@@ -198,8 +205,8 @@ private def followed (env : Environment) (roots : List Expr) : String := Id.run 
     if seen.contains n then continue
     seen := seen.push n
     let some info := env.find? n | continue
-    let parts := info.type :: (body? info).toList
-    let shape := if matcherName n then nameless else id
+    let parts := info.type :: (body? info).toList ++ (auxBodies env n).map (·.2)
+    let shape := if shown n == `_match then nameless else id
     out := out ++ s!"\n{shown n}: {reprStr (parts.map (positionFree ∘ shape))}"
     for e in parts do
       queue := queue ++ unrecorded e
@@ -268,11 +275,9 @@ open Lean Elab Command in
       | .recInfo _ => "recursor"
       | .quotInfo _ => "quotient"
       | .axiomInfo _ => "axiom"
-    -- A recursive body can sit in an auxiliary: _f for structural recursion, _unary or _mutual
-    -- for well-founded recursion, and _unsafe_rec for the code that runs, the only body a partial def has.
     let value := match body? info with
       | some v =>
-        let auxes := [`_f, `_unary, `_mutual, `_unsafe_rec].filterMap fun aux => ((env.find? (name ++ aux)).bind body?).map (aux, ·)
+        let auxes := auxBodies env name
         let bodies := auxes.foldl (init := reprStr (positionFree v)) fun acc (aux, auxBody) =>
           acc ++ s!"\n{aux}: {reprStr (positionFree auxBody)}"
         toJson (bodies ++ followed env (v :: auxes.map (·.2)))
