@@ -193,7 +193,7 @@ def invoke(crate, work, kani, *arguments, cwd=None):
     # Kani's tools, such as goto-cc, write their own temporary files to TMPDIR. Keep those in the
     # work directory, which the runner removes even when it stops a tool partway.
     tmpdir = work / "tmp"
-    tmpdir.mkdir(exist_ok=True)
+    tmpdir.mkdir(parents=True, exist_ok=True)
     return kani.run("--manifest-path", str(crate / "Cargo.toml"),
                     "--target-dir", str(work / "target"), "-Z", "stubbing", *arguments, cwd=cwd or crate, tmpdir=tmpdir)
 
