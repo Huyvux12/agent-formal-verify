@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+A frozen Lean record now covers the content of the hygienic constants it refers to, such as a helper that a user's macro defines, and of the hygienic constants those refer to in turn. Such a constant has no record of its own, so before this change an edit to it passed the frozen check although the frozen declaration that uses it changed meaning. Hygienic names that Lean extends with a suffix, such as a helper's `match_1`, are now recorded without their numbers too. Records that refer to no hygienic constant are unchanged. On older pins such as Lean 4.20.0, the instances that `deriving` adds refer to hygienic helpers, so a record frozen before this change reports them as changed; review them and run `--freeze` again.
+
 When the Python runners stop a checker, each `ps` listing of the processes it started now has five seconds to answer, and one stop takes at most fifty listings. When either limit is reached, the runner signals the processes it has found and prints a warning to `stderr` that others may still be running. Before this change, a `ps` that hung kept the checker suspended and the runner waiting, and a process that kept starting others, such as one whose `SIGSTOP` failed, kept the runner listing forever.
 
 The Rust checker and the mutation runner now give the tools that Kani runs, such as `goto-cc`, a `TMPDIR` inside the runner's working directory. Before this change those tools wrote their temporary files straight into `TMPDIR`, and a check stopped partway could leave them there; the runner's cleanup now removes them with its working directory.
