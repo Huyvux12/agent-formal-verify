@@ -45,12 +45,14 @@ command -v python3 > /dev/null || { echo "UNAVAILABLE python3 is required to che
 python3 "$HERE/workdir.py" warn
 # Each build step runs as a background job through workdir.py, so a signal's trap can stop the step and
 # every process it started (elan runs lake, which runs lean) and then end the script by the same signal.
-step=
+# The trap finds the step in the job table, which holds it from the moment it starts.
 stop_step() {
   trap '' INT TERM HUP
-  if [ -n "$step" ]; then
-    kill -TERM "$step" 2> /dev/null
-    wait "$step"
+  local running
+  running=$(jobs -p)
+  if [ -n "$running" ]; then
+    kill -TERM "$running" 2> /dev/null
+    wait
   fi
   rm -rf "$work"
   trap - EXIT "$1"
@@ -61,11 +63,7 @@ trap 'stop_step TERM' TERM
 trap 'stop_step HUP' HUP
 run_step() {
   python3 "$HERE/workdir.py" run "$@" &
-  step=$!
-  wait "$step"
-  local status=$?
-  step=
-  return "$status"
+  wait "$!"
 }
 # Lake builds a module named by its source path and rejects a path that no
 # library owns, so naming every source leaves no file unchecked. Its query
