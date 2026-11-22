@@ -282,4 +282,35 @@ if bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"; then
   exit 1
 fi
 grep -q '^  definition value changed$' "$work/check"
+
+# A constant that a macro defines has a hygienic name and no record of its own, so a frozen
+# definition that uses it records the constant's content as well: here a helper with a proof,
+# whose abstracted proof Lean 4.20 numbers module-wide, and a partial helper, whose body sits
+# in its _unsafe_rec auxiliary.
+frozen_helper() {
+  {
+    echo 'namespace Step'
+    echo 'macro "defWithHelper " n:ident " := " v:term ", " w:term : command =>'
+    # shellcheck disable=SC2016 # Lean text, not shell expansions.
+    echo '  `(def helper : {k : Nat // 0 < k} := ⟨$v, by decide⟩'
+    # shellcheck disable=SC2016
+    echo '    partial def spin (k : Nat) : Nat := if k = 0 then $w else spin (k - 1)'
+    # shellcheck disable=SC2016
+    echo '    def $n (k : Nat) : Nat := helper.val + spin k)'
+    cat
+    echo "defWithHelper f := 1, $1"
+    echo 'end Step'
+  } > "$work/Model/Step.lean"
+}
+frozen_helper 1 < /dev/null
+bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
+frozen_helper 1 <<< 'def proved : {k : Nat // 0 < k} := ⟨2, by decide⟩
+defWithHelper g := 5, 6'
+bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check" || { cat "$work/check"; echo 'FAIL a declaration added above changed the record of a definition that uses a hygienic constant'; exit 1; }
+frozen_helper 2 < /dev/null
+if bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"; then
+  echo 'FAIL an edit to a hygienic constant that a frozen definition uses passed'
+  exit 1
+fi
+grep -q '^FROZEN Step.f: statement changed$' "$work/check"
 echo 'ok: qualified coverage and proof-sensitivity reporting checked with real Lean'

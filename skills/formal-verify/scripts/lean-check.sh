@@ -135,6 +135,13 @@ private def body? : Lean.ConstantInfo → Option Lean.Expr
 private def unhygienic (n : Lean.Name) : Lean.Name :=
   if n.hasMacroScopes then .anonymous else n
 
+-- A name keeps its macro scopes in a prefix when Lean adds a suffix to a hygienic name, as in a helper's match_1.
+private def erased (n : Lean.Name) : Lean.Name :=
+  if n.hasMacroScopes then n.eraseMacroScopes else match n with
+  | .str p s => .str (erased p) s
+  | .num p i => .num (erased p) i
+  | n => n
+
 private def levelFree : Lean.Level → Lean.Level
   | .succ l => .succ (levelFree l)
   | .max a b => .max (levelFree a) (levelFree b)
@@ -154,8 +161,35 @@ private partial def positionFree : Lean.Expr → Lean.Expr
   | .mdata m e => .mdata m (positionFree e)
   | .proj s i e => .proj s i (positionFree e)
   | .sort l => .sort (levelFree l)
-  | .const n ls => if abstractedProof n then .const `_proof [] else .const n.eraseMacroScopes (ls.map levelFree)
+  | .const n ls => if abstractedProof (erased n) then .const `_proof [] else .const (erased n) (ls.map levelFree)
   | e => e
+
+-- A recursive body can sit in an auxiliary: _f for structural recursion, _unary or _mutual
+-- for well-founded recursion, and _unsafe_rec for the code that runs, the only body a partial def has.
+-- Lean appends the suffix after a hygienic name's macro scopes, where ++ would put it before them.
+private def auxBodies (env : Lean.Environment) (name : Lean.Name) : List (String × Lean.Expr) :=
+  ["_f", "_unary", "_mutual", "_unsafe_rec"].filterMap fun aux => ((env.find? (.str name aux)).bind body?).map (aux, ·)
+
+-- A hygienic constant has no record of its own, so a record that refers to one carries its type and value,
+-- and those of the hygienic constants they refer to in turn, each once. Proofs stay out, as in every record.
+open Lean in
+private def followed (env : Environment) (roots : List Expr) : String := Id.run do
+  let hygienic (e : Expr) := e.getUsedConstants.filter fun c => erased c != c && !abstractedProof (erased c)
+  let mut queue := roots.foldl (fun acc e => acc ++ hygienic e) #[]
+  let mut seen : Array Name := #[]
+  let mut out := ""
+  let mut i := 0
+  while i < queue.size do
+    let n := queue[i]!
+    i := i + 1
+    if seen.contains n then continue
+    seen := seen.push n
+    let some info := env.find? n | continue
+    let parts := info.type :: (body? info).toList ++ (auxBodies env n).map (·.2)
+    out := out ++ s!"\n{erased n}: {reprStr (parts.map positionFree)}"
+    for e in parts do
+      queue := queue ++ hygienic e
+  return out
 
 private def oneLine (s : String) : String :=
   (s.foldl (fun (acc, gap) c =>
@@ -219,19 +253,18 @@ open Lean Elab Command in
       | .recInfo _ => "recursor"
       | .quotInfo _ => "quotient"
       | .axiomInfo _ => "axiom"
-    -- A recursive body can sit in an auxiliary: _f for structural recursion, _unary or _mutual
-    -- for well-founded recursion, and _unsafe_rec for the code that runs, the only body a partial def has.
     let value := match body? info with
-      | some v => toJson <| [`_f, `_unary, `_mutual, `_unsafe_rec].foldl (init := reprStr (positionFree v)) fun acc aux =>
-          match (env.find? (name ++ aux)).bind body? with
-          | some auxBody => acc ++ s!"\n{aux}: {reprStr (positionFree auxBody)}"
-          | none => acc
+      | some v =>
+        let auxes := auxBodies env name
+        let bodies := auxes.foldl (init := reprStr (positionFree v)) fun acc (aux, auxBody) =>
+          acc ++ s!"\n{aux}: {reprStr (positionFree auxBody)}"
+        toJson (bodies ++ followed env (v :: auxes.map (·.2)))
       | none => Json.null
     let pp ← liftTermElabM <| Meta.ppExpr info.type
     let record := Json.mkObj [
       ("module", toJson env.header.moduleNames[idx.toNat]!.toString),
       ("name", toJson userName.toString), ("kind", toJson kind),
-      ("typeExpr", toJson (reprStr (info.levelParams.map (·.eraseMacroScopes), positionFree info.type))),
+      ("typeExpr", toJson (reprStr (info.levelParams.map (·.eraseMacroScopes), positionFree info.type) ++ followed env [info.type])),
       ("valueExpr", value), ("type", toJson pp.pretty)]
     IO.println s!"STATEMENT {record.compress}"
     if info matches .thmInfo _ then theorems := theorems.push (name, userName, idx)
