@@ -129,12 +129,17 @@ def stop_process(process):
     try:
         with suppress(ProcessLookupError):
             process.send_signal(signal.SIGSTOP)
+        if process.returncode is not None:
+            return
         while new := [pid for pid in _descendants(process.pid) if pid not in frozen]:
             frozen += new
             for pid in new:
                 with suppress(OSError):
                     os.kill(pid, signal.SIGSTOP)
     finally:
+        # send_signal reaps a checker that exited since poll and signals nothing; its pid is then free for reuse.
+        if process.returncode is not None:
+            frozen.remove(process.pid)
         for signum in (signal.SIGTERM, signal.SIGCONT):
             for pid in frozen:
                 with suppress(OSError):
