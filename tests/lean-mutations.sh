@@ -315,21 +315,28 @@ fi
 grep -q '^FROZEN Step.f: statement changed$' "$work/check"
 
 # Lean shares one match helper among the matches of the same shape in a module, and a pattern
-# lambda elaborates through one, so a match added above a frozen definition must leave its
-# record alone, while an edit to the frozen definition's own match still fails.
+# lambda and a recursive definition elaborate through one, so a match added above a frozen
+# definition must leave its record alone, while an edit to the frozen definition's own match
+# still fails. Lean 4.20 also names a recursive definition's binders after the shared helper.
 frozen_match() {
   {
     echo 'namespace Step'
     cat
     echo "def pick (n : Nat) : Nat := match n with | 0 => 1 | _ => $1"
     echo 'def swap : Nat × Nat → Nat × Nat := fun (a, b) => (b, a)'
+    echo 'def count : Nat → Nat'
+    echo '  | 0 => 0'
+    echo '  | k + 1 => count k'
     echo 'end Step'
   } > "$work/Model/Step.lean"
 }
 frozen_match 2 < /dev/null
 bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
 frozen_match 2 <<< 'def other (n : Nat) : Nat := match n with | 0 => 3 | _ => 4
-def first : Nat × Nat → Nat := fun (a, _) => a'
+def first : Nat × Nat → Nat := fun (a, _) => a
+def down : Nat → Nat
+  | 0 => 0
+  | m + 1 => down m'
 bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check" || { cat "$work/check"; echo 'FAIL a match of the same shape added above changed a frozen record'; exit 1; }
 frozen_match 3 < /dev/null
 if bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"; then

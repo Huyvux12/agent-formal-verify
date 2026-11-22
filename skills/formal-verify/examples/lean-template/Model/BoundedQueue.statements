@@ -113,7 +113,7 @@
       "kind": "definition",
       "type": "Nat → Nat → List (BoundedQueue.State × BoundedQueue.State)",
       "typeHash": "3c10f9d3b1db7f38259addbb30531e138707750920468a6f0851dd61966e35c3",
-      "valueHash": "9f7212fee4e472b186c42d389e3196e95ae8b4ab4e916c1066b6039e4cc33d09"
+      "valueHash": "6ce67dfbb15813a86c37263f09c1f27d0acb1c3a7b81b2a036ec1ec82d4bc8af"
     },
     {
       "name": "BoundedQueue.claim",
@@ -211,7 +211,7 @@
       "kind": "definition",
       "type": "Nat → Nat → List BoundedQueue.State",
       "typeHash": "ba325d9d339b281c7edc5f19b115da5124ade8a48c1c6893b70d682942b3be97",
-      "valueHash": "819ebe5e9b125281a81276a0548d40f1c009aaa3c1e89104c528ec5446d13628"
+      "valueHash": "02787cf905579809486b08283c771b24ec4ff4cc2941ecb55651278f9c4ec3fb"
     },
     {
       "name": "BoundedQueue.vectors",

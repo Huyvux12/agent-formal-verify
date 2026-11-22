@@ -162,18 +162,8 @@ private def abstractedProof : Lean.Name → Bool
   | .str _ s => s.startsWith "_proof_" && s.length > 7 && (s.drop 7).all Char.isDigit
   | _ => false
 
-private partial def positionFree : Lean.Expr → Lean.Expr
-  | .lam n t b i => .lam (unhygienic n) (positionFree t) (positionFree b) i
-  | .forallE n t b i => .forallE (unhygienic n) (positionFree t) (positionFree b) i
-  | .letE n t v b d => .letE (unhygienic n) (positionFree t) (positionFree v) (positionFree b) d
-  | .app f a => .app (positionFree f) (positionFree a)
-  | .mdata m e => .mdata m (positionFree e)
-  | .proj s i e => .proj s i (positionFree e)
-  | .sort l => .sort (levelFree l)
-  | .const n ls => if abstractedProof (erased n) then .const `_proof [] else .const (shown n) (ls.map levelFree)
-  | e => e
-
--- A shared match helper takes its binder names from whichever match Lean made it for, so they are not recorded.
+-- A shared match helper takes its binder names from whichever match Lean made it for, and Lean 4.20 passes
+-- them on to the alternatives of a match that uses it, so neither records binder names.
 private partial def nameless : Lean.Expr → Lean.Expr
   | .lam _ t b i => .lam .anonymous (nameless t) (nameless b) i
   | .forallE _ t b i => .forallE .anonymous (nameless t) (nameless b) i
@@ -181,6 +171,21 @@ private partial def nameless : Lean.Expr → Lean.Expr
   | .app f a => .app (nameless f) (nameless a)
   | .mdata m e => .mdata m (nameless e)
   | .proj s i e => .proj s i (nameless e)
+  | e => e
+
+private partial def positionFree : Lean.Expr → Lean.Expr
+  | .lam n t b i => .lam (unhygienic n) (positionFree t) (positionFree b) i
+  | .forallE n t b i => .forallE (unhygienic n) (positionFree t) (positionFree b) i
+  | .letE n t v b d => .letE (unhygienic n) (positionFree t) (positionFree v) (positionFree b) d
+  | e@(.app f a) => match e.getAppFn with
+    | head@(.const n _) =>
+      if shown n == `_match then Lean.mkAppN (positionFree head) (e.getAppArgs.map (positionFree ∘ nameless))
+      else .app (positionFree f) (positionFree a)
+    | _ => .app (positionFree f) (positionFree a)
+  | .mdata m e => .mdata m (positionFree e)
+  | .proj s i e => .proj s i (positionFree e)
+  | .sort l => .sort (levelFree l)
+  | .const n ls => if abstractedProof (erased n) then .const `_proof [] else .const (shown n) (ls.map levelFree)
   | e => e
 
 -- A recursive body can sit in an auxiliary: _f for structural recursion, _unary or _mutual
