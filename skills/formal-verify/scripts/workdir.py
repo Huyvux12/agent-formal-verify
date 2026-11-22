@@ -106,7 +106,7 @@ def signal_cleanup():
             signal.signal(signum, handler)
 
 
-def _listing(columns, timeout=PS_TIMEOUT):
+def _listing(columns, timeout):
     """Return each process's fields for the ps columns, in one snapshot, or None when ps fails or takes too long."""
     try:
         process = subprocess.Popen(["ps", "-A", "-o", columns], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -205,7 +205,7 @@ def stop_process(process):
 
 def _running(pids):
     """Return the pids that still run. A zombie has exited, though a parent that never reaps keeps its pid."""
-    listing = _listing("pid=,stat=")
+    listing = _listing("pid=,stat=", PS_TIMEOUT)
     if listing is None:
         return [pid for pid in pids if _exists(pid)]
     running = {int(fields[0]) for fields in listing
