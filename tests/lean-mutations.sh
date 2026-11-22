@@ -308,4 +308,28 @@ if bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"; then
   exit 1
 fi
 grep -q '^FROZEN Step.f: statement changed$' "$work/check"
+
+# Lean shares one match helper among the matches of the same shape in a module, and a pattern
+# lambda elaborates through one, so a match added above a frozen definition must leave its
+# record alone, while an edit to the frozen definition's own match still fails.
+frozen_match() {
+  {
+    echo 'namespace Step'
+    cat
+    echo "def pick (n : Nat) : Nat := match n with | 0 => 1 | _ => $1"
+    echo 'def swap : Nat × Nat → Nat × Nat := fun (a, b) => (b, a)'
+    echo 'end Step'
+  } > "$work/Model/Step.lean"
+}
+frozen_match 2 < /dev/null
+bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
+frozen_match 2 <<< 'def other (n : Nat) : Nat := match n with | 0 => 3 | _ => 4
+def first : Nat × Nat → Nat := fun (a, _) => a'
+bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check" || { cat "$work/check"; echo 'FAIL a match of the same shape added above changed a frozen record'; exit 1; }
+frozen_match 3 < /dev/null
+if bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"; then
+  echo 'FAIL an edit to a frozen definition match passed'
+  exit 1
+fi
+grep -q '^FROZEN Step.pick: statement changed$' "$work/check"
 echo 'ok: qualified coverage and proof-sensitivity reporting checked with real Lean'
