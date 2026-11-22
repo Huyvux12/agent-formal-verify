@@ -1,0 +1,48 @@
+Reference images from the assets directory at commit 55fa01f, in the order supplied to ImageGen:
+1. formal-verify-overview-v3.png
+2. formal-verify-header.png
+
+Restyle the existing agent-formal-verify README workflow infographic. Reference 1 is the original overview and supplies the content, sequence, layout and labels. Reference 2 is the project header and supplies the visual style. Create the finished, opaque, wide landscape artwork, about 2:1. Preserve the full workflow in reference 1. Its only copy update is adding OpenCode and Antigravity to the supported hosts.
+
+Use the header’s near-black navy background with a subtle grid, spare chamfered perimeter, fine electric-blue edges, softly illuminated cyan traces, and a few precise amber accents. For the illustrations, borrow the header’s folded-corner source document, open-ring state graph with one amber node, sigma with aligned proof lines, gear enclosing amber braces, and restrained circled check. Match its bold white sans-serif headings and open, regular-weight body lettering. Maintain strong hierarchy and generous clear space around text. Extend the grouping across the canvas and trim excess outside padding so it can be read at GitHub README width. Keep the outer endpoint icons compact enough to give the three central columns the most width. Make icons elegant, crisp and purposeful. Keep glows concentrated on lines and nodes, away from the letters.
+
+Copy and hierarchy, transcribed exactly:
+Title: “agent-formal-verify”
+Host line: “Claude Code  •  Codex  •  Pi  •  OpenCode  •  Antigravity”
+Thin blue divider.
+Far-left input document: “Your repository”
+Column 1 heading: “Choose targets”
+Three target rows: “Thread protocols”, “Arithmetic & state”, “Bounded Rust”.
+Column 2 heading: “Choose tools”
+Three corresponding tool rows, each with a tool name and subtitle:
+“TLA+ / TLC” — “Model thread interleavings”
+“Lean 4” — “Prove bounds & invariants”
+“Kani” — “Check production Rust”
+Column 3 heading: “Check and fix”
+Four separate, equally legible icon rows: “Find counter-examples”, “Reproduce reachable bugs”, “Fix code and models”, “Test mutations”.
+Far-right check document: “Checks rerun in CI”
+Footer: “Set up once” and “Verify each repository”, then “Report assumptions and bounds”. Give the final line enough space and contrast for the same legibility as the tool descriptions.
+
+Show fine directional connectors. Input flows to the target/tool pairs, each target maps horizontally to the correct tool, the three tool paths join into the shared check-and-fix stage, and its output flows to CI. Retain the small visual feedback loop from mutation testing back into checking. Keep all the provided words and spellings, with no new text, slogans, numbers, or logos. Keep every label fully inside its panel with ample space. Use the entire canvas for the diagram and maintain the visual family resemblance to the header.
+
+Final edit using the preceding result and the same header as references:
+
+Update the supplied README overview (image 1) to accurately depict the current verification workflow. Image 2 is its matching header and style reference. Preserve the full technical illustration and its project title, five hosts, repository, target/tool pairs, verification workflow, recheck output and setup/reporting footer. Keep the wide, polished dark navy circuit panel, chamfered edges, cyan routing, restrained amber and bold white type. Make the canvas slightly taller if needed, at roughly 1.85:1. Keep lettering clear at README width and route arrows through empty gutters.
+
+Use the following exact text, once each. Title “agent-formal-verify”, host line “Claude Code  •  Codex  •  Pi  •  OpenCode  •  Antigravity”. Directly underneath add a separate, legible horizontal entry step with a small history icon and the sentence “Recheck existing models against source changes”. The far-left source document is labeled “Your repository”.
+
+Preserve these two headings and their three horizontal target-to-tool mappings:
+“Choose targets”                             “Choose tools”
+“Thread protocols”                 →       “TLA+ / TLC” with subtitle “Model thread interleavings”
+“Arithmetic & state”                →       “Lean 4” with subtitle “Prove bounds & invariants”
+“Bounded Rust”                       →       “Kani” with subtitle “Check production Rust”
+
+All three tool routes feed the third column. Its heading is “Verify and report”. Give it five crisp, clearly separated icon rows, exactly:
+“Rerun checks and mutations”
+“Compare recorded guarantees”
+“Trace failures to source”
+“Reproduce reachable bugs”
+“Fix on request”
+Add a small loop back from a fix to the checks. Use appropriate icons, e.g. a replay arrow, aligned documents, a trace node, bug, and wrench. The scope of a fix and whether to set up CI depend on what the user asks for, so do not use the old labels promising an unconditional fix or CI outcome.
+
+Far-right output document with two lines “Recheck commands” and “Optional model CI”. Footer keeps “Set up once”, “Verify each repository”, and “Report assumptions and bounds”. Retain generous spacing, with logos and numbers omitted. Keep the same visual identity as both images, quiet background and high-contrast body lettering, and render only the specific labels listed above.
