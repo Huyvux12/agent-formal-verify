@@ -580,7 +580,11 @@ test("SIGTERM that arrives while the runner starts TLC still stops TLC and the p
     "def init(self, args, *rest, **kwargs):",
     "    real_init(self, args, *rest, **kwargs)",
     "    if 'tlc2.TLC' in args:",
+    // Bounded, since the handler holds back a signal while Popen runs, the timeout's SIGTERM included.
+    "        deadline = time.monotonic() + 5",
     "        while not os.path.exists(os.environ.get('TASK_READY_FILE')):",
+    "            if time.monotonic() > deadline:",
+    "                raise RuntimeError('the fake TLC never became ready')",
     "            time.sleep(0.02)",
     // The signal handler runs inside Popen, as it does when a signal lands while Popen waits for TLC to start.
     "        os.kill(os.getpid(), signal.SIGTERM)",
@@ -592,6 +596,7 @@ test("SIGTERM that arrives while the runner starts TLC still stops TLC and the p
   const result = spawnSync("python3", ["-B", "-c", script], {
     encoding: "utf8",
     timeout: 10000,
+    killSignal: "SIGKILL",
     env: {
       ...process.env,
       JAVA: java,
