@@ -12,13 +12,15 @@ Stay in the target repository and run each helper with `bash` and its absolute p
 
 Every runner writes its temporary state into `TMPDIR` (failing cleanly with `FAIL` if an explicitly set `TMPDIR` cannot be created or written) and removes its working directories between matrix runs and on `SIGINT`, `SIGTERM` or `SIGHUP`. Lean builds write into the model project's `.lake` directory, while `lean-check.sh` places its temporary build log in `TMPDIR`. `setup.sh` (`tla`, `rust`, `lean`, and `storage`) reports `TEMP_DIR` free space, warns when the active temporary volume has less than `FORMAL_MIN_FREE_GIB` free (default `64` GiB), and lists larger writable `EXTERNAL_VOLUME` mounts so heavy runs can redirect `TMPDIR` onto an external disk. Checkers also warn once on `stderr` before starting when active temporary space drops below `10` GiB (or `FORMAL_MIN_FREE_GIB` when set).
 
-To stop a checker, a runner suspends the checker and every process it started, then sends them `SIGTERM` and resumes them, so none can start another process meanwhile. This takes a few `ps` calls, a few tens of milliseconds. A runner killed with `SIGKILL` in that time cannot resume them, so the checker and the processes suspended so far stay suspended until something ends them. `SIGINT`, `SIGTERM` and `SIGHUP` do not cause this, because the runner handles them and finishes the stop. To find suspended processes, list those whose state starts with `T`, such as TLC's `java`, `kani-driver`, `cbmc`, `lake` or `lean`:
+To stop a checker, a runner suspends the checker and every process it started, then sends them `SIGTERM` and resumes them, so none can start another process meanwhile. This takes a few `ps` calls, a few tens of milliseconds on an idle machine and longer under load. A runner ended in that time by a signal it does not handle, such as `SIGKILL` or `SIGQUIT`, cannot resume them. The checker and the processes suspended so far then stay suspended until something ends them, and the processes it started that were not yet suspended keep running. `SIGINT`, `SIGTERM` and `SIGHUP` do not cause this, because the runner handles them and finishes the stop.
+
+The left-behind processes share the process group of the runner that ended. To find them, list the suspended processes, whose state starts with `T`, with their process group:
 
 ```shell
-ps -A -o stat,pid,ppid,command | grep '^T'
+ps -A -o stat,pid,ppid,pgid,command | grep '^T'
 ```
 
-End each one with `kill -KILL <pid>`, or with `kill -TERM <pid>` followed by `kill -CONT <pid>` to let it clean up first.
+A left-behind checker has lost its runner, so its parent is process 1 or a service manager such as `systemd --user`, and it runs a command such as TLC's `java`, `cargo-kani`, `cbmc`, `cargo`, `bash` running `lean-check.sh`, `elan`, `lake` or `lean`. A job that you suspended yourself, such as an editor stopped with Ctrl-Z, has your shell as its parent; leave it alone. To list every process in a left-behind checker's group, including those still running, run `ps -A -o stat,pid,ppid,pgid,command` and keep the rows whose group matches the checker's. End each one with `kill -KILL <pid>`, or with `kill -TERM <pid>` followed by `kill -CONT <pid>` to let it clean up first. Do not signal the whole group, which can also hold the shell or job that started the runner.
 
 ## TLA+ and TLC
 
