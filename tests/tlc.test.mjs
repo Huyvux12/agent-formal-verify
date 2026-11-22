@@ -557,42 +557,51 @@ test("SIGTERM stops TLC and the processes it started, cleans temporary directori
   assert.ok(code.stopped < 1500, JSON.stringify(code));
 });
 
-test("SIGTERM also stops processes started while the runner is stopping TLC", async () => {
+test("SIGTERM also stops processes started while the runner is stopping TLC, through every generation", async () => {
   const dir = fixture();
   writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\n====\n");
   writeFileSync(join(dir, "One.matrix"), "spec One.tla\nrun hang | N=1\n");
   writeFileSync(join(dir, "tools.jar"), "user supplied");
   const realPs = spawnSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).stdout.trim();
   assert.ok(realPs, "ps must be on PATH");
-  const psCalls = join(dir, "ps.calls");
-  // Hold each listing back after ps takes it, so processes started meanwhile are missing from it.
-  command(dir, "ps", `listing=$("${realPs}" "$@")\nsleep 0.2\necho call >> "${psCalls}"\nprintf '%s\\n' "$listing"`);
+  const listings = join(dir, "listings");
+  // Each listing of the checker's descendants lets one more generation of TLC's processes start,
+  // and is held back until that generation has started, so the listing misses it. Three
+  // generations need three listings that find something, so a stop that lists twice misses one.
+  command(dir, "ps", [
+    `case "$*" in *ppid*) ;; *) exec "${realPs}" "$@" ;; esac`,
+    `listing=$("${realPs}" "$@")`,
+    `n=$(($(cat "${listings}" 2> /dev/null | wc -l) + 1))`,
+    `printf '%s\\n' "$listing" > "${dir}/listing-$n"`,
+    `echo "$n" >> "${listings}"`,
+    `touch "${dir}/go-$n"`,
+    "i=0",
+    `while [ "$n" -lt 3 ] && [ ! -s "${dir}/started-$((n + 1))" ] && [ "$i" -lt 500 ]; do sleep 0.01; i=$((i + 1)); done`,
+    `printf '%s\\n' "$listing"`,
+  ].join("\n"));
   const nap = `30.${process.pid}${Date.now() % 100000}`;
-  const marker = `sleep ${nap}`;
-  const readyFile = join(dir, "ready");
-  const doneFile = join(dir, "done");
+  const pace = `0.0100${process.pid}`;
   const java = fakeTlc(dir, [
-    "spawn() {",
-    "  i=0",
-    '  while [ "$i" -lt 200 ]; do',
-    '    sleep "$TASK_NAP" &',
-    "    i=$((i + 1))",
-    '    if [ "$i" = 5 ]; then echo ready > "$TASK_READY_FILE"; fi',
-    "    sleep 0.02",
-    "  done",
-    '  echo done > "$TASK_DONE_FILE"',
+    "grow() {",
+    '  sleep "$TASK_NAP" &',
+    '  echo "$!" > "$TASK_DIR/started-$1"',
+    '  if [ "$1" -lt 3 ]; then',
+    '    until [ -e "$TASK_DIR/go-$1" ]; do sleep "$TASK_PACE"; done',
+    '    grow $(($1 + 1)) &',
+    "  fi",
     "  wait",
     "}",
-    "spawn &",
+    "grow 1 &",
     "wait",
   ].join("\n"));
-  const marked = () => processesWhere((command) => command === marker);
+  const marked = () => processesWhere((command) => command === `sleep ${nap}` || command === `sleep ${pace}`);
   const probe = spawn("sleep", [nap]);
   try {
     assert.ok(waitFor(() => marked().includes(probe.pid)), "the process search must find a marked sleep");
   } finally {
     probe.kill("SIGKILL");
   }
+  const started = (generation) => join(dir, `started-${generation}`);
   const code = await new Promise((resolve) => {
     const child = spawn("python3", [join(scripts, "tlc.py"), join(dir, "One.matrix")], {
       env: {
@@ -601,15 +610,16 @@ test("SIGTERM also stops processes started while the runner is stopping TLC", as
         JAVA: java,
         TLC_JAR: join(dir, "tools.jar"),
         TASK_NAP: nap,
-        TASK_READY_FILE: readyFile,
-        TASK_DONE_FILE: doneFile,
+        TASK_PACE: pace,
+        TASK_DIR: dir,
         FORMAL_MIN_FREE_GIB: "0",
       },
     });
     const timer = setInterval(() => {
-      if (existsSync(readyFile)) {
+      if (existsSync(started(1)) && readFileSync(started(1), "utf8").endsWith("\n")) {
         clearInterval(timer);
-        child.kill("SIGTERM");
+        // The runner needs a moment after it starts TLC to reach the code that stops it on a signal; see #152.
+        setTimeout(() => child.kill("SIGTERM"), 200);
       }
     }, 20);
     child.on("close", (exitCode, signalName) => {
@@ -617,10 +627,15 @@ test("SIGTERM also stops processes started while the runner is stopping TLC", as
       resolve({ exitCode, signalName });
     });
   });
+  const listed = (n) => {
+    const file = join(dir, `listing-${n}`);
+    return existsSync(file) ? readFileSync(file, "utf8").split("\n").map((line) => line.trim().split(/\s+/)[0]) : [];
+  };
   try {
     assert.equal(code.signalName, "SIGTERM", JSON.stringify(code));
-    assert.ok(existsSync(psCalls), "the runner must list processes with ps");
-    assert.ok(!existsSync(doneFile), "TLC's processes started all their sleeps before the runner stopped them, so nothing was checked");
+    assert.ok(existsSync(started(3)), "the third generation never started, so the stop listed too few times to tell");
+    const last = readFileSync(started(3), "utf8").trim();
+    assert.ok(!listed(1).includes(last) && listed(3).includes(last), "a later listing must find the third generation, which the first missed");
     assert.ok(waitFor(() => marked().length === 0), `still running: ${marked()}`);
   } finally {
     for (const find of [() => processesWhere((command) => command.includes(dir)), marked]) {
