@@ -105,12 +105,15 @@ private def body? : Lean.ConstantInfo → Option Lean.Expr
   | .opaqueInfo v => some v.value
   | _ => none
 
--- Lean 4.20 numbers hygienic binder names and abstracted proofs across the whole module, so an
--- auxiliary body is recorded without them: adding a declaration above it must not change it.
+-- Lean 4.20 numbers hygienic binder names and abstracted proofs across the whole module, so each
+-- type and value is recorded without them: adding a declaration above it must not change it.
+private def unhygienic (n : Lean.Name) : Lean.Name :=
+  if n.hasMacroScopes then .anonymous else n
+
 private partial def positionFree : Lean.Expr → Lean.Expr
-  | .lam _ t b i => .lam .anonymous (positionFree t) (positionFree b) i
-  | .forallE _ t b i => .forallE .anonymous (positionFree t) (positionFree b) i
-  | .letE _ t v b d => .letE .anonymous (positionFree t) (positionFree v) (positionFree b) d
+  | .lam n t b i => .lam (unhygienic n) (positionFree t) (positionFree b) i
+  | .forallE n t b i => .forallE (unhygienic n) (positionFree t) (positionFree b) i
+  | .letE n t v b d => .letE (unhygienic n) (positionFree t) (positionFree v) (positionFree b) d
   | .app f a => .app (positionFree f) (positionFree a)
   | .mdata m e => .mdata m (positionFree e)
   | .proj s i e => .proj s i (positionFree e)
@@ -182,7 +185,7 @@ open Lean Elab Command in
     -- A recursive body can sit in an auxiliary: _f for structural recursion, _unary or _mutual
     -- for well-founded recursion, and _unsafe_rec for the code that runs, the only body a partial def has.
     let value := match body? info with
-      | some v => toJson <| [`_f, `_unary, `_mutual, `_unsafe_rec].foldl (init := reprStr v) fun acc aux =>
+      | some v => toJson <| [`_f, `_unary, `_mutual, `_unsafe_rec].foldl (init := reprStr (positionFree v)) fun acc aux =>
           match (env.find? (name ++ aux)).bind body? with
           | some auxBody => acc ++ s!"\n{aux}: {reprStr (positionFree auxBody)}"
           | none => acc
@@ -191,7 +194,7 @@ open Lean Elab Command in
     let record := Json.mkObj [
       ("module", toJson env.header.moduleNames[idx.toNat]!.toString),
       ("name", toJson userName.toString), ("kind", toJson kind),
-      ("typeExpr", toJson (reprStr (info.levelParams, info.type))),
+      ("typeExpr", toJson (reprStr (info.levelParams, positionFree info.type))),
       ("valueExpr", value), ("type", toJson pp.pretty)]
     IO.println s!"STATEMENT {record.compress}"
     if info matches .thmInfo _ then theorems := theorems.push (name, userName, idx)
