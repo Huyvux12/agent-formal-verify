@@ -700,13 +700,15 @@ test("stopping a checker that exits just after the runner checks it sends no sig
   assert.equal(result.stdout.trim(), "0 []");
 });
 
-function stopChecker(dir, checker) {
+function stopChecker(dir, checker, settings = []) {
   const script = [
     "import os, subprocess, sys, time",
     `sys.path.insert(0, ${JSON.stringify(scripts)})`,
     "import workdir",
+    ...settings,
     // A process the checker started keeps any pipe it inherits open, and spawnSync waits for the pipes to close.
     `checker = subprocess.Popen(['bash', '-c', ${JSON.stringify(checker)}, 'checker', sys.argv[1]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)`,
+    "open(sys.argv[1] + '.checker', 'w').write(str(checker.pid))",
     "while not (os.path.exists(sys.argv[1]) and open(sys.argv[1]).read().endswith('\\n')):",
     "    time.sleep(0.02)",
     "workdir.stop_process(checker)",
@@ -719,7 +721,17 @@ function stopChecker(dir, checker) {
     timeout: 10000,
     env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}` },
   });
-  return { result, pid: Number(readFileSync(pidFile, "utf8")) };
+  return { result, pid: Number(readFileSync(pidFile, "utf8")), checker: Number(readFileSync(`${pidFile}.checker`, "utf8")) };
+}
+
+function killAll(...pids) {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
 }
 
 test("stopping a checker also kills a process it started that ignores SIGTERM", () => {
@@ -752,6 +764,42 @@ test("stopping a checker warns when ps cannot list the processes it started", ()
     } catch {
       // Already gone.
     }
+  }
+});
+
+test("stopping a checker gives up on a ps that does not answer, signals the checker and warns", () => {
+  const dir = fixture();
+  command(dir, "ps", "exec sleep 30");
+  const start = Date.now();
+  const { result, pid, checker } = stopChecker(dir, 'sleep 30 & echo "$!" > "$1"; wait', ["workdir.PS_TIMEOUT = 0.5"]);
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "-15");
+    includes(result.stderr, "WARN ps cannot list the processes that the checker started; they may still be running");
+    assert.ok(Date.now() - start < 5000, `the stop took ${Date.now() - start} ms`);
+  } finally {
+    killAll(pid, checker);
+  }
+});
+
+test("stopping a checker stops listing after a bounded number of ps calls and warns", () => {
+  const dir = fixture();
+  const realPs = spawnSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).stdout.trim();
+  const listings = join(dir, "listings");
+  // Each listing names one more child of the checker, as a process that keeps starting others would.
+  // The pids are above every system's pid limit, so their signals reach no process.
+  command(dir, "ps", [
+    `"${realPs}" "$@"`,
+    `case "$*" in *ppid*) echo x >> "${listings}"; echo "$((5000000 + $(wc -l < "${listings}"))) $(cat "${join(dir, "sleep.pid.checker")}")" ;; esac`,
+  ].join("\n"));
+  const { result, pid, checker } = stopChecker(dir, 'sleep 30 & echo "$!" > "$1"; wait', ["workdir.MAX_LISTINGS = 5"]);
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "-15");
+    includes(result.stderr, "WARN the checker kept starting processes through 5 ps listings; processes it started later may still be running");
+    assert.equal(readFileSync(listings, "utf8").split("\n").filter(Boolean).length, 5);
+  } finally {
+    killAll(pid, checker);
   }
 });
 

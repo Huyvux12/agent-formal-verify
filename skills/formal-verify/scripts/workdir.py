@@ -32,6 +32,10 @@ SKIP_MOUNT_PREFIXES = (
 )
 
 _warned_runtime = False
+# Bounds on one stop: how long one ps listing may take, and how many listings it takes
+# before signalling what it found, in case a process keeps starting others.
+PS_TIMEOUT = 5
+MAX_LISTINGS = 50
 
 
 class TempDirError(Exception):
@@ -105,8 +109,9 @@ def signal_cleanup():
 def _listing(columns):
     """Return each process's fields for the ps columns, in one snapshot, or None when ps fails."""
     try:
-        done = subprocess.run(["ps", "-A", "-o", columns], capture_output=True, text=True, check=False)
-    except OSError:
+        done = subprocess.run(["ps", "-A", "-o", columns], capture_output=True, text=True, check=False,
+                              timeout=PS_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if done.returncode:
         return None
@@ -141,7 +146,7 @@ def stop_process(process):
             process.send_signal(signal.SIGSTOP)
         if process.returncode is not None:
             return
-        while True:
+        for _ in range(MAX_LISTINGS):
             listed = _descendants(process.pid)
             if listed is None:
                 sys.stderr.write("WARN ps cannot list the processes that the checker started; they may still be running\n")
@@ -153,6 +158,9 @@ def stop_process(process):
             for pid in new:
                 with suppress(OSError):
                     os.kill(pid, signal.SIGSTOP)
+        else:
+            sys.stderr.write(f"WARN the checker kept starting processes through {MAX_LISTINGS} ps listings; "
+                             "processes it started later may still be running\n")
     finally:
         # send_signal reaps a checker that exited since poll and signals nothing; its pid is then free for reuse.
         if process.returncode is not None:
