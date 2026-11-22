@@ -169,25 +169,27 @@ def stop_process(process):
             for pid in frozen:
                 with suppress(OSError):
                     os.kill(pid, signum)
-    deadline = time.monotonic() + 2
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-        process.wait()
-    # A descendant that ignores SIGTERM, as one that inherits an ignored SIGTERM does, gets SIGKILL as the checker does.
     survivors = [pid for pid in frozen if pid != process.pid]
-    while survivors:
-        survivors = _running(survivors)
-        if not survivors or time.monotonic() >= deadline:
-            break
-        time.sleep(0.05)
-    for pid in survivors:
-        with suppress(OSError):
-            os.kill(pid, signal.SIGKILL)
+    deadline = time.monotonic() + 2
+    # A signal that ends the wait early still leads to the SIGKILL pass: a second stop finds the checker reaped
+    # and returns, and the descendants it leaves are no longer the checker's to find.
+    try:
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=2)
+        while survivors and time.monotonic() < deadline:
+            survivors = _running(survivors)
+            if survivors:
+                time.sleep(0.05)
+    finally:
+        if process.returncode is None:
+            with suppress(ProcessLookupError):
+                process.kill()
+            process.wait()
+        # A descendant that ignores SIGTERM, as one that inherits an ignored SIGTERM does, gets SIGKILL as the checker does.
+        if survivors:
+            for pid in _running(survivors):
+                with suppress(OSError):
+                    os.kill(pid, signal.SIGKILL)
 
 
 def _running(pids):
