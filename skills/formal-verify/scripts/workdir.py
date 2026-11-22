@@ -129,6 +129,10 @@ def stop_process(process):
     try:
         with suppress(ProcessLookupError):
             process.send_signal(signal.SIGSTOP)
+        # send_signal reaps a checker that exited since poll and signals nothing; its pid is then free for reuse.
+        if process.returncode is not None:
+            frozen = []
+            return
         while new := [pid for pid in _descendants(process.pid) if pid not in frozen]:
             frozen += new
             for pid in new:
