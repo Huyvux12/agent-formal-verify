@@ -1,11 +1,11 @@
 // Copyright (c) 2026 Michael Denyer
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { afterEach, test } from "node:test";
-import { command, excludes, fixture, includes, logs, removeFixtures, run } from "./helpers.mjs";
+import { command, excludes, fixture, includes, logs, removeFixtures, run, scripts } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
@@ -89,6 +89,51 @@ test("Kani reports an unexecutable bundle as unavailable without a traceback", (
   assert.equal(result.status, 3);
   includes(result.stdout, `UNAVAILABLE Kani ${KANI} cannot run`);
   excludes(result.stderr, "Traceback");
+});
+
+test("a second Ctrl-C while Kani's readiness check is stopped still stops the processes the driver started", async () => {
+  const dir = kaniBundle();
+  const sleepPid = join(dir, "sleep.pid");
+  writeFileSync(join(bundle(dir), "bin/kani-driver"), `#!/bin/bash\nsleep 30 &\necho "$!" > "${sleepPid}"\nwait\n`);
+  const realPs = spawnSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).stdout.trim();
+  assert.ok(realPs, "ps must be on PATH");
+  // Hold each listing back so the second Ctrl-C arrives while the runner is stopping the driver.
+  command(dir, "ps", `sleep 0.5\nexec "${realPs}" "$@"`);
+  const outcome = await new Promise((resolve) => {
+    const child = spawn("python3", [join(scripts, "kani.py"), "ready"], {
+      env: { ...process.env, KANI_HOME: join(dir, "kani"), PATH: `${join(dir, "bin")}:${process.env.PATH}` },
+    });
+    const timer = setInterval(() => {
+      if (existsSync(sleepPid) && readFileSync(sleepPid, "utf8").endsWith("\n")) {
+        clearInterval(timer);
+        child.kill("SIGINT");
+        setTimeout(() => child.kill("SIGINT"), 500);
+      }
+    }, 20);
+    child.on("close", (exitCode, signalName) => {
+      clearInterval(timer);
+      resolve({ exitCode, signalName });
+    });
+  });
+  const pid = Number(readFileSync(sleepPid, "utf8"));
+  const running = () => {
+    const state = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+    return state !== "" && !state.startsWith("Z");
+  };
+  try {
+    const deadline = Date.now() + 1000;
+    while (running() && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    assert.ok(!running(), `the driver's sleep ${pid} is still running`);
+    assert.equal(outcome.signalName, "SIGINT", JSON.stringify(outcome));
+  } finally {
+    for (const signal of ["SIGCONT", "SIGKILL"]) {
+      try {
+        process.kill(pid, signal);
+      } catch {
+        // Already gone.
+      }
+    }
+  }
 });
 
 for (const outcome of ["success", "failure", "unwind", "unsat", "unreachable"]) {
