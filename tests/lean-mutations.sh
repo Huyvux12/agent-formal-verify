@@ -252,4 +252,34 @@ if grep -q '^UNCOVERED theorem Step.bounded.witness$' "$work/result"; then
   exit 1
 fi
 grep -q '^UNCOVERED theorem Step.witness$' "$work/result"
+
+# Lean 4.20 numbers hygienic names and abstracted proofs across the whole module,
+# so declarations added above frozen ones must leave their records alone, while an
+# edit to a frozen body still fails. Deriving and an enumeration add hygienic names.
+frozen_double() {
+  {
+    echo 'namespace Step'
+    cat
+    echo 'def double : Nat → Nat'
+    echo '  | 0 => 0'
+    echo "  | n + 1 => double n + $1"
+    echo 'structure Pair where'
+    echo '  a : Nat'
+    echo 'deriving BEq, Repr'
+    echo 'inductive Color | red | green'
+    echo 'end Step'
+  } > "$work/Model/Step.lean"
+}
+frozen_double 2 < /dev/null
+bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
+above='def pick (n : Nat) : Nat := match n with | 0 => 1 | _ => 2
+theorem pick_pos (n : Nat) : 0 < pick n := by unfold pick; split <;> decide'
+frozen_double 2 <<< "$above"
+bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check" || { cat "$work/check"; echo 'FAIL declarations added above a frozen definition changed its record'; exit 1; }
+frozen_double 3 <<< "$above"
+if bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"; then
+  echo 'FAIL an edit to a frozen definition body passed'
+  exit 1
+fi
+grep -q '^  definition value changed$' "$work/check"
 echo 'ok: qualified coverage and proof-sensitivity reporting checked with real Lean'
