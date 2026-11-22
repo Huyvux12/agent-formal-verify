@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-import workdir
+import processes
 from lean_records import read_record
 
 HERE = Path(__file__).resolve().parent
@@ -31,7 +31,7 @@ def _checked_record(model, project):
         record = read_record(path)
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise AnalysisError(f"FAIL invalid statements record {path}: {error}") from error
-    done = workdir.run_captured(["bash", str(HERE / "lean-check.sh"), str(project), str(model)])
+    done = processes.run_captured(["bash", str(HERE / "lean-check.sh"), str(project), str(model)])
     if done.returncode:
         raise AnalysisError((done.stdout + done.stderr).strip(), done.returncode)
     return record
@@ -39,8 +39,8 @@ def _checked_record(model, project):
 
 def _analyze(model, project, toolchain):
     """Get Lean's declaration identities and error positions, never infer them from source text."""
-    done = workdir.run_captured(["elan", "run", toolchain, "lake", "--dir", str(project), "env", "lean", "--run",
-                                 str(HERE / "lean-mutations.lean"), str(model)])
+    done = processes.run_captured(["elan", "run", toolchain, "lake", "--dir", str(project), "env", "lean", "--run",
+                                   str(HERE / "lean-mutations.lean"), str(model)])
     output = done.stdout + done.stderr
     records = [line.removeprefix("AFV_LEAN ") for line in done.stdout.splitlines() if line.startswith("AFV_LEAN ")]
     if done.returncode != 0 or len(records) != 1:

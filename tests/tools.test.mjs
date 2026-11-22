@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { command, excludes, fixture, includes, leanPin, removeFixtures, root, run, scripts } from "./helpers.mjs";
+import { command, excludes, fakeTlc, fixture, includes, leanPin, removeFixtures, root, run, scripts } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
@@ -67,7 +67,7 @@ test("the mutation runner reports a Python older than 3.9 as unavailable when ru
 
 test("helper usage errors exit 2", () => {
   const dir = fixture();
-  for (const [script, args] of [["lean-check.sh", []], ["tlc-matrix.sh", []], ["mutate.py", []], ["setup.sh", ["lean"]], ["workdir.py", []]]) {
+  for (const [script, args] of [["lean-check.sh", []], ["tlc-matrix.sh", []], ["mutate.py", []], ["setup.sh", ["lean"]], ["processes.py", []], ["storage.py", []]]) {
     assert.equal(run(dir, script, args).status, 2, script);
   }
 });
@@ -81,7 +81,7 @@ test("setup.sh storage warns when free space is below FORMAL_MIN_FREE_GIB", () =
   includes(result.stdout, "WARN low free space (< 999999 GiB):");
 });
 
-test("workdir.parse_df_mounts selects only writable larger local volume directories", () => {
+test("storage.parse_df_mounts selects only writable larger local volume directories", () => {
   const dir = fixture();
   mkdirSync(join(dir, "tmp"));
   const dfSample = [
@@ -97,14 +97,14 @@ test("workdir.parse_df_mounts selects only writable larger local volume director
   const script = [
     "import json, stat, sys, types",
     `sys.path.insert(0, ${JSON.stringify(scripts)})`,
-    "import workdir",
+    "import storage",
     "devs = {'/': 1, '/tmp': 2, '/System/Volumes/Data': 2, '/etc/hosts': 3, '/Volumes/BackupRO': 4, '/Volumes/RecoveryX': 5, '/runner': 6, '/Volumes/ExternalLarge': 7}",
-    "frees = {'/': 20*workdir.GIB, '/tmp': 20*workdir.GIB, '/etc/hosts': 500*workdir.GIB, '/Volumes/BackupRO': 500*workdir.GIB, '/Volumes/RecoveryX': 100*workdir.GIB, '/runner': 150*workdir.GIB, '/Volumes/ExternalLarge': 300*workdir.GIB}",
+    "frees = {'/': 20*storage.GIB, '/tmp': 20*storage.GIB, '/etc/hosts': 500*storage.GIB, '/Volumes/BackupRO': 500*storage.GIB, '/Volumes/RecoveryX': 100*storage.GIB, '/runner': 150*storage.GIB, '/Volumes/ExternalLarge': 300*storage.GIB}",
     "stat_fn = lambda p: types.SimpleNamespace(st_dev=devs[str(p)], st_mode=stat.S_IFREG if str(p) == '/etc/hosts' else stat.S_IFDIR)",
     "access_fn = lambda p, _m: str(p) != '/Volumes/BackupRO'",
     "usage_fn = lambda p: types.SimpleNamespace(free=frees[str(p)])",
-    `out = workdir.parse_df_mounts(${JSON.stringify(dfSample)}, '/tmp', '/', stat_fn=stat_fn, access_fn=access_fn, usage_fn=usage_fn)`,
-    "report = workdir.format_report(workdir.StorageReport('/Volumes/ExternalLarge/.tmp', 300*workdir.GIB, 20*workdir.GIB, False, 64, (('/Volumes/Big Disk', 400*workdir.GIB),)))",
+    `out = storage.parse_df_mounts(${JSON.stringify(dfSample)}, '/tmp', '/', stat_fn=stat_fn, access_fn=access_fn, usage_fn=usage_fn)`,
+    "report = storage.format_report(storage.StorageReport('/Volumes/ExternalLarge/.tmp', 300*storage.GIB, 20*storage.GIB, False, 64, (('/Volumes/Big Disk', 400*storage.GIB),)))",
     "print(json.dumps({'mounts': out, 'report': report}))",
   ].join("; ");
   const result = spawnSync("python3", ["-B", "-c", script], { cwd: root, encoding: "utf8" });
@@ -120,4 +120,54 @@ test("workdir.parse_df_mounts selects only writable larger local volume director
     `SYSTEM_DISK / (20.0 GiB free)`,
     `EXTERNAL_VOLUME /Volumes/Big Disk (400.0 GiB free; suggested TMPDIR='/Volumes/Big Disk/.tmp/formal-verify')`,
   ]);
+});
+
+test("an explicitly configured TMPDIR that cannot be created fails cleanly without falling back", () => {
+  const dir = fixture();
+  const blocker = join(dir, "not-a-dir");
+  writeFileSync(blocker, "file");
+  const badTmp = join(blocker, "nested");
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\nStep == x + 1\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\ncheck INVARIANTS Small\nrun n=1 | N=1\n");
+  writeFileSync(join(dir, "One.mutations"), "mutation m\ndetects Small\n- x + 1\n+ x\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  for (const [script, args] of [
+    ["setup.sh", ["storage"]],
+    ["tlc-matrix.sh", [join(dir, "One.matrix")]],
+    ["mutate.py", [join(dir, "One.mutations")]],
+  ]) {
+    const result = run(dir, script, args, {
+      JAVA: fakeTlc(dir, 'echo "Model checking completed. No error has been found."'),
+      TLC_JAR: join(dir, "tools.jar"),
+      TMPDIR: badTmp,
+    });
+    assert.equal(result.status, 1, script + ": " + result.stdout + result.stderr);
+    includes(result.stdout, "TMPDIR");
+    excludes(result.stderr, "Traceback");
+  }
+});
+
+test("tlc-matrix warns on stderr once per run when FORMAL_MIN_FREE_GIB exceeds available temp space", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\nStep == x + 1\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\ncheck INVARIANTS Small\nrun n=1 | N=1\n");
+  writeFileSync(join(dir, "One.mutations"), "mutation m\ndetects Small\n- x + 1\n+ x \\* BUG\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const java = fakeTlc(dir, [
+    'for last; do :; done',
+    'if grep -q BUG "$last"; then echo "Error: Invariant Small is violated."; exit 12; fi',
+    'echo "Model checking completed. No error has been found."; echo "4 distinct states found"',
+  ].join("\n"));
+  const matrix = run(dir, "tlc-matrix.sh", [join(dir, "One.matrix")], {
+    JAVA: java, TLC_JAR: join(dir, "tools.jar"), FORMAL_MIN_FREE_GIB: "999999",
+  });
+  assert.equal(matrix.status, 0, matrix.stdout + matrix.stderr);
+  includes(matrix.stdout, "PASS One n=1 4 distinct states found");
+  includes(matrix.stderr, "WARN low free space on temp dir");
+
+  const mutated = run(dir, "mutate.py", [join(dir, "One.mutations")], {
+    JAVA: java, TLC_JAR: join(dir, "tools.jar"), FORMAL_MIN_FREE_GIB: "999999",
+  });
+  assert.equal(mutated.status, 0, mutated.stdout + mutated.stderr);
+  assert.equal(mutated.stderr.match(/WARN low free space on temp dir/g)?.length, 1, mutated.stderr);
 });

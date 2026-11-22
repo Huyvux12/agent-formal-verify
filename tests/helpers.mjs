@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,4 +50,42 @@ export function run(dir, script, args = [], extra = {}) {
       ...extra,
     },
   });
+}
+
+export function isStopped(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    return error.code === "ESRCH";
+  }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const afterName = stat.slice(stat.lastIndexOf(") ") + 2);
+    if (afterName.startsWith("Z")) return true;
+  } catch {
+    // Non-Linux hosts have no /proc/<pid>/stat; fall back to ps below.
+  }
+  const ps = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" });
+  return !ps.error && ps.status === 0 && (ps.stdout.trim() === "" || ps.stdout.trim().startsWith("Z"));
+}
+
+export function processesWhere(match) {
+  const listing = spawnSync("ps", ["-A", "-ww", "-o", "pid=,command="], { encoding: "utf8" }).stdout;
+  return listing.split("\n").map((line) => line.trim().split(/\s+/)).filter(([pid, ...command]) => pid && match(command.join(" "))).map(([pid]) => Number(pid));
+}
+
+export function waitFor(condition) {
+  const deadline = Date.now() + 1000;
+  while (!condition() && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  }
+  return condition();
+}
+
+export function assertProcessStopped(pid) {
+  const deadline = Date.now() + 1000;
+  while (!isStopped(pid) && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  }
+  assert.ok(isStopped(pid), `expected child process ${pid} to stop`);
 }

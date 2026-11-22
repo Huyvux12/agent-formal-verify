@@ -19,7 +19,7 @@ from pathlib import Path
 
 scripts, scenario, scratch = sys.argv[1], sys.argv[2], Path(sys.argv[3])
 sys.path.insert(0, scripts)
-import workdir
+import processes
 
 child_pid = scratch / "child.pid"
 checkers = {
@@ -46,15 +46,15 @@ def body(process):
     started.append(process.pid)
     while not (child_pid.exists() and child_pid.read_text().endswith("\n")):
         time.sleep(0.02)
-    workdir.stop_process(process)
+    processes.stop_process(process)
     return f"returned {process.returncode}"
 
 
-with workdir.signal_cleanup():
+with processes.signal_cleanup():
     try:
-        outcome = workdir.guarded(["bash", "-c", checkers[scenario], "checker", str(child_pid)], body,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except workdir.SignalTerminated as error:
+        outcome = processes.guarded(["bash", "-c", checkers[scenario], "checker", str(child_pid)], body,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except processes.SignalTerminated as error:
         outcome = f"SignalTerminated({error.signum})"
 print(outcome)
 print(child_pid.read_text().strip())
