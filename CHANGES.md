@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+When the Python runners stop a checker, a process the checker started that is still running two seconds after `SIGTERM`, such as one that ignores `SIGTERM`, now gets `SIGKILL`, as the checker already did. When `ps` fails, so the runner cannot find the processes the checker started, it prints a warning to `stderr` that they may still be running. Before this change, both kinds of process outlived the runner without a word.
+
 The helpers now state and check that they need Python 3.9 or later as `python3`. `setup.sh rust`, `setup.sh storage`, `setup.sh tla`, `tlc-matrix.sh`, `kani-check.sh`, `lean-check.sh` and `mutate.py` print `UNAVAILABLE`, name the version found and exit 3 on an older Python, which before this change failed partway with a `TypeError` or an `AttributeError`. On Python 3.9, Rust mutation runs no longer stop when a crate's subdirectory holds a dangling symbolic link, such as an editor lock file in `src/`; before Python 3.10, `shutil.copytree` skipped such a link only in the top directory. The copy now also keeps a working relative link, such as `src/alias.rs -> lib.rs`, which it dropped before unless the link also resolved from the directory the runner was started in.
 
 The Rust checker now handles `SIGINT`, `SIGTERM` and `SIGHUP` while Kani checks the bundle's version as it does during a check: it stops the driver and the processes the driver started, ignores a second signal while it does, and ends by the signal. Before this change, a `SIGTERM` or `SIGHUP` there left the driver's processes running, a Ctrl-C printed a traceback, and a second Ctrl-C ended the stop early.

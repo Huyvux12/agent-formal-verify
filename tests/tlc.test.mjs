@@ -522,6 +522,7 @@ test("SIGTERM stops TLC and the processes it started, cleans temporary directori
     'echo ready > "$TASK_READY_FILE"',
     'wait',
   ].join("\n"));
+  let signalled;
   const code = await new Promise((resolve) => {
     const child = spawn("python3", [join(scripts, "tlc.py"), join(dir, "One.matrix")], {
       env: {
@@ -538,18 +539,22 @@ test("SIGTERM stops TLC and the processes it started, cleans temporary directori
     const timer = setInterval(() => {
       if (existsSync(readyFile)) {
         clearInterval(timer);
+        signalled = Date.now();
         child.kill("SIGTERM");
       }
     }, 20);
     child.on("close", (exitCode, signalName) => {
       clearInterval(timer);
-      resolve({ exitCode, signalName });
+      resolve({ exitCode, signalName, stopped: Date.now() - signalled });
     });
   });
   assertProcessStopped(Number(readFileSync(pidFile, "utf8").trim()));
   assertProcessStopped(Number(readFileSync(grandchildPidFile, "utf8").trim()));
   assert.deepEqual(readdirSync(customTmp), []);
   assert.equal(code.signalName, "SIGTERM", JSON.stringify(code));
+  // TLC and its sleep die on SIGTERM, so the runner must not wait out the two seconds it allows,
+  // even where nothing reaps the dead processes, as in a container whose first process never does.
+  assert.ok(code.stopped < 1500, JSON.stringify(code));
 });
 
 test("SIGTERM also stops processes started while the runner is stopping TLC", async () => {
@@ -693,6 +698,61 @@ test("stopping a checker that exits just after the runner checks it sends no sig
   const result = spawnSync("python3", ["-B", "-c", script], { cwd: root, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), "0 []");
+});
+
+function stopChecker(dir, checker) {
+  const script = [
+    "import os, subprocess, sys, time",
+    `sys.path.insert(0, ${JSON.stringify(scripts)})`,
+    "import workdir",
+    // A process the checker started keeps any pipe it inherits open, and spawnSync waits for the pipes to close.
+    `checker = subprocess.Popen(['bash', '-c', ${JSON.stringify(checker)}, 'checker', sys.argv[1]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)`,
+    "while not (os.path.exists(sys.argv[1]) and open(sys.argv[1]).read().endswith('\\n')):",
+    "    time.sleep(0.02)",
+    "workdir.stop_process(checker)",
+    "print(checker.returncode)",
+  ].join("\n");
+  const pidFile = join(dir, "sleep.pid");
+  const result = spawnSync("python3", ["-B", "-c", script, pidFile], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 10000,
+    env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}` },
+  });
+  return { result, pid: Number(readFileSync(pidFile, "utf8")) };
+}
+
+test("stopping a checker also kills a process it started that ignores SIGTERM", () => {
+  const dir = fixture();
+  const { result, pid } = stopChecker(dir, 'trap "" TERM; sleep 30 & echo "$!" > "$1"; wait');
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "-9");
+    assertProcessStopped(pid);
+  } finally {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
+});
+
+test("stopping a checker warns when ps cannot list the processes it started", () => {
+  const dir = fixture();
+  command(dir, "ps", "exit 1");
+  const { result, pid } = stopChecker(dir, 'sleep 30 & echo "$!" > "$1"; wait');
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "-15");
+    includes(result.stderr, "WARN ps cannot list the processes that the checker started; they may still be running");
+  } finally {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
 });
 
 test("Ctrl-C stops a shell loop that runs the matrix runner", async () => {
