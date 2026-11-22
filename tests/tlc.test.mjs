@@ -750,6 +750,39 @@ test("stopping a checker also kills a process it started that ignores SIGTERM", 
   }
 });
 
+test("an interrupt during the stop's wait still kills a process the checker started that ignores SIGTERM", () => {
+  const dir = fixture();
+  const { result, pid, checker } = stopChecker(dir, '(trap "" TERM; exec sleep 30) & echo "$!" > "$1"; wait', [
+    "import signal",
+    "signal.signal(signal.SIGINT, signal.default_int_handler)",
+    // The interrupt lands once, in the wait that gives the checker and its descendants time to exit, after the checker exited.
+    "real_wait = subprocess.Popen.wait",
+    "interrupted = []",
+    "def wait(self, timeout=None):",
+    "    if timeout == 2 and not interrupted:",
+    "        interrupted.append(real_wait(self))",
+    "        raise KeyboardInterrupt",
+    "    return real_wait(self, timeout)",
+    "subprocess.Popen.wait = wait",
+    // As the TLC runner does, a stop that a signal interrupts is followed by a second stop.
+    "real_stop = workdir.stop_process",
+    "def stop(process):",
+    "    try:",
+    "        real_stop(process)",
+    "    except KeyboardInterrupt:",
+    "        print('interrupted')",
+    "        real_stop(process)",
+    "workdir.stop_process = stop",
+  ]);
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stdout.trim().split("\n"), ["interrupted", "-15"]);
+    assertProcessStopped(pid);
+  } finally {
+    killAll(pid, checker);
+  }
+});
+
 test("stopping a checker warns when ps cannot list the processes it started", () => {
   const dir = fixture();
   command(dir, "ps", "exit 1");

@@ -141,53 +141,55 @@ def stop_process(process):
         return
     # Freeze the tree before signalling it: a stopped process cannot start another or leave its children orphaned.
     frozen = [process.pid]
+    survivors = []
+    # A signal can end this stop at any point. The SIGKILL pass still runs then, since a second stop finds the
+    # checker reaped and returns before it reaches the descendants, which are no longer the checker's.
     try:
-        with suppress(ProcessLookupError):
-            process.send_signal(signal.SIGSTOP)
-        if process.returncode is not None:
-            return
-        for _ in range(MAX_LISTINGS):
-            listed = _descendants(process.pid)
-            if listed is None:
-                sys.stderr.write("WARN ps cannot list the processes that the checker started; they may still be running\n")
-                break
-            new = [pid for pid in listed if pid not in frozen]
-            if not new:
-                break
-            frozen += new
-            for pid in new:
-                with suppress(OSError):
-                    os.kill(pid, signal.SIGSTOP)
-        else:
-            sys.stderr.write(f"WARN the checker kept starting processes through {MAX_LISTINGS} ps listings; "
-                             "processes it started later may still be running\n")
-    finally:
-        # send_signal reaps a checker that exited since poll and signals nothing; its pid is then free for reuse.
-        if process.returncode is not None:
-            frozen.remove(process.pid)
-        for signum in (signal.SIGTERM, signal.SIGCONT):
-            for pid in frozen:
-                with suppress(OSError):
-                    os.kill(pid, signum)
-    deadline = time.monotonic() + 2
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
         try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-        process.wait()
-    # A descendant that ignores SIGTERM, as one that inherits an ignored SIGTERM does, gets SIGKILL as the checker does.
-    survivors = [pid for pid in frozen if pid != process.pid]
-    while survivors:
-        survivors = _running(survivors)
-        if not survivors or time.monotonic() >= deadline:
-            break
-        time.sleep(0.05)
-    for pid in survivors:
-        with suppress(OSError):
-            os.kill(pid, signal.SIGKILL)
+            with suppress(ProcessLookupError):
+                process.send_signal(signal.SIGSTOP)
+            if process.returncode is not None:
+                return
+            for _ in range(MAX_LISTINGS):
+                listed = _descendants(process.pid)
+                if listed is None:
+                    sys.stderr.write("WARN ps cannot list the processes that the checker started; they may still be running\n")
+                    break
+                new = [pid for pid in listed if pid not in frozen]
+                if not new:
+                    break
+                frozen += new
+                for pid in new:
+                    with suppress(OSError):
+                        os.kill(pid, signal.SIGSTOP)
+            else:
+                sys.stderr.write(f"WARN the checker kept starting processes through {MAX_LISTINGS} ps listings; "
+                                 "processes it started later may still be running\n")
+        finally:
+            # send_signal reaps a checker that exited since poll and signals nothing; its pid is then free for reuse.
+            if process.returncode is not None:
+                frozen.remove(process.pid)
+            survivors = [pid for pid in frozen if pid != process.pid]
+            for signum in (signal.SIGTERM, signal.SIGCONT):
+                for pid in frozen:
+                    with suppress(OSError):
+                        os.kill(pid, signum)
+        deadline = time.monotonic() + 2
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=2)
+        while survivors and time.monotonic() < deadline:
+            survivors = _running(survivors)
+            if survivors:
+                time.sleep(0.05)
+    finally:
+        if process.returncode is None:
+            with suppress(ProcessLookupError):
+                process.kill()
+            process.wait()
+        # A descendant that ignores SIGTERM, as one that inherits an ignored SIGTERM does, gets SIGKILL as the checker does.
+        for pid in _running(survivors) if survivors else ():
+            with suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
 
 
 def _running(pids):
