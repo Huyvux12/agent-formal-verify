@@ -10,8 +10,10 @@ TLC_CACHE=${TLC_CACHE:-$HOME/.cache/tla}
 TLC_JAR_SUPPLIED=${TLC_JAR:+yes}
 TLC_JAR=${TLC_JAR:-$TLC_CACHE/tla2tools-$TLA_VERSION.jar}
 
+python_tools=${BASH_SOURCE[0]%/*}/python-tools.sh
+[[ ${BASH_SOURCE[0]} == */* ]] || python_tools=python-tools.sh
 # shellcheck source=skills/formal-verify/scripts/python-tools.sh
-source "${BASH_SOURCE[0]%/*}/python-tools.sh"
+source "$python_tools"
 
 require_tlc_runtime() {
   if ! "$JAVA" -version > /dev/null 2>&1; then

@@ -666,11 +666,13 @@ test("a second interrupt while the runner stops TLC does not leave TLC suspended
 
 test("stopping a checker that exits just after the runner checks it sends no signal to its freed pid", () => {
   const script = [
-    "import os, signal, subprocess, sys",
+    "import os, signal, subprocess, sys, time",
     `sys.path.insert(0, ${JSON.stringify(scripts)})`,
     "import workdir",
     "checker = subprocess.Popen(['true'])",
-    "os.waitid(os.P_PID, checker.pid, os.WEXITED | os.WNOWAIT)",
+    "# Wait for the exit without reaping the checker; macOS Python has no os.waitid.",
+    "while not subprocess.run(['ps', '-o', 'stat=', '-p', str(checker.pid)], capture_output=True, text=True).stdout.strip().startswith('Z'):",
+    "    time.sleep(0.01)",
     "# The first poll misses the exit, as it does when the checker exits right after it.",
     "polls = []",
     "real_poll = checker.poll",

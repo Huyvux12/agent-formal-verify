@@ -52,6 +52,19 @@ test("helpers report a python3 older than 3.9 as unavailable before running it",
   }
 });
 
+test("the mutation runner reports a Python older than 3.9 as unavailable when run directly", () => {
+  const script = [
+    "import runpy, sys",
+    `sys.path.insert(0, ${JSON.stringify(scripts)})`,
+    "sys.version_info = (3, 8, 20, 'final', 0)",
+    `sys.argv = ['mutate.py', 'Name.mutations']`,
+    `runpy.run_path(${JSON.stringify(join(scripts, "mutate.py"))}, run_name='__main__')`,
+  ].join("\n");
+  const result = spawnSync("python3", ["-B", "-c", script], { cwd: root, encoding: "utf8" });
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.equal(result.stdout, "UNAVAILABLE python3 is Python 3.8.20; install Python 3.9 or later\n");
+});
+
 test("helper usage errors exit 2", () => {
   const dir = fixture();
   for (const [script, args] of [["lean-check.sh", []], ["tlc-matrix.sh", []], ["mutate.py", []], ["setup.sh", ["lean"]], ["workdir.py", []]]) {

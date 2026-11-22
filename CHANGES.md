@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-The helpers now state and check that they need Python 3.9 or later as `python3`. `setup.sh rust`, `setup.sh storage`, `setup.sh tla`, `tlc-matrix.sh`, `kani-check.sh` and `lean-check.sh` print `UNAVAILABLE`, name the version found and exit 3 on an older Python, which before this change failed partway with a `TypeError` or an `AttributeError`. On Python 3.9, Rust mutation runs no longer stop when a crate's subdirectory holds a dangling symbolic link, such as an editor lock file in `src/`; before Python 3.10, `shutil.copytree` skipped such a link only in the top directory.
+The helpers now state and check that they need Python 3.9 or later as `python3`. `setup.sh rust`, `setup.sh storage`, `setup.sh tla`, `tlc-matrix.sh`, `kani-check.sh`, `lean-check.sh` and `mutate.py` print `UNAVAILABLE`, name the version found and exit 3 on an older Python, which before this change failed partway with a `TypeError` or an `AttributeError`. On Python 3.9, Rust mutation runs no longer stop when a crate's subdirectory holds a dangling symbolic link, such as an editor lock file in `src/`; before Python 3.10, `shutil.copytree` skipped such a link only in the top directory. The copy now also keeps a working relative link, such as `src/alias.rs -> lib.rs`, which it dropped before unless the link also resolved from the directory the runner was started in.
 
 The Python runners no longer signal the process ID of a checker that exits just as they stop it. Before this change, such a checker was reaped without a signal, and the runner then sent `SIGTERM` and `SIGCONT` to its process ID, which another process could have taken.
 

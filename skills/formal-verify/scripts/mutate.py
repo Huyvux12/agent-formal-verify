@@ -254,6 +254,10 @@ LANGUAGES = {
 
 
 def main():
+    # Users run this file directly, so no shell helper has checked the version for the Rust runner.
+    if sys.version_info < (3, 9):  # noqa: UP036 -- ruff assumes the floor this line enforces
+        print(f"UNAVAILABLE python3 is Python {'.'.join(map(str, sys.version_info[:3]))}; install Python 3.9 or later")
+        sys.exit(3)
     if len(sys.argv) != 2:
         stop("usage: mutate.py <Name.mutations>", 2)
     path = Path(sys.argv[1]).resolve()
