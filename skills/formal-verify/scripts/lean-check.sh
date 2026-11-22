@@ -148,6 +148,15 @@ private def levelFree : Lean.Level → Lean.Level
   | .param n => .param n.eraseMacroScopes
   | l => l
 
+-- Lean shares one match helper among the matches of the same shape in a module, so a declaration added
+-- above can change which helper a match uses. A record names every helper alike and carries its content.
+private def matcherName : Lean.Name → Bool
+  | .str _ s => s.startsWith "match_" && s.length > 6 && (s.drop 6).all Char.isDigit
+  | _ => false
+
+private def shown (n : Lean.Name) : Lean.Name :=
+  if matcherName n then `_match else erased n
+
 private def abstractedProof : Lean.Name → Bool
   | .str _ s => s.startsWith "_proof_" && s.length > 7 && (s.drop 7).all Char.isDigit
   | _ => false
@@ -160,14 +169,24 @@ private partial def positionFree : Lean.Expr → Lean.Expr
   | .mdata m e => .mdata m (positionFree e)
   | .proj s i e => .proj s i (positionFree e)
   | .sort l => .sort (levelFree l)
-  | .const n ls => if abstractedProof n then .const `_proof [] else .const (erased n) (ls.map levelFree)
+  | .const n ls => if abstractedProof n then .const `_proof [] else .const (shown n) (ls.map levelFree)
   | e => e
 
--- A hygienic constant has no record of its own, so a record that refers to one carries its type and value,
--- and those of the hygienic constants they refer to in turn, each once.
+-- A shared match helper takes its binder names from whichever match Lean made it for, so they are not recorded.
+private partial def nameless : Lean.Expr → Lean.Expr
+  | .lam _ t b i => .lam .anonymous (nameless t) (nameless b) i
+  | .forallE _ t b i => .forallE .anonymous (nameless t) (nameless b) i
+  | .letE _ t v b d => .letE .anonymous (nameless t) (nameless v) (nameless b) d
+  | .app f a => .app (nameless f) (nameless a)
+  | .mdata m e => .mdata m (nameless e)
+  | .proj s i e => .proj s i (nameless e)
+  | e => e
+
+-- A hygienic constant or a match helper has no record of its own, so a record that refers to one carries its
+-- type and value, and those of the hygienic constants and helpers they refer to in turn, each once.
 open Lean in
 private def followed (env : Environment) (roots : List Expr) : String := Id.run do
-  let mut queue : Array Name := roots.foldl (fun acc e => acc ++ e.getUsedConstants.filter fun c => erased c != c) #[]
+  let mut queue : Array Name := roots.foldl (fun acc e => acc ++ e.getUsedConstants.filter fun c => shown c != c) #[]
   let mut seen : Array Name := #[]
   let mut out := ""
   let mut i := 0
@@ -178,9 +197,10 @@ private def followed (env : Environment) (roots : List Expr) : String := Id.run 
     seen := seen.push n
     let some info := env.find? n | continue
     let parts := info.type :: (body? info).toList
-    out := out ++ s!"\n{erased n}: {reprStr (parts.map positionFree)}"
+    let shape := if matcherName n then nameless else id
+    out := out ++ s!"\n{shown n}: {reprStr (parts.map (positionFree ∘ shape))}"
     for e in parts do
-      queue := queue ++ e.getUsedConstants.filter fun c => erased c != c && !seen.contains c
+      queue := queue ++ e.getUsedConstants.filter fun c => shown c != c && !seen.contains c
   return out
 
 private def oneLine (s : String) : String :=
@@ -235,6 +255,7 @@ open Lean Elab Command in
     -- Its check misses the equations of a private definition's matcher.
     if let .str parent _ := name then
       if Meta.isMatcherCore env parent && (← findDeclarationRanges? name).isNone then continue
+    if Meta.isMatcherCore env name then continue
     let info := (env.find? name).get!
     let kind := match info with
       | .thmInfo _ => "theorem"
