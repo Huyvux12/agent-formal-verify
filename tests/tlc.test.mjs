@@ -40,6 +40,45 @@ test("TLC verification reports a supplied JAR that does not exist", () => {
   includes(result.stdout, "does not exist");
 });
 
+test("TLC setup reports a Java that does not run, and a JAR from which TLC does not start", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const noTlc = command(dir, "no-tlc", '[ "$1" = -version ] && exit 0\necho "Error: Could not find or load main class tlc2.TLC"; exit 1');
+  for (const [java, reason] of [
+    [join(dir, "absent-java"), "absent-java has no runtime; install a JDK"],
+    [command(dir, "no-runtime", "exit 1"), "no-runtime has no runtime; install a JDK"],
+    [noTlc, `tlc2.TLC cannot run from ${join(dir, "tools.jar")}`],
+  ]) {
+    const result = run(dir, "setup.sh", ["tla"], { JAVA: java, TLC_JAR: join(dir, "tools.jar") });
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    assert.ok(result.stdout.startsWith("UNAVAILABLE "), result.stdout);
+    includes(result.stdout, reason);
+  }
+  const result = run(dir, "setup.sh", ["tla"], { JAVA: noTlc, TLC_JAR: join(dir, "tools.jar") });
+  includes(result.stdout, "\nError: Could not find or load main class tlc2.TLC\n");
+  const timeout = run(dir, "setup.sh", ["tla"], { TLC_JAR: join(dir, "tools.jar"), TLC_TIMEOUT: "bogus" });
+  assert.equal(timeout.status, 3, timeout.stdout + timeout.stderr);
+  assert.ok(timeout.stdout.startsWith("UNAVAILABLE TLC_TIMEOUT="), timeout.stdout);
+});
+
+test("TLC setup accepts a JAR whose TLC prints its help and exits non-zero", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const java = command(dir, "java", '[ "$1" = -version ] && exit 0\necho "TLC - provides model checking and simulation"; exit 1');
+  const result = run(dir, "setup.sh", ["tla"], { JAVA: java, TLC_JAR: join(dir, "tools.jar") });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  includes(result.stdout, "READY TLC " + join(dir, "tools.jar"));
+});
+
+test("TLC setup accepts a Java whose output is not UTF-8", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  const java = command(dir, "latin1-java", "printf 'Picked up _JAVA_OPTIONS: -Dx=\\351\\n' >&2\n[ \"$1\" = -version ] && exit 0\necho \"TLC - provides model checking and simulation\"");
+  const result = run(dir, "setup.sh", ["tla"], { JAVA: java, TLC_JAR: join(dir, "tools.jar") });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  includes(result.stdout, "READY TLC " + join(dir, "tools.jar"));
+});
+
 test("TLC setup accepts an explicitly supplied local JAR", () => {
   const dir = fixture();
   const jar = join(dir, "local tools.jar");

@@ -85,7 +85,8 @@ test("SIGTERM that arrives while the runner starts TLC still stops TLC and the p
     "real_init = subprocess.Popen.__init__",
     "def init(self, args, *rest, **kwargs):",
     "    real_init(self, args, *rest, **kwargs)",
-    "    if 'tlc2.TLC' in args:",
+    // The readiness check runs tlc2.TLC -help first; the hook waits for the model run.
+    "    if 'tlc2.TLC' in args and '-help' not in args:",
     // Bounded, since the handler holds back a signal while Popen runs, the timeout's SIGTERM included.
     "        deadline = time.monotonic() + 5",
     "        while not os.path.exists(os.environ.get('TASK_READY_FILE')):",
