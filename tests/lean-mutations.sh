@@ -397,4 +397,22 @@ bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
 rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
 cat "$work/result"
 grep -q '^theorem Step.t: the mutation changes its statement' "$work/result"
-echo 'ok: qualified coverage and proof-sensitivity reporting checked with real Lean'
+
+# It also keeps which of two macro-made `a`s sits at each place in a statement. The mutation swaps one
+# for the other, which makes the statement false, so its failing proof gets no verdict.
+cat > "$work/Model/Step.lean" <<'EOF'
+namespace Step
+macro "inner " n:ident x:ident : command => `(def a : Nat := 2
+  theorem $n : $x + a + $x = 4 := rfl)
+macro "outer " n:ident : command => `(def a : Nat := 1
+  inner $n a)
+outer t
+end Step
+EOF
+# shellcheck disable=SC2016 # Lean text, not shell expansions.
+printf 'mutation swap the last a\n-   theorem $n : $x + a + $x = 4 := rfl)\n+   theorem $n : $x + a + a = 4 := rfl)\n' > "$work/Model/Step.mutations"
+bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
+rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
+cat "$work/result"
+grep -q '^theorem Step.t: the mutation changes its statement' "$work/result"
+echo 'ok:qualified coverage and proof-sensitivity reporting checked with real Lean'
