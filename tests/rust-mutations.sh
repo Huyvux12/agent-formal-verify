@@ -170,6 +170,7 @@ mod proofs {
 }
 EOF
 bash "$scripts/kani-check.sh" "$p" proofs::stubbed
+# A harness whose every check is unreachable must not pass.
 rejected bash "$scripts/kani-check.sh" "$p" proofs::vacuous > "$work/vacuous"
 grep -q 'no satisfied kani::cover! witness' "$work/vacuous"
 # Both harnesses use the assertion; target only the broken harness's unique block.
@@ -183,6 +184,7 @@ detects proofs::already_broken
 +         let n: u8 = kani::any();
 +         assert!(n == 8);
 EOF
+# A mutation of a harness that already fails must not count as detected.
 rejected python3 "$scripts/mutate.py" "$p/src/lib.mutations" > "$work/baseline"
 grep -q "unmutated Rust harness 'proofs::already_broken' did not pass" "$work/baseline"
 if grep -q '^DETECTED ' "$work/baseline"; then
