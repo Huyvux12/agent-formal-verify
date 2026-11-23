@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The skill and the Rust brief now ask for one Kani harness layout: a `#[cfg(kani)] mod proofs` at the end of the production file that defines the function, with the `.mutations` file beside it, as the Kani template has it. Before this change, the skill and the brief's file list asked for the harness in a separate crate, while the template and the brief's mutation section put it in the production file. The mutation runner changes only the file beside the mutations file, so a harness in a separate crate leaves no way to write a mutation of the production code. The skill now gives one agent every Rust target in one production file, so parallel agents still share no file.
+
 The TLC matrix runner now handles `SIGINT`, `SIGTERM` and `SIGHUP` while it checks that TLC is ready, as it does during a run, and ends by the signal. Before this change, a Ctrl-C during that check printed a Python traceback.
 
 
