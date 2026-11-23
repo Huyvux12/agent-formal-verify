@@ -87,29 +87,6 @@ private partial def positionFree (env : Lean.Environment) : Lean.Expr → Lean.E
 private def auxBodies (env : Lean.Environment) (name : Lean.Name) : List (String × Lean.Expr) :=
   ["_f", "_unary", "_mutual", "_unsafe_rec"].filterMap fun aux => ((env.find? (.str name aux)).bind body?).map (aux, ·)
 
--- A hygienic constant or a match helper has no record of its own, so a record that refers to one carries its
--- type and value, and those of the hygienic constants and helpers they refer to in turn, each once.
--- Proofs stay out, as in every record.
-open Lean in
-private def followed (env : Environment) (roots : List Expr) : String := Id.run do
-  let unrecorded (e : Expr) := e.getUsedConstants.filter fun c => shown env c != c && !abstractedProof (erased c)
-  let mut queue := roots.foldl (fun acc e => acc ++ unrecorded e) #[]
-  let mut seen : Array Name := #[]
-  let mut out := ""
-  let mut i := 0
-  while i < queue.size do
-    let n := queue[i]!
-    i := i + 1
-    if seen.contains n then continue
-    seen := seen.push n
-    let some info := env.find? n | continue
-    let parts := info.type :: (body? info).toList ++ (auxBodies env n).map (·.2)
-    let shape := if (shown env n).getRoot == `_match then nameless else id
-    out := out ++ s!"\n{shown env n}: {reprStr (parts.map (positionFree env ∘ shape))}"
-    for e in parts do
-      queue := queue ++ unrecorded e
-  return out
-
 -- The match helpers an expression uses, one per use, in the order they occur.
 private partial def helperUses (env : Lean.Environment) : Lean.Expr → Array Lean.Name
   | .const n _ => if (shown env n).getRoot == `_match then #[n] else #[]
@@ -119,13 +96,49 @@ private partial def helperUses (env : Lean.Environment) : Lean.Expr → Array Le
   | .mdata _ e | .proj _ _ e => helperUses env e
   | _ => #[]
 
+-- What a record shows of a constant with no record of its own: its type, its value and its auxiliaries' bodies.
+private def parts (env : Lean.Environment) (n : Lean.Name) (info : Lean.ConstantInfo) : List Lean.Expr :=
+  info.type :: (body? info).toList ++ (auxBodies env n).map (·.2)
+
+private def content (env : Lean.Environment) (n : Lean.Name) : String :=
+  match env.find? n with
+  | some info =>
+    let shape := if (shown env n).getRoot == `_match then nameless else id
+    reprStr ((parts env n info).map (positionFree env ∘ shape))
+  | none => ""
+
+-- A record names every match helper alike and lists each helper's content once, so it adds the content of the
+-- helper at each use, in order: two expressions that use the same helpers at different places then differ,
+-- while a helper renamed differs not. Expressions that use no match helper get nothing added.
+private def atUses (env : Lean.Environment) (exprs : List Lean.Expr) : String :=
+  let uses := exprs.foldl (fun acc e => acc ++ helperUses env e) #[]
+  if uses.isEmpty then "" else reprStr (uses.toList.map (content env))
+
+-- A hygienic constant or a match helper has no record of its own, so a record that refers to one carries its
+-- type and value, and those of the hygienic constants and helpers they refer to in turn, each once.
+-- Proofs stay out, as in every record.
+open Lean in
+private def followed (env : Environment) (roots : List Expr) : String := Id.run do
+  let unrecorded (e : Expr) := e.getUsedConstants.filter fun c => shown env c != c && !abstractedProof (erased c)
+  let mut queue := roots.foldl (fun acc e => acc ++ unrecorded e) #[]
+  let mut seen : Array Name := #[]
+  let mut out := atUses env roots
+  let mut i := 0
+  while i < queue.size do
+    let n := queue[i]!
+    i := i + 1
+    if seen.contains n then continue
+    seen := seen.push n
+    let some info := env.find? n | continue
+    out := out ++ s!"\n{shown env n}: {content env n}" ++ atUses env (parts env n info)
+    for e in parts env n info do
+      queue := queue ++ unrecorded e
+  return out
+
 -- A statement's identity when the mutation runner compares an original theorem, example or #guard with its
 -- mutated copy: the frozen record's form of its type, without binder names, which change no statement.
--- That form names every match helper alike, so the content of the helper at each use is added: two
--- statements that use the same helpers at different places then differ, while a helper renamed differs not.
 private def statementKey (env : Lean.Environment) (levels : List Lean.Name) (type : Lean.Expr) : String :=
-  reprStr (levels.map (·.eraseMacroScopes), nameless (positionFree env type)) ++ followed env [type] ++
-    reprStr ((helperUses env type).toList.map fun n => followed env [.const n []])
+  reprStr (levels.map (·.eraseMacroScopes), nameless (positionFree env type)) ++ followed env [type]
 
 private def oneLine (s : String) : String :=
   (s.foldl (fun (acc, gap) c =>

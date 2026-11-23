@@ -310,6 +310,31 @@ frozen_match 3 < /dev/null
 rejected bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"
 grep -q '^FROZEN Step.pick: statement changed$' "$work/check"
 
+# A record also keeps which match helper sits at each place: in a theorem's statement, in a definition's
+# value, and in a hygienic constant that a frozen definition uses. Here a notation's match and the first
+# match share one helper; the edit gives the notation the second match's helper, and every proof still holds.
+frozen_places() {
+  cat > "$work/Model/Step.lean" <<EOF
+namespace Step
+local notation "M3" => (match 3 with | 0 => 1 | $1)
+theorem t : (match 3 with | 0 => 1 | k + 1 => k) = 2 ∧ (match 3 with | 0 => 1 | k => k) = 3 ∧ M3 = M3 := by
+  decide
+def v : Nat × Nat × Nat := ((match 3 with | 0 => 1 | k + 1 => k), (match 3 with | 0 => 1 | k => k), M3)
+macro "defTriple " n:ident " := " w:term : command =>
+  \`(def helper : Nat × Nat × Nat := ((match 3 with | 0 => 1 | k + 1 => k), (match 3 with | 0 => 1 | k => k), \$w)
+    def \$n : Nat × Nat × Nat := helper)
+defTriple f := M3
+end Step
+EOF
+}
+frozen_places 'k + 1 => k'
+bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
+frozen_places 'k => k'
+rejected bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"
+grep -q '^FROZEN Step.t: statement changed$' "$work/check"
+grep -q '^FROZEN Step.v: statement changed$' "$work/check"
+grep -q '^FROZEN Step.f: statement changed$' "$work/check"
+
 # The mutation runner and the frozen record share one notion of a statement. A theorem that states a
 # match of the same shape as a definition's shares that definition's match helper, and a mutation that
 # changes the definition's match gives the theorem a helper of its own. The theorem's statement is

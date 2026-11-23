@@ -113,7 +113,7 @@
       "kind": "definition",
       "type": "Nat → Nat → List (BoundedQueue.State × BoundedQueue.State)",
       "typeHash": "3c10f9d3b1db7f38259addbb30531e138707750920468a6f0851dd61966e35c3",
-      "valueHash": "6ce67dfbb15813a86c37263f09c1f27d0acb1c3a7b81b2a036ec1ec82d4bc8af"
+      "valueHash": "43f59760a207fb00fe34f5d61e38f6615353bfb0179b7a9706e57880b2668a06"
     },
     {
       "name": "BoundedQueue.claim",
@@ -176,7 +176,7 @@
       "kind": "definition",
       "type": "(x x_1 : BoundedQueue.State) → Decidable (x = x_1)",
       "typeHash": "374541636a2ec028265455e19e18411bb5843e5f6acc04db6f6b9d946232582b",
-      "valueHash": "5d1b9130a095c5ef0acc5a587ddb6140987141484cabf3fdf45a5c587773051b"
+      "valueHash": "960a2dd546454ff2efa39969eb799cde6d43a8171d2cb5c8a20295bd2c6be847"
     },
     {
       "name": "BoundedQueue.instDecidableInvariant",
@@ -211,7 +211,7 @@
       "kind": "definition",
       "type": "Nat → Nat → List BoundedQueue.State",
       "typeHash": "ba325d9d339b281c7edc5f19b115da5124ade8a48c1c6893b70d682942b3be97",
-      "valueHash": "02787cf905579809486b08283c771b24ec4ff4cc2941ecb55651278f9c4ec3fb"
+      "valueHash": "26daa2c7fd07c4ff1e6ae00375c42578b5c067800660b1de7495d08e6935661b"
     },
     {
       "name": "BoundedQueue.vectors",
