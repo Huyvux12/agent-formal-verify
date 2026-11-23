@@ -52,15 +52,18 @@ the production file that defines the functions it calls:
 
 1. Move its helpers and harnesses into the `#[cfg(kani)] mod proofs` at the
    end of the production file, creating the module if the file has none, and
-   its header comment to directly above that module. Replace each `use` that
-   names the production crate, such as `use prod::*;`, with `use super::*;`.
-   Change nothing else in this step. The main thread compares the moved
+   its header comment to directly above that module. Add `use crate as prod;`
+   at the top of the module, with the name the old harness gave the
+   production crate, so each `use`, stub, assumption and cover that names
+   `prod::` keeps its text. Change nothing else in this step: the moved lines
+   differ only in indentation. The main thread compares the moved
    harnesses with its record of the old ones and reads any other difference as
    a change that needs the evidence your row cites.
 2. Move its `.mutations` file beside the production file as `<Name>.mutations`,
    or append its mutations to the one already there. Rename each `detects` to
-   the harness's new qualified name, such as `proofs::claim_keeps_invariant`
-   for `claim_keeps_invariant`. Replace each mutation that edits the harness
+   the harness's new qualified name as Kani prints it, such as
+   `proofs::claim_keeps_invariant` for `claim_keeps_invariant`, or
+   `queue::proofs::claim_keeps_invariant` in `src/queue.rs`. Replace each mutation that edits the harness
    with one that edits the production function, and replay the row's fix
    commits there.
 3. Leave the old harness file and the rest of its crate in place, so the
@@ -70,10 +73,12 @@ the production file that defines the functions it calls:
    mutations file. Then make any update your row asks for, as "Existing model"
    says.
 
-Stop and restore the old layout when the checker's discovery fails in
-production code or a dependency, as the Check section describes, and report it.
-Report the old module path and the new one, such as the crate root and
-`proofs`.
+Keep the old layout for a harness that names its own crate's items through
+`crate::`, and report it. Stop and restore the old layout when the checker's
+discovery fails in production code or a dependency, as the Check section
+describes, and report it. Report the old module path and the new one, each
+relative to its file, such as the crate root and `proofs`, even when the
+production file is `src/queue.rs`.
 
 ## Model
 
