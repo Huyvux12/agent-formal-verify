@@ -24,7 +24,8 @@ Usage: tlc-matrix.sh <matrix-file> [label-substring]
   TLC_TIMEOUT=<lim>  per-run time limit, e.g. 90s, 30m, 1h (default 60m)
 
 Usage: tlc.py ready
-  Checks TLC_TIMEOUT, that Java runs, and that the JAR is the pinned release or the one TLC_JAR names, as setup.sh tla does.
+  Checks TLC_TIMEOUT, that Java runs, and that the JAR is the pinned release or the one TLC_JAR names, then reports
+  the temporary directory's free space as storage.py report does. setup.sh tla runs it.
 """
 from __future__ import annotations
 
@@ -600,6 +601,7 @@ class Runner:
 def main():
     if sys.argv[1:] == ["ready"]:
         print(f"READY TLC {Tlc().jar}")
+        storage.report()
         return 0
     if not 2 <= len(sys.argv) <= 3:
         print("usage: tlc-matrix.sh <matrix-file> [label-substring]")

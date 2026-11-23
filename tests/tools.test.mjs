@@ -1,20 +1,18 @@
 // Copyright (c) 2026 Michael Denyer
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { command, excludes, fakeTlc, fixture, includes, leanPin, removeFixtures, root, run, scripts } from "./helpers.mjs";
+import { assertProcessStopped, command, excludes, fakeTlc, fixture, includes, leanPin, removeFixtures, root, run, scripts, writeLeanProject } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
 test("missing runtimes are unavailable with their remedies", () => {
   const dir = fixture();
-  writeFileSync(join(dir, "lean-toolchain"), leanPin + "\n");
   const cases = [
     ["python-tools.sh", "require_python", {}, "install Python 3"],
-    ["lean-tools.sh", 'lean_pin "$TASK_PROJECT"', { TASK_PROJECT: dir }, "install elan"],
   ];
   for (const [script, call, extra, remedy] of cases) {
     const result = spawnSync("/bin/bash", ["-c", 'source "$1"; ' + call, "bash", join(scripts, script)], {
@@ -25,6 +23,30 @@ test("missing runtimes are unavailable with their remedies", () => {
     includes(result.stdout, remedy);
     excludes(result.stdout, "PASS");
     excludes(result.stdout, "SUMMARY");
+  }
+});
+
+test("the Lean checker and Lean setup report a missing elan as unavailable with its remedy", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "lean-toolchain"), leanPin + "\n");
+  writeFileSync(join(dir, "lakefile.toml"), 'name = "model"\n');
+  for (const args of [[join(scripts, "lean-check.sh"), dir], [join(scripts, "setup.sh"), "lean", dir]]) {
+    const result = spawnSync("bash", args, { encoding: "utf8", env: { ...process.env, PATH: "/usr/bin:/bin" } });
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    assert.equal(result.stdout, "UNAVAILABLE elan is not on PATH; install elan from https://github.com/leanprover/elan\n");
+  }
+});
+
+test("the Lean checker and Lean setup report a lean-toolchain pin they cannot read as a failure without a traceback", () => {
+  const dir = fixture();
+  writeLeanProject(dir);
+  writeFileSync(join(dir, "lean-toolchain"), Buffer.from([0xff, 0xfe, 0x0a]));
+  command(dir, "elan", "exit 0");
+  for (const [script, args] of [["lean-check.sh", [dir]], ["setup.sh", ["lean", dir]]]) {
+    const result = run(dir, script, args);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.ok(result.stdout.startsWith(`FAIL cannot read ${join(dir, "lean-toolchain")}: `), result.stdout);
+    excludes(result.stderr, "Traceback");
   }
 });
 
@@ -39,6 +61,7 @@ test("helpers report a python3 older than 3.9 as unavailable before running it",
     ["bash", [join(scripts, "setup.sh"), "rust"]],
     ["bash", [join(scripts, "setup.sh"), "storage"]],
     ["bash", [join(scripts, "setup.sh"), "tla"]],
+    ["bash", [join(scripts, "setup.sh"), "lean", dir]],
   ];
   for (const [shell, args] of cases) {
     const result = spawnSync(shell, args, { encoding: "utf8", env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, JAVA: java } });
@@ -166,3 +189,76 @@ test("tlc-matrix warns on stderr once per run when FORMAL_MIN_FREE_GIB exceeds a
   assert.equal(mutated.status, 0, mutated.stdout + mutated.stderr);
   assert.equal(mutated.stderr.match(/WARN low free space on temp dir/g)?.length, 1, mutated.stderr);
 });
+
+// Each tool's readiness probe sleeps in a child that records the check's pid, the probe's and its own, then succeeds,
+// so a check that a signal does not stop goes on to print READY. The child runs in the foreground, as a JVM does,
+// so a Ctrl-C reaches it.
+const probe = (pids, after = "") => `bash -c 'echo "$1 $2 $$" > "$3"; exec sleep 3' probe "$PPID" "$$" "${pids}"\n${after}`;
+const readiness = {
+  tla(dir, pids) {
+    writeFileSync(join(dir, "tools.jar"), "user supplied");
+    return { args: ["tla"], env: { JAVA: command(dir, "java", `[ "$1" = "-version" ] && exit 0\n${probe(pids)}`), TLC_JAR: join(dir, "tools.jar") } };
+  },
+  rust(dir, pids) {
+    const bundle = join(dir, "kani/kani-0.68.0");
+    for (const path of ["bin/kani-compiler", "bin/cbmc", "toolchain/bin/rustc", "toolchain/bin/cargo", "bin/kani-driver"]) {
+      mkdirSync(join(bundle, path, ".."), { recursive: true });
+      writeFileSync(join(bundle, path), "#!/bin/bash\n" + (path === "bin/kani-driver" ? probe(pids, 'echo "Kani Rust Verifier 0.68.0 (cargo plugin)"') : "exit 0") + "\n");
+      chmodSync(join(bundle, path), 0o755);
+    }
+    return { args: ["rust"], env: { KANI_HOME: join(dir, "kani") } };
+  },
+  lean(dir, pids) {
+    const project = join(dir, "lean");
+    writeLeanProject(project);
+    command(dir, "elan", probe(pids));
+    return { args: ["lean", project], env: {} };
+  },
+};
+
+// Signal setup.sh while its readiness probe runs: the setup.sh process alone, or its whole process group as Ctrl-C does.
+function signalSetup(tool, signal, group) {
+  const dir = fixture();
+  const pids = join(dir, "probe.pids");
+  const { args, env } = readiness[tool](dir, pids);
+  return new Promise((resolve) => {
+    const child = spawn("bash", [join(scripts, "setup.sh"), ...args], {
+      detached: group,
+      env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, FORMAL_MIN_FREE_GIB: "0", ...env },
+    });
+    let stdout = "", sent, ended;
+    child.stdout.on("data", (data) => (stdout += data));
+    const timer = setInterval(() => {
+      if (existsSync(pids) && readFileSync(pids, "utf8").endsWith("\n")) {
+        clearInterval(timer);
+        sent = Date.now();
+        process.kill(group ? -child.pid : child.pid, signal);
+      }
+    }, 20);
+    child.on("exit", (exitCode, signalName) => {
+      clearInterval(timer);
+      ended = { exitCode, signalName, elapsed: Date.now() - sent };
+    });
+    // Read stdout until every process that holds it has closed it, so a check left running is heard from.
+    child.on("close", () => resolve({ ...ended, stdout, pids: readFileSync(pids, "utf8").trim().split(" ").map(Number) }));
+  });
+}
+
+for (const tool of Object.keys(readiness)) {
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    test(`${signal} sent to setup.sh ${tool} alone stops its readiness check, prints no READY and ends setup.sh by ${signal}`, async () => {
+      const result = await signalSetup(tool, signal, false);
+      for (const pid of result.pids) assertProcessStopped(pid);
+      excludes(result.stdout, "READY");
+      assert.equal(result.signalName, signal, JSON.stringify(result));
+      assert.ok(result.elapsed < 2000, JSON.stringify(result));
+    });
+  }
+
+  test(`Ctrl-C to setup.sh ${tool}'s process group stops its readiness check and ends setup.sh by SIGINT`, async () => {
+    const result = await signalSetup(tool, "SIGINT", true);
+    for (const pid of result.pids) assertProcessStopped(pid);
+    excludes(result.stdout, "READY");
+    assert.equal(result.signalName, "SIGINT", JSON.stringify(result));
+  });
+}

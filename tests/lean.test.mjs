@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -76,7 +77,8 @@ function leanFixture(log, { status = 0, audit = audited, files = [] } = {}) {
   command(dir, "elan", [
     '[ "$4" = "--version" ] && exit 0',
     `[ "$3" = "lean" ] && { echo "${dir}"; exit 0; }`,
-    '[ "$7" = python3 ] && { shift 6; exec "$@"; }',
+    // Lake writes notices, such as one for a project with both lakefiles, to stderr.
+    '[ "$7" = printenv ] && { echo "info: [root]: lakefile.lean and lakefile.toml are both present; using lakefile.lean" >&2; echo "$LEAN_PATH"; exit 0; }',
     'if [[ "$8" == */lean-replay.lean ]]; then echo replay >> "$TASK_TRACE"; sed "s/^/replaying /" "$AFV_REPLAY_MODULES"; [ -z "$TASK_REPLAY" ] || { echo "$TASK_REPLAY"; exit 1; }; exit 0; fi',
     'if [[ "$9" == */lean-analysis.lean && "${10}" == audit ]]; then echo audit >> "$TASK_TRACE"; sed "s/^/module /" "${@: -1}"; printf "%s\\n" "$TASK_AUDIT"; exit 0; fi',
     'shift 6; printf "%s\\n" "$@" > "$TASK_BUILT"',
@@ -145,7 +147,7 @@ test("the Lean checker names a module path outside Lake's build layout instead o
   command(dir, "elan", [
     '[ "$4" = "--version" ] && exit 0',
     '[ "$6" = "query" ] && { echo "/elsewhere/out/Model.olean"; exit 0; }',
-    '[ "$7" = python3 ] && { shift 6; exec "$@"; }',
+    '[ "$7" = printenv ] && { echo "$LEAN_PATH"; exit 0; }',
     'echo audit >> "$TASK_TRACE"; exit 1',
   ].join("\n"));
   const result = run(dir, "lean-check.sh", [project]);
@@ -263,6 +265,16 @@ test("the Lean checker freezes unfinished statements deterministically without c
   assert.equal(readFileSync(path, "utf8"), frozen);
   assert.equal(existsSync(join(project, "Model/Sub.statements")), false);
   assert.equal(check(["Model.lean"]).status, 1);
+});
+
+test("the Lean checker reads Lean's output as UTF-8 whatever the locale's encoding", () => {
+  const type = "∀ (n : Nat), n ≤ n";
+  const { project, check } = leanFixture("lake-search.log", { audit: statementAudit(statement("refl", "theorem", type)) });
+  const result = check(["--freeze", "Model.lean"], undefined, { PYTHONUTF8: "0", PYTHONCOERCECLOCALE: "0", LC_ALL: "C" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [record] = JSON.parse(readFileSync(join(project, "Model.statements"), "utf8")).declarations;
+  assert.equal(record.type, type);
+  assert.equal(record.typeHash, createHash("sha256").update(type, "utf8").digest("hex"));
 });
 
 for (const [label, changed] of [
