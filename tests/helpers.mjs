@@ -7,6 +7,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Every test file imports this module, so each helper a test starts sees its own settings at their defaults
+// unless the test sets them, whatever the developer's shell exports.
+delete process.env.TLC_TIMEOUT;
+delete process.env.TLC_WORKERS;
+delete process.env.TLC_CACHE;
+delete process.env.KANI_HARNESS_TIMEOUT;
+delete process.env.FORMAL_MIN_FREE_GIB;
+
 export const root = fileURLToPath(new URL("..", import.meta.url));
 export const scripts = join(root, "skills/formal-verify/scripts");
 export const logs = join(root, "tests/fixtures");

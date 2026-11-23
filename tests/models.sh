@@ -15,13 +15,15 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # Prints the output of a checker that must fail, and stops if it passes.
+# Runs a check that must fail as a failed check does: with exit 1, not 0, a usage error (2) or a missing tool (3).
 rejected() {
-  local out
-  if out=$("$@"); then
-    echo "FAIL a check that must fail passed: $*"
+  local out status=0
+  out=$("$@") || status=$?
+  printf '%s\n' "$out"
+  if [ "$status" -ne 1 ]; then
+    echo "FAIL a check that must fail exited $status, not 1: $*"
     exit 1
   fi
-  printf '%s\n' "$out"
 }
 
 bash "$scripts/setup.sh" tla
@@ -251,10 +253,8 @@ grep -q '^FROZEN Frozen.step: statement changed' "$work/frozen.out"
 
 sed 's|fun _ => rfl|sorry|' "$work/frozen/proved" > "$work/frozen/Model/Frozen.lean"
 bash "$scripts/lean-check.sh" "$work/frozen" --freeze Model/Frozen.lean | tee "$work/frozen.out"
-if grep -q '^PASS ' "$work/frozen.out"; then
-  echo 'FAIL freezing an unfinished proof reported PASS'
-  exit 1
-fi
+# Freezing reports the record, not a proof: lean-check.sh prints no PASS line in freeze mode.
+grep -q '^FROZEN .*/Frozen.statements: statements recorded; proofs not checked$' "$work/frozen.out"
 rejected bash "$scripts/lean-check.sh" "$work/frozen" Model/Frozen.lean | tee "$work/frozen.out"
 grep -q 'sorryAx' "$work/frozen.out"
 cp "$work/frozen/proved" "$work/frozen/Model/Frozen.lean"
