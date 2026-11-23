@@ -160,6 +160,12 @@ def format_report(report):
     return lines
 
 
+def report():
+    """Print the preflight storage lines, as setup.sh reports them after each tool's readiness check."""
+    for line in format_report(inspect_storage()):
+        print(line)
+
+
 def warn_runtime():
     """Emit a single per-process stderr warning if active temporary space is critically low."""
     global _warned_runtime
@@ -185,8 +191,7 @@ def main():
     action = sys.argv[1] if len(sys.argv) == 2 else ""
     try:
         if action == "report":
-            for line in format_report(inspect_storage()):
-                print(line)
+            report()
             return 0
         if action == "warn":
             warn_runtime()
