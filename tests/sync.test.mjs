@@ -66,6 +66,80 @@ test("sync follows renames, finds where covered names live now, and names the co
   assert.deepEqual(lines(result.stdout, "READ"), [`READ git -C ${root} log -p ${read}..HEAD -- src/consume.c src/core.c src/queue.c`]);
 });
 
+test("sync reads a file that held a covered name only between the sync and now", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const read = commit(dir, { "src/queue.c": "int claim(void) { return 1; }\nint drain(void) { return 0; }\n" }, "queue");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+  const other = "int reset(void) { return 0; }\nint flush(void) { return 0; }\n";
+  commit(dir, { "src/queue.c": "int drain(void) { return 0; }\n", "src/core.c": other + "int claim(void) { return 1; }\n" }, "copy claim to core.c");
+  const changed = commit(dir, { "src/core.c": other + "int claim(void) { return 2; }\n" }, "change claim in core.c");
+  commit(dir, { "src/core.c": other, "src/claim.c": "int claim(void) { return 2; }\n" }, "move claim to claim.c");
+  // A longer word that contains the name does not make a file one that held it.
+  commit(dir, { "src/log.c": "int claimed(void);\n" }, "log");
+
+  const result = sync(dir, ["tla/Queue.tla", "--source", "src/queue.c", "--name", "claim"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH src/claim.c", "PATH src/core.c", "PATH src/queue.c"]);
+  const root = git(dir, "rev-parse", "--show-toplevel");
+  assert.deepEqual(lines(result.stdout, "READ"), [`READ git -C ${root} log -p ${read}..HEAD -- src/claim.c src/core.c src/queue.c`]);
+  const log = git(dir, "log", "--format=%H", `${read}..HEAD`, "--", "src/claim.c", "src/core.c", "src/queue.c");
+  assert.ok(log.split("\n").includes(changed), log);
+});
+
+test("sync finds a file renamed away without a content change, and reads changed paths literally", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const read = commit(dir, { "src/queue.c": "int claim(void);\n", "src/util.c": "void use(void) { claim(); }\n" }, "queue");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n`, "src/i.c": "void model(void) { claim(); }\n" }, "model");
+  const call = commit(dir, { "src/util.c": "void use(int x) { claim(); }\n" }, "change the caller");
+  git(dir, "mv", "src/util.c", "src/helpers.c");
+  git(dir, "commit", "-m", "rename util.c");
+  commit(dir, { "src/helpers.c": "void use(void) {}\n" }, "drop the call");
+  // A glob character in a changed path matches only that path, not the model file src/i.c.
+  commit(dir, { "src/[id].c": "int route(void) { return claim(); }\n" }, "route");
+
+  const result = sync(dir, ["tla/Queue.tla", "src/i.c", "--source", "src/queue.c", "--name", "claim"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH src/[id].c", "PATH src/helpers.c", "PATH src/queue.c", "PATH src/util.c"]);
+  const log = git(dir, "log", "--format=%H", `${read}..HEAD`, "--", "src/[id].c", "src/helpers.c", "src/queue.c", "src/util.c");
+  assert.ok(log.split("\n").includes(call), log);
+});
+
+test("sync reports a name as missing when only documents and other models still mention it", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const read = commit(dir, {
+    "src/queue.c": "int claim(void);\nint drain(void);\n",
+    "docs/queue.md": "drain empties the queue\n",
+    "tla/Other.tla": "(* Covers claim and drain. *)\n",
+    "lean/Model/Queue.lean": "-- drain\n",
+  }, "queue");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+  commit(dir, { "src/queue.c": "int claim(void);\n" }, "remove drain");
+  const removed = git(dir, "rev-parse", "--short", "HEAD");
+
+  const result = sync(dir, ["tla/Queue.tla", "--source", "src/queue.c", "--name", "claim", "--name", "drain"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH src/queue.c"]);
+  assert.deepEqual(lines(result.stdout, "MISSING"), [`MISSING drain: ${removed}`]);
+  const root = git(dir, "rev-parse", "--show-toplevel");
+  assert.deepEqual(lines(result.stdout, "READ"), [`READ git -C ${root} log -p ${read}..HEAD -- src/queue.c`]);
+});
+
+test("sync searches files with a source's extension even when other models use it", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const read = commit(dir, { "lean/Queue.lean": "def claim := 1\n" }, "queue");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+  git(dir, "rm", "lean/Queue.lean");
+  commit(dir, { "lean/Claim.lean": "namespace Slots\nopen Nat\ndef claim := 1\ntheorem one : claim = 1 := rfl\nend Slots\n" }, "move claim");
+  const result = sync(dir, ["tla/Queue.tla", "--source", "lean/Queue.lean", "--name", "claim"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH lean/Claim.lean", "PATH lean/Queue.lean"]);
+  assert.deepEqual(lines(result.stdout, "MISSING"), []);
+});
+
 test("sync falls back to the last commit of the model files when the header's commit is not in HEAD's history", () => {
   const dir = fixture();
   git(dir, "init", "-b", "main");
@@ -87,7 +161,8 @@ test("sync falls back to the last commit of the model files when the header's co
 test("sync reports a model with no sync commit, and searches a model file only when it is also a source", () => {
   const dir = fixture();
   git(dir, "init", "-b", "main");
-  commit(dir, { "src/lib.rs": "pub fn claim() {}\n", "tla/Queue.tla": "claim\n" }, "start");
+  commit(dir, { "src/lib.rs": "pub fn claim() {}\n" }, "start");
+  commit(dir, { "tla/Queue.tla": "claim\n" }, "model");
   writeFileSync(join(dir, "tla/New.tla"), "claim\n");
   const none = sync(dir, ["tla/New.tla", "--name", "claim"]);
   assert.equal(none.status, 0, none.stdout + none.stderr);
@@ -96,6 +171,69 @@ test("sync reports a model with no sync commit, and searches a model file only w
   const rust = sync(dir, ["src/lib.rs", "tla/Queue.tla", "--source", "src/lib.rs", "--name", "claim"]);
   assert.equal(rust.status, 0, rust.stdout + rust.stderr);
   assert.deepEqual(lines(rust.stdout, "PATH"), ["PATH src/lib.rs"]);
+});
+
+test("sync falls back past production edits to a model file that is also a source", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const proofs = "\n// Harnesses for claim.\n#[cfg(kani)]\nmod proofs {\n    #[kani::proof]\n    fn check() { assert!(super::claim() == 1); }\n}\n";
+  commit(dir, { "src/lib.rs": "pub fn claim() -> u8 { 1 }\n" }, "production");
+  const harness = commit(dir, { "src/lib.rs": "pub fn claim() -> u8 { 1 }\n" + proofs }, "harness");
+  commit(dir, { "src/lib.rs": "pub fn claim() -> u8 { 2 }\n" + proofs }, "production edit");
+  commit(dir, { "src/lib.rs": "// Returns the next slot.\npub fn claim() -> u8 { 2 }\n" + proofs }, "comment");
+
+  const result = sync(dir, ["src/lib.rs", "--source", "src/lib.rs", "--name", "claim"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "SYNC"), [`SYNC ${harness} from the last commit of the model files that changed no production code in lib.rs`]);
+  const root = git(dir, "rev-parse", "--show-toplevel");
+  assert.deepEqual(lines(result.stdout, "READ"), [`READ git -C ${root} log -p ${harness}..HEAD -- src/lib.rs`]);
+
+  // A commit that changed another model file together with the production code is not one either.
+  commit(dir, { "src/lib.rs": "pub fn claim() -> u8 { 3 }\n" + proofs, "tla/Queue.tla": "claim\n" }, "model and production");
+  const mixed = sync(dir, ["src/lib.rs", "tla/Queue.tla", "--source", "src/lib.rs"]);
+  assert.equal(mixed.status, 0, mixed.stdout + mixed.stderr);
+  assert.deepEqual(lines(mixed.stdout, "SYNC"), [`SYNC ${harness} from the last commit of the model files that changed no production code in lib.rs`]);
+
+  // The harness came with the production code, so no commit changed the harness alone.
+  const fresh = fixture();
+  git(fresh, "init", "-b", "main");
+  commit(fresh, { "src/lib.rs": "pub fn claim() -> u8 { 1 }\n" + proofs }, "production and harness");
+  commit(fresh, { "src/lib.rs": "pub fn claim() -> u8 { 2 }\n" + proofs }, "production edit");
+  const none = sync(fresh, ["src/lib.rs", "--source", "src/lib.rs", "--name", "claim"]);
+  assert.equal(none.status, 0, none.stdout + none.stderr);
+  assert.equal(none.stdout, "SYNC none: no commit of the model files changed only the #[cfg(kani)] items of lib.rs; compare the model with the code in full\n");
+});
+
+test("sync's fallback counts #[cfg(kani)] on an item only, and says when it stops at a rename or after the last 100 commits", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const proofs = "\n#[cfg(kani)]\nmod proofs {\n    #[kani::proof]\n    fn check() { assert!(super::claim() == 1); }\n}\n";
+  const event = "pub enum Event {\n    #[cfg(kani)]\n    Ghost,\n    Release,\n}\n";
+  commit(dir, { "src/lib.rs": event + "pub fn claim() -> u8 { 1 }\n" }, "production");
+  const harness = commit(dir, { "src/lib.rs": event + "pub fn claim() -> u8 { 1 }\n" + proofs }, "harness");
+  commit(dir, { "src/lib.rs": event + "pub fn claim() -> u8 { 2 }\n" + proofs }, "production edit");
+  const variant = sync(dir, ["src/lib.rs", "--source", "src/lib.rs"]);
+  assert.equal(variant.status, 0, variant.stdout + variant.stderr);
+  assert.deepEqual(lines(variant.stdout, "SYNC"), [`SYNC ${harness} from the last commit of the model files that changed no production code in lib.rs`]);
+
+  git(dir, "mv", "src/lib.rs", "src/core.rs");
+  git(dir, "commit", "-m", "rename");
+  const moved = git(dir, "rev-parse", "HEAD");
+  commit(dir, { "src/core.rs": event + "pub fn claim() -> u8 { 3 }\n" + proofs }, "production edit after the rename");
+  const renamed = sync(dir, ["src/core.rs", "--source", "src/core.rs"]);
+  assert.equal(renamed.status, 0, renamed.stdout + renamed.stderr);
+  assert.equal(
+    renamed.stdout,
+    `SYNC none: no commit of the model files changed only the #[cfg(kani)] items of core.rs since the rename to core.rs in ${moved}, which git log does not follow; compare the model with the code in full\n`,
+  );
+
+  for (let edit = 4; edit < 105; edit++) {
+    writeFileSync(join(dir, "src/core.rs"), event + `pub fn claim() -> u8 { ${edit} }\n` + proofs);
+    git(dir, "commit", "-am", `edit ${edit}`);
+  }
+  const long = sync(dir, ["src/core.rs", "--source", "src/core.rs"]);
+  assert.equal(long.status, 0, long.stdout + long.stderr);
+  assert.equal(long.stdout, "SYNC none: no commit of the last 100 commits of the model files changed only the #[cfg(kani)] items of core.rs; compare the model with the code in full\n");
 });
 
 test("sync leaves a model file out of the name search when it is not also a source", () => {
