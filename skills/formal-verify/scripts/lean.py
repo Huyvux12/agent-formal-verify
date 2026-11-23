@@ -18,6 +18,14 @@ Usage: lean.py ready <lake-project-dir>
   Installs the project's pinned toolchain unless it already runs, then reports it and the temporary directory's free
   space as storage.py report does. setup.sh lean runs it.
 """
+import signal
+
+if __name__ == "__main__":
+    # Python's SIGINT handler raises KeyboardInterrupt, which prints a traceback when it arrives during the imports.
+    # Until runner.run installs its own handlers, the default action ends the process by the signal instead.
+    if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
 import hashlib
 import json
 import os
