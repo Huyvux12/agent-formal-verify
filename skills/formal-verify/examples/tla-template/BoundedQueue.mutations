@@ -17,6 +17,12 @@ detects reach:WindowFull
 - next < consumed + Window
 + next < consumed + Window - 1
 
+mutation a woken worker claims without rereading the window, as if a while were an if
+detects InWindow
+only window=1
+- ELSE IF next < consumed + Window
++ ELSE IF wpc[w] = "wait" \/ next < consumed + Window
+
 mutation claim after the last item
 detects TypeOK
 only window=1
@@ -44,7 +50,9 @@ only fail=1
 mutation close returns before the workers exit
 detects NoLeak
 only window=1
--   /\ \A w \in Workers : wpc[w] = "exit"
+- cpc = "join"
+-   /\ Exited
++ cpc = "join"
 +   /\ TRUE
 
 mutation close returns without freeing the untaken items
@@ -70,6 +78,14 @@ only window=1
 -   /\ parked' = {}
 +   /\ slot' = [slot EXCEPT ![item[w]] = IF item[w] \in FailAt THEN "failed" ELSE "ready"]
 +   /\ parked' = parked
+
+mutation take an item without waking the waiters
+detects NextReturns
+only window=1
+- /\ consumed' = consumed + 1
+-           /\ parked' = {}
++ /\ consumed' = consumed + 1
++           /\ parked' = parked
 
 mutation close without waking the waiters
 detects CloseReturns

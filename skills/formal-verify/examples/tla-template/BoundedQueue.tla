@@ -39,8 +39,11 @@ EXTENDS Naturals, Sequences
 CONSTANTS Workers, Window, Items, FailAt
 
 VARIABLES next, consumed, slot, out, wpc, item, cpc, parked, closed
-vars == <<next, consumed, slot, out, wpc, item, cpc, parked, closed>>
-unchangedQueue == <<next, consumed, slot, out>>
+\* The variables each worker and the consumer own, and the queue state under the mutex.
+worker == <<wpc, item>>
+consumer == <<cpc, out>>
+queue == <<next, consumed, slot, closed>>
+vars == <<queue, parked, worker, consumer>>
 
 Consumer == "consumer"
 Indices == 0..(Items - 1)
@@ -72,7 +75,7 @@ Claim(w) ==
      ELSE /\ parked' = parked \cup {w}
           /\ wpc' = [wpc EXCEPT ![w] = "wait"]
           /\ UNCHANGED <<next, slot, item>>
-  /\ UNCHANGED <<consumed, out, cpc, closed>>
+  /\ UNCHANGED <<consumed, closed, consumer>>
 
 \* After building its item, a worker takes the mutex to publish it and wakes every waiter.
 Publish(w) ==
@@ -80,24 +83,19 @@ Publish(w) ==
   /\ slot' = [slot EXCEPT ![item[w]] = IF item[w] \in FailAt THEN "failed" ELSE "ready"]
   /\ parked' = {}
   /\ wpc' = [wpc EXCEPT ![w] = "claim"]
-  /\ UNCHANGED <<next, consumed, out, item, cpc, closed>>
+  /\ UNCHANGED <<next, consumed, closed, item, consumer>>
 
 \* A parked thread wakes without a broadcast.
 Spurious(t) ==
   /\ t \in parked
   /\ parked' = parked \ {t}
-  /\ UNCHANGED <<next, consumed, slot, out, wpc, item, cpc, closed>>
+  /\ UNCHANGED <<queue, worker, consumer>>
 
 \* When no call is in progress, the consumer may call next() or close(), or stop calling.
-CallNext ==
+Call(c) ==
   /\ cpc \in {"idle", "end", "error"}
-  /\ cpc' = "next"
-  /\ UNCHANGED <<next, consumed, slot, out, wpc, item, parked, closed>>
-
-CallClose ==
-  /\ cpc \in {"idle", "end", "error"}
-  /\ cpc' = "close"
-  /\ UNCHANGED <<next, consumed, slot, out, wpc, item, parked, closed>>
+  /\ cpc' = c
+  /\ UNCHANGED <<queue, parked, worker, out>>
 
 \* next() takes the mutex and returns the next item, the end or the error, or
 \* waits until the next item is published.
@@ -119,7 +117,7 @@ TakeNext ==
      ELSE /\ parked' = parked \cup {Consumer}
           /\ cpc' = "wait"
           /\ UNCHANGED <<consumed, slot, out>>
-  /\ UNCHANGED <<next, wpc, item, closed>>
+  /\ UNCHANGED <<next, closed, worker>>
 
 \* close() marks the queue closed and wakes every waiter under the mutex, then
 \* joins the workers and frees the items that were published but never taken.
@@ -128,21 +126,24 @@ Close ==
   /\ closed' = TRUE
   /\ parked' = {}
   /\ cpc' = "join"
-  /\ UNCHANGED <<next, consumed, slot, out, wpc, item>>
+  /\ UNCHANGED <<next, consumed, slot, worker, out>>
+
+Exited == \A w \in Workers : wpc[w] = "exit"
 
 Join ==
   /\ cpc = "join"
-  /\ \A w \in Workers : wpc[w] = "exit"
+  /\ Exited
   /\ slot' = [i \in Indices |-> IF slot[i] \in {"ready", "failed"} THEN "freed" ELSE slot[i]]
   /\ cpc' = "closed"
-  /\ UNCHANGED <<next, consumed, out, wpc, item, parked, closed>>
+  /\ UNCHANGED <<next, consumed, closed, parked, worker, out>>
 
 \* Stutter once closed, so that the end of a run is not reported as a deadlock.
 Done == cpc = "closed" /\ UNCHANGED vars
 
 Next == \/ \E w \in Workers : Claim(w) \/ Publish(w)
         \/ \E t \in parked : Spurious(t)
-        \/ CallNext \/ CallClose \/ TakeNext \/ Close \/ Join \/ Done
+        \/ \E c \in {"next", "close"} : Call(c)
+        \/ TakeNext \/ Close \/ Join \/ Done
 
 Spec == /\ Init /\ [][Next]_vars
         /\ \A w \in Workers : WF_vars(Claim(w)) /\ WF_vars(Publish(w))
@@ -168,7 +169,7 @@ ErrorInOrder == cpc = "error" => slot[consumed] = "failed"
 \* next() delivers no item after the first one whose build failed.
 NoDeliveryAfterError == \A k \in 1..Len(out) : \A i \in FailAt : out[k] < i
 \* Once close() returns, every worker has exited and every item is unclaimed, taken or freed.
-NoLeak == cpc = "closed" => /\ \A w \in Workers : wpc[w] = "exit"
+NoLeak == cpc = "closed" => /\ Exited
                             /\ \A i \in Indices : slot[i] \in {"free", "taken", "freed"}
 
 \* Each wait in next() returns, close() returns, and a consumer that keeps calling next() reaches the end or the error.
