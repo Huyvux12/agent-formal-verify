@@ -88,6 +88,11 @@ test("helper usage errors exit 2", () => {
   for (const [script, args] of [["lean-check.sh", []], ["tlc-matrix.sh", []], ["mutate.py", []], ["setup.sh", ["lean"]], ["processes.py", []], ["storage.py", []]]) {
     assert.equal(run(dir, script, args).status, 2, script);
   }
+  for (const tool of ["tla", "rust", "storage"]) {
+    const result = run(dir, "setup.sh", [tool, "extra"]);
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.equal(result.stdout, `usage: setup.sh ${tool}\n`);
+  }
 });
 
 test("setup.sh storage warns when free space is below FORMAL_MIN_FREE_GIB", () => {
