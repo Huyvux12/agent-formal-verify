@@ -25,6 +25,10 @@ const fixtures = [];
 export function removeFixtures() {
   for (const dir of fixtures.splice(0)) rmSync(dir, { recursive: true, force: true });
 }
+// Leave a fixture in place after the test, for a failure that needs its files to diagnose.
+export function keepFixture(dir) {
+  fixtures.splice(fixtures.indexOf(dir) >>> 0, 1);
+}
 export function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "formal-tools-"));
   fixtures.push(dir);

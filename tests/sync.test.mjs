@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { command, fixture, removeFixtures, scripts } from "./helpers.mjs";
+import { command, fixture, keepFixture, removeFixtures, scripts } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
@@ -22,9 +22,26 @@ const gitEnv = {
   GIT_COMMITTER_EMAIL: "test@example.invalid",
 };
 
+// The sync tests have failed now and then because git could not read an object it had just written in the fixture,
+// as "Could not read <commit>" from sync.py's git log and "unable to read tree (<tree>)" from a test's git commit
+// (#201). For such a failure, keep the fixture and say whether the object is missing or reads now.
+function diagnosis(dir, output) {
+  const unreadable = /(?:Could not read|unable to read tree \(?)\s*([0-9a-f]{40})/.exec(output);
+  if (!unreadable) return "";
+  keepFixture(dir);
+  const [, oid] = unreadable;
+  const object = spawnSync("git", ["-C", dir, "cat-file", "-t", oid], { encoding: "utf8", env: gitEnv });
+  const found = object.status === 0 ? `is a ${object.stdout.trim()} that reads now` : `is missing: ${object.stderr.trim()}`;
+  let file = "it has no loose file";
+  try {
+    file = `its loose file has ${statSync(join(dir, ".git/objects", oid.slice(0, 2), oid.slice(2))).size} bytes`;
+  } catch {}
+  return `DIAGNOSIS ${oid} ${found}; ${file}; fixture kept at ${dir}\n`;
+}
+
 function git(dir, ...args) {
   const result = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", env: gitEnv });
-  assert.equal(result.status, 0, result.stderr);
+  if (result.status !== 0) assert.fail(result.stderr + diagnosis(dir, result.stderr));
   return result.stdout.trim();
 }
 
@@ -39,7 +56,9 @@ function commit(dir, files, message) {
 }
 
 function sync(dir, args, cwd = dir) {
-  return spawnSync("python3", [join(scripts, "sync.py"), ...args], { cwd, encoding: "utf8", env: gitEnv });
+  const result = spawnSync("python3", [join(scripts, "sync.py"), ...args], { cwd, encoding: "utf8", env: gitEnv });
+  if (result.status !== 0) result.stdout += diagnosis(dir, result.stdout + result.stderr);
+  return result;
 }
 
 function lines(output, tag) {
@@ -404,6 +423,24 @@ test("sync follows a rename between non-ASCII paths and searches for a name as a
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(lines(result.stdout, "PATH"), ["PATH src/café.cpp", "PATH src/naïve.cpp"]);
   assert.deepEqual(lines(result.stdout, "MISSING"), []);
+});
+
+test("sync's tests keep a fixture whose object git cannot read and say whether the object is missing", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  commit(dir, { "src/lib.rs": "pub fn claim() -> u8 { 1 }\n" }, "production");
+  const lost = commit(dir, { "src/lib.rs": "pub fn claim() -> u8 { 2 }\n" }, "edit");
+  commit(dir, { "src/lib.rs": "pub fn claim() -> u8 { 3 }\n" }, "edit again");
+  rmSync(join(dir, ".git/objects", lost.slice(0, 2), lost.slice(2)));
+  const result = sync(dir, ["src/lib.rs", "--source", "src/lib.rs"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`\nDIAGNOSIS ${lost} is missing: .+; it has no loose file; fixture kept at ${dir}\n$`));
+  try {
+    removeFixtures();
+    assert.ok(existsSync(dir));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("sync fails for a source path that no commit has", () => {
