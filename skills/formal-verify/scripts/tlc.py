@@ -22,9 +22,13 @@ Usage: tlc-matrix.sh <matrix-file> [label-substring]
   JAVA=<path>        the java binary (default: java on PATH)
   TLC_WORKERS=<n>    TLC worker threads (default auto)
   TLC_TIMEOUT=<lim>  per-run time limit, e.g. 90s, 30m, 1h (default 60m)
+
+Usage: tlc.py ready
+  Checks TLC_TIMEOUT, that Java runs, and that the JAR is the pinned release or the one TLC_JAR names, as setup.sh tla does.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -43,7 +47,6 @@ import runner
 import storage
 import tlc_trace
 
-HERE = Path(__file__).resolve().parent
 CHECK_KINDS = ("INVARIANT", "INVARIANTS", "PROPERTY", "PROPERTIES")
 REACH = re.compile(r"([a-zA-Z_][a-zA-Z_0-9]*)\s*\|\s*(.*\S)\s*")
 
@@ -154,19 +157,54 @@ def _read_progress(log_path, offset, partial):
 
 
 class Tlc:
-    """The pinned TLC, checked once; tlc-tools.sh owns the pin and the readiness checks."""
+    """The pinned TLC, checked once. Nothing here downloads it."""
+    version = "v1.7.4"
+    sha256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+    release = f"https://github.com/tlaplus/tlaplus/releases/tag/{version}"
+
+    @classmethod
+    def cached_jar(cls):
+        """Return the path where the pinned JAR must be saved, under TLC_CACHE."""
+        return Path(os.environ.get("TLC_CACHE") or Path.home() / ".cache/tla") / f"tla2tools-{cls.version}.jar"
 
     def __init__(self):
         timeout_raw = os.environ.get("TLC_TIMEOUT", "").strip() or DEFAULT_TIMEOUT
         self.limit, self.timeout_seconds = runner.parse_limit("TLC_TIMEOUT", timeout_raw, "run time limit", "sixty minutes")
-        done = subprocess.run(
-            ["bash", "-c", 'source "$1/tlc-tools.sh" && require_tlc_runtime && tlc_jar_ready && printf "%s\\n%s\\n" "$JAVA" "$TLC_JAR"',
-             "bash", str(HERE)], capture_output=True, text=True, check=False)
-        if done.returncode:
-            raise runner.Unavailable(done.stdout.rstrip("\n"))
-        self.java, self.jar = done.stdout.splitlines()[-2:]
+        self.java = os.environ.get("JAVA") or "java"
+        try:
+            # The JVM prints in the platform encoding, which need not be UTF-8.
+            runtime = processes.run_captured([self.java, "-version"], errors="replace").returncode
+        except OSError:
+            runtime = 127
+        if runtime:
+            raise runner.Unavailable(f"UNAVAILABLE {self.java} has no runtime; install a JDK and set JAVA to its java binary")
+        # A JAR the user supplies is trusted; the cached one must match the pin.
+        supplied = os.environ.get("TLC_JAR")
+        self.jar = supplied or str(self.cached_jar())
+        if not supplied:
+            self._check_pinned_jar()
+        elif not Path(supplied).is_file():
+            raise runner.Unavailable(f"UNAVAILABLE supplied TLC_JAR {supplied} does not exist")
+        try:
+            probe = processes.run_captured([self.java, "-cp", self.jar, "tlc2.TLC", "-help"], errors="replace")
+            status, output = probe.returncode, probe.stdout + probe.stderr
+        except OSError as error:
+            status, output = 127, str(error)
+        if status and "TLC - provides model checking" not in output:
+            raise runner.Unavailable(f"UNAVAILABLE tlc2.TLC cannot run from {self.jar}; save a working JAR from {self.release} "
+                                     f"or set TLC_JAR\n{output.rstrip()}")
         self.workers = os.environ.get("TLC_WORKERS") or "auto"
         self._warned_disk = False
+
+    def _check_pinned_jar(self):
+        if not Path(self.jar).is_file():
+            raise runner.Unavailable(f"UNAVAILABLE {self.jar} is missing; save tla2tools.jar from {self.release} there, or set TLC_JAR")
+        try:
+            got = hashlib.sha256(Path(self.jar).read_bytes()).hexdigest()
+        except OSError as error:
+            raise runner.Unavailable(f"UNAVAILABLE cannot read {self.jar}; check its permissions") from error
+        if got != self.sha256:
+            raise runner.Unavailable(f"UNAVAILABLE {self.jar} has sha256 {got}, want {self.sha256}")
 
     def run(self, directory, module, config, reach, workers=None, progress_label=""):
         """Run TLC on module in directory with config; return (exit_status, log, timed_out)."""
@@ -350,7 +388,6 @@ class MutationPlan:
 
     def __init__(self, spec, sections):
         self._spec = spec
-        self._passing_originals = set()
         self.properties = {name for section in sections for name in section.properties}
         self.detectors = self.properties | {name for section in sections for name in section.reaches}
         self._tasks = [task for section in sections for task in section.tasks]
@@ -370,24 +407,40 @@ class MutationPlan:
                     yield Task(self._spec.name, task.run, checks,
                                check_deadlock=not any(check.kind.startswith("PROPERT") for check in checks))
 
-    def check(self, checker, detector, only, source, work):
-        """Return the first confirmed detection, None for a miss, or raise on inconclusive evidence."""
-        results = []
-        for task in self._select(detector):
-            if isinstance(task, Result):
-                results.append((task, False))
-                continue
-            if only not in task.run.label:
-                continue
-            if task not in self._passing_originals:
-                original = run_task(checker, self._spec.parent, task, work)
-                if original.outcome not in (Outcome.PASS, Outcome.WITNESS):
-                    raise ValueError(f"unmutated model did not pass {detector}: " + "\n".join(render(original)))
-                self._passing_originals.add(task)
-            temporal = any(check.kind.startswith("PROPERT") for check in task.checks)
-            results.append((run_task(checker, self._spec.parent, task, work, source), temporal))
-        if not results:
+    def selected(self, detector, only):
+        """Return the tasks that check a mutation naming detector and only; raise ValueError when none can."""
+        tasks = list(self._select(detector))
+        unresolved = [line for task in tasks if isinstance(task, Result) for line in render(task)]
+        if unresolved:
+            raise ValueError("\n".join(unresolved))
+        tasks = [task for task in tasks if only in task.run.label]
+        if not tasks:
             raise ValueError(f"no run matches '{only}' for '{detector}'")
+        return tasks
+
+    def check_originals(self, checker, selections, work):
+        """Run every task that the (detector, only) selections name on the unmutated spec, each once.
+
+        Raise ValueError when a task does not pass, and before running any task when a selection has none to run.
+        """
+        chosen = [(detector, task) for detector, only in selections for task in self.selected(detector, only)]
+        passed = set()
+        for detector, task in chosen:
+            if task in passed:
+                continue
+            original = run_task(checker, self._spec.parent, task, work)
+            if original.outcome not in (Outcome.PASS, Outcome.WITNESS):
+                raise ValueError(f"unmutated model did not pass {detector}: " + "\n".join(render(original)))
+            passed.add(task)
+
+    def check(self, checker, detector, only, source, work):
+        """Return the first confirmed detection, None for a miss, or raise on inconclusive evidence.
+
+        The caller has passed the same detector and only to check_originals.
+        """
+        results = [(run_task(checker, self._spec.parent, task, work, source),
+                    any(check.kind.startswith("PROPERT") for check in task.checks))
+                   for task in self.selected(detector, only)]
         detections, errors = [], []
         for result, temporal in results:
             if result.outcome is Outcome.UNREACHED:
@@ -545,6 +598,9 @@ class Runner:
 
 
 def main():
+    if sys.argv[1:] == ["ready"]:
+        print(f"READY TLC {Tlc().jar}")
+        return 0
     if not 2 <= len(sys.argv) <= 3:
         print("usage: tlc-matrix.sh <matrix-file> [label-substring]")
         return 2

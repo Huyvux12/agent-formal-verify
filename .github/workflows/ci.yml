@@ -86,10 +86,12 @@ jobs:
           lake-package-directory: skills/formal-verify/examples/lean-template
       - name: Fetch the pinned TLC release
         run: |
-          source skills/formal-verify/scripts/tlc-tools.sh
-          mkdir -p "$TLC_CACHE"
-          curl -fL --no-progress-meter --retry 3 -o "$TLC_JAR" "https://github.com/tlaplus/tlaplus/releases/download/$TLA_VERSION/tla2tools.jar"
-          check_tlc_jar "$TLC_JAR"
+          scripts=skills/formal-verify/scripts
+          pin=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import tlc; print(tlc.Tlc.version, tlc.Tlc.cached_jar())' "$scripts")
+          read -r version jar <<< "$pin"
+          mkdir -p "$(dirname "$jar")"
+          curl -fL --no-progress-meter --retry 3 -o "$jar" "https://github.com/tlaplus/tlaplus/releases/download/$version/tla2tools.jar"
+          python3 "$scripts/tlc.py" ready
       - name: Install pinned Kani
         run: |
           cargo install --locked kani-verifier --version 0.68.0
