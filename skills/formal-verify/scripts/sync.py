@@ -14,7 +14,7 @@ history, and otherwise the last commit that changed the model files; the SYNC li
 why the header's commit was not used. When a model file is also a --source, such as a Rust file
 with its Kani harness, that fallback counts only a commit that changed the code of its
 #[cfg(kani)] items, or another model file, and none of its other code; SYNC none follows when
-there is no such commit. Each source path is followed through every rename since
+none of the last 100 commits of the model files since the source's last rename qualifies. Each source path is followed through every rename since
 the sync commit in both directions. Each name adds the files where git grep finds it as a whole
 word now, outside the model files that are not also a --source, such as a Kani harness kept
 apart from the production code, and outside documents and TLA+ and Lean files, which cannot
@@ -27,6 +27,7 @@ repository, for a source path that no commit has, or when git grep fails.
 Usage: sync.py <model file>... [--source <path>]... [--name <name>]...
 """
 import argparse
+import functools
 import re
 import shlex
 import subprocess
@@ -39,7 +40,13 @@ import baseline
 HEADER = re.compile(r"Source read at ([0-9a-fA-F]{7,40})\b")
 # Documents and model files mention covered names but cannot define them, unless a source has the same extension.
 NO_DEFINITIONS = {".md", ".markdown", ".rst", ".txt", ".adoc", ".org", ".tla", ".cfg", ".lean", ".statements", ".matrix", ".mutations"}
-KANI_CFG = re.compile(r"#\s*\[\s*cfg\s*\(\s*kani\s*\)\s*\]")
+# #[cfg(kani)] on an item, past any other attributes and its visibility; on a field or a variant it is production code.
+KANI_CFG = re.compile(
+    r"#\s*\[\s*cfg\s*\(\s*kani\s*\)\s*\](?=(?:\s*#\s*\[[^\]]*\])*\s*(?:pub\s*(?:\([^)]*\))?\s*)?"
+    r"(?:mod|fn|impl|use|const|static|struct|enum|union|trait|type|unsafe|extern|async|macro_rules)\b)"
+)
+# The fallback reads at most this many commits of the model files, since each costs a parse of the file twice.
+FALLBACK_COMMITS = 100
 
 
 def git(root, *arguments, check=True):
@@ -49,6 +56,7 @@ def git(root, *arguments, check=True):
     return done
 
 
+@functools.cache
 def split_harness(text):
     """Return the code of the #[cfg(kani)] items in Rust text and the code outside them, without comments or blank lines."""
     source = baseline.rust_masks(text)
@@ -71,13 +79,17 @@ def split_harness(text):
 
 
 def changed_only_harness(root, commit, models, sources):
-    """Whether commit changed the model files and, in those that are also a source, no code outside the #[cfg(kani)] items."""
+    """Whether commit changed the model files and, in those that are also a source, no code outside the #[cfg(kani)] items.
+
+    Returns the path instead when commit renamed a source to it, since git log does not follow the rename.
+    """
     touched = set(git(root, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", commit, "--", *models).stdout.split("\0")) - {""}
     changed = bool(touched - set(sources))
     for path in touched & set(sources):
         before, after = (git(root, "show", f"{revision}:{path}", check=False) for revision in (f"{commit}^", commit))
         if before.returncode or after.returncode:
-            return False
+            renames = git(root, "diff-tree", "-M", "-r", "--no-commit-id", "--name-only", "--diff-filter=R", "-z", commit).stdout.split("\0")
+            return path if path in renames else False
         try:
             (old_harness, old_code), (new_harness, new_code) = split_harness(before.stdout), split_harness(after.stdout)
         except ValueError:
@@ -104,10 +116,19 @@ def sync_commit(root, models, shared):
     if shared:
         names = ", ".join(model.name for model in shared)
         sources = [str(model.relative_to(root)) for model in shared]
-        for commit in git(root, "log", "--format=%H", "--", *relative).stdout.split():
-            if changed_only_harness(root, commit, relative, sources):
+        commits = git(root, "log", f"-{FALLBACK_COMMITS + 1}", "--format=%H", "--", *relative).stdout.split()
+        read = "the model files"
+        if len(commits) > FALLBACK_COMMITS:
+            commits, read = commits[:FALLBACK_COMMITS], f"the last {FALLBACK_COMMITS} commits of the model files"
+        since = ""
+        for commit in commits:
+            found = changed_only_harness(root, commit, relative, sources)
+            if isinstance(found, str):
+                since = f" since the rename to {Path(found).name} in {commit}, which git log does not follow"
+                break
+            if found:
                 return commit, "; ".join([f"from the last commit of the model files that changed no production code in {names}", *unused])
-        return None, "; ".join([f"no commit of the model files changed only the #[cfg(kani)] items of {names}", *unused])
+        return None, "; ".join([f"no commit of {read} changed only the #[cfg(kani)] items of {names}{since}", *unused])
     last = git(root, "log", "-1", "--format=%H", "--", *relative).stdout.strip()
     if last:
         return last, "; ".join(["from the last commit of the model files", *unused])
