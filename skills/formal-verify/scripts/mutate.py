@@ -45,6 +45,14 @@ before it runs any tool, so a malformed mutation stops the run first.
 Usage: mutate.py <Name.mutations>
   The environment settings of tlc-matrix.sh apply to TLA+ mutations.
 """
+import signal
+
+if __name__ == "__main__":
+    # Python's SIGINT handler raises KeyboardInterrupt, which prints a traceback when it arrives during the imports.
+    # Until runner.run installs its own handlers, the default action ends the process by the signal instead.
+    if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
 import sys
 import tempfile
 from collections.abc import Callable
@@ -258,6 +266,8 @@ LANGUAGES = {
 
 
 def main():
+    # A FAIL line can carry Lean's UTF-8 messages, so write them as UTF-8 whatever the locale, as lean.py does.
+    sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape")
     # Users run this file directly, so no shell helper has checked the version for the Rust runner.
     if sys.version_info < (3, 9):  # noqa: UP036 -- ruff assumes the floor this line enforces
         print(f"UNAVAILABLE python3 is Python {'.'.join(map(str, sys.version_info[:3]))}; install Python 3.9 or later")
