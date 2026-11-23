@@ -363,4 +363,24 @@ printf 'mutation f gains an arm\n-   | k + 1 => k\n+   | 1 => 0\n+   | k + 2 => 
 bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
 python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result" || { cat "$work/result"; echo 'FAIL a shared match helper made an unchanged theorem statement read as changed'; exit 1; }
 grep -q '^DETECTED f gains an arm: proof/check fails: theorem Step.t$' "$work/result"
+
+# The same notion keeps which match helper sits at each place in a statement. Here a notation's match
+# and the theorem's first match share one helper; the mutation gives the notation the helper of the
+# second match, which makes the statement false. Its failing proof shows nothing, so it gets no verdict.
+cat > "$work/Model/Step.lean" <<'EOF'
+namespace Step
+local notation "M3" => (match 3 with | 0 => 1 | k + 1 => k)
+theorem t : (match 3 with | 0 => 1 | k + 1 => k) = 2 ∧ (match 3 with | 0 => 1 | k => k) = 3 ∧ M3 = 2 := by
+  decide
+end Step
+EOF
+printf 'mutation M3 matches every k\n- local notation "M3" => (match 3 with | 0 => 1 | k + 1 => k)\n+ local notation "M3" => (match 3 with | 0 => 1 | k => k)\n' > "$work/Model/Step.mutations"
+bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
+if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
+  cat "$work/result"
+  echo 'FAIL a mutation that moved a match helper to another place in a statement passed'
+  exit 1
+fi
+cat "$work/result"
+grep -q '^theorem Step.t: the mutation changes its statement' "$work/result"
 echo 'ok: qualified coverage and proof-sensitivity reporting checked with real Lean'

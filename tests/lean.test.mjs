@@ -78,7 +78,7 @@ function leanFixture(log, { status = 0, audit = audited, files = [] } = {}) {
     `[ "$3" = "lean" ] && { echo "${dir}"; exit 0; }`,
     '[ "$7" = python3 ] && { shift 6; exec "$@"; }',
     'if [[ "$8" == */lean-replay.lean ]]; then echo replay >> "$TASK_TRACE"; sed "s/^/replaying /" "$AFV_REPLAY_MODULES"; [ -z "$TASK_REPLAY" ] || { echo "$TASK_REPLAY"; exit 1; }; exit 0; fi',
-    'if [ "${10}" = "audit" ]; then echo audit >> "$TASK_TRACE"; sed "s/^/module /" "${@: -1}"; printf "%s\\n" "$TASK_AUDIT"; exit 0; fi',
+    'if [[ "$9" == */lean-analysis.lean && "${10}" == audit ]]; then echo audit >> "$TASK_TRACE"; sed "s/^/module /" "${@: -1}"; printf "%s\\n" "$TASK_AUDIT"; exit 0; fi',
     'shift 6; printf "%s\\n" "$@" > "$TASK_BUILT"',
     `[ ${status} -ne 0 ] || for target; do target=\${target#"$TASK_PROJECT/"}; echo "$TASK_PROJECT/.lake/build/lib/lean/\${target%.lean:olean}.olean"; done`,
     `cat "${join(logs, log)}" >&2; exit ${status}`,

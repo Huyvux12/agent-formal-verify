@@ -110,10 +110,22 @@ private def followed (env : Environment) (roots : List Expr) : String := Id.run 
       queue := queue ++ unrecorded e
   return out
 
+-- The match helpers an expression uses, one per use, in the order they occur.
+private partial def helperUses (env : Lean.Environment) : Lean.Expr → Array Lean.Name
+  | .const n _ => if (shown env n).getRoot == `_match then #[n] else #[]
+  | .app f a => helperUses env f ++ helperUses env a
+  | .lam _ t b _ | .forallE _ t b _ => helperUses env t ++ helperUses env b
+  | .letE _ t v b _ => helperUses env t ++ helperUses env v ++ helperUses env b
+  | .mdata _ e | .proj _ _ e => helperUses env e
+  | _ => #[]
+
 -- A statement's identity when the mutation runner compares an original theorem, example or #guard with its
 -- mutated copy: the frozen record's form of its type, without binder names, which change no statement.
+-- That form names every match helper alike, so the content of the helper at each use is added: two
+-- statements that use the same helpers at different places then differ, while a helper renamed differs not.
 private def statementKey (env : Lean.Environment) (levels : List Lean.Name) (type : Lean.Expr) : String :=
-  reprStr (levels.map (·.eraseMacroScopes), nameless (positionFree env type)) ++ followed env [type]
+  reprStr (levels.map (·.eraseMacroScopes), nameless (positionFree env type)) ++ followed env [type] ++
+    reprStr ((helperUses env type).toList.map fun n => followed env [.const n []])
 
 private def oneLine (s : String) : String :=
   (s.foldl (fun (acc, gap) c =>
@@ -248,7 +260,7 @@ private def declarations (instances : Array (Nat × Nat)) : CommandElabM (Array 
     result := result.push <| Json.mkObj [
       ("name", toJson ((privateToUserName? name).getD name).toString),
       ("private", toJson (privateToUserName? name).isSome),
-      ("theorem", toJson (info.isTheorem && !env.isProjectionFn name && !instanceDecl)),
+      ("theorem", toJson ((info matches .thmInfo _) && !env.isProjectionFn name && !instanceDecl)),
       ("type", toJson (statementKey env info.levelParams info.type)),
       ("start", point ranges.range.pos), ("end", point ranges.range.endPos)]
   return result
