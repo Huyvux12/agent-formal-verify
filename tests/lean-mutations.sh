@@ -6,12 +6,12 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 scripts=$ROOT/skills/formal-verify/scripts
-template=$ROOT/skills/formal-verify/examples/lean-template
 work=$(mktemp -d)
 work=$(cd "$work" && pwd -P)
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/Model"
-cp "$template"/{lakefile.toml,lake-manifest.json,lean-toolchain} "$work/"
+# shellcheck source=tests/lib.sh
+source "$ROOT/tests/lib.sh"
+lean_project "$work"
 if [ "$#" -gt 0 ]; then printf '%s\n' "$1" > "$work/lean-toolchain"; fi
 
 cat > "$work/Model/Step.lean" <<'EOF'
@@ -29,10 +29,8 @@ EOF
 printf 'mutation no increment\n- n + 1\n+ n\n' > "$work/Model/Step.mutations"
 bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean
 bash "$scripts/lean-check.sh" "$work"
-if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
-  echo 'FAIL indented, same-name vacuous theorem escaped coverage'
-  exit 1
-fi
+# An indented vacuous theorem that shares its name with another must not escape coverage.
+rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
 cat "$work/result"
 grep -q '^DETECTED no increment: proof/check fails: theorem Step.Live.property$' "$work/result"
 grep -q '^UNCOVERED theorem Step.Vacuous.property$' "$work/result"
@@ -43,26 +41,18 @@ fi
 
 # A mutation that edits only a theorem's own proof does not cover that theorem.
 printf 'mutation edit the vacuous proof only\n- absurd h (Nat.not_lt_zero n)\n+ absurd h (Nat.lt_irrefl n)\n' > "$work/Model/Step.mutations"
-if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
-  echo 'FAIL a proof-only edit covered its own theorem'
-  exit 1
-fi
+rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
 cat "$work/result"
 grep -q '^theorem Step.Vacuous.property: the mutation edits this theorem' "$work/result"
 printf 'mutation no increment\n- n + 1\n+ n\n' > "$work/Model/Step.mutations"
 
 # Removing a frozen theorem must not turn incomplete mutation coverage green.
 sed -i.orig '/(h : n < 0)/d' "$work/Model/Step.lean"
-if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
-  echo 'FAIL deleted frozen theorem disappeared from mutation coverage'
-  exit 1
-fi
+rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
 grep -Fq 'FROZEN Step.Vacuous.property: statement changed' "$work/result"
+# A malformed freeze record allows no mutation credit.
 printf '{"declarations":[]}\n' > "$work/Model/Step.statements"
-if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
-  echo 'FAIL malformed freeze record allowed mutation credit'
-  exit 1
-fi
+rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
 grep -q 'unsupported statements format' "$work/result"
 
 # Proposition-valued projections and instances are not property declarations.
@@ -119,10 +109,7 @@ grep -Fqx "DETECTED no increment: proof/check fails: #guard at $work/Model/Step.
 
 # Errors in a wrapper must not be attributed to the check it contains.
 printf 'mutation invalid option\n- set_option maxRecDepth 2048 in\n- #guard step 0 == 1\n+ set_option maxRecDepth true in\n+ #guard step 0 == 1\n' > "$work/Model/Step.mutations"
-if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
-  echo 'FAIL invalid wrapper option counted as a detected mutation'
-  exit 1
-fi
+rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
 cat "$work/result"
 grep -q "^FAIL mutation 'invalid option' did not reach a verdict:" "$work/result"
 printf 'mutation no increment\n- n + 1\n+ n\n' > "$work/Model/Step.mutations"
@@ -170,10 +157,7 @@ grep -Fqx "DETECTED no increment: proof/check fails: theorem Step.property; exam
 
 # A syntax error in a definition must never count as a detected bug.
 printf 'mutation invalid definition\n- n + 1\n+ n +\n' > "$work/Model/Step.mutations"
-if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
-  echo 'FAIL invalid definition counted as a detected mutation'
-  exit 1
-fi
+rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
 cat "$work/result"
 grep -q "^FAIL mutation 'invalid definition' did not reach a verdict:" "$work/result"
 if grep -q '^DETECTED' "$work/result"; then
@@ -189,10 +173,7 @@ for theorem in 'property (n : Nat) : n < step n := by simp [step]' \
   'unapplied (f : Nat → Nat) (h : f = step) : f 0 = 1 := by subst h; rfl'; do
   printf 'namespace Step\ndef step (n : Nat) : Nat := n + 1\ntheorem %s\nend Step\n' "$theorem" > "$work/Model/Step.lean"
   bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean
-  if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
-    echo "FAIL changed statement of ${theorem%% *} counted as a detected mutation"
-    exit 1
-  fi
+  rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
   cat "$work/result"
   grep -q "^FAIL mutation 'rename step' did not reach a verdict:" "$work/result"
   grep -q "^theorem Step.${theorem%% *}: the mutation changes its statement" "$work/result"
@@ -204,29 +185,25 @@ for check in 'example : step 0 = 1 := by rfl' \
   '#guard step 0 == 1'; do
   printf 'namespace Step\ndef step (n : Nat) : Nat := n + 1\n%s\nend Step\n' "$check" > "$work/Model/Step.lean"
   bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean
-  if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
-    echo "FAIL changed statement of '$check' counted as a detected mutation"
-    exit 1
-  fi
+  rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
   cat "$work/result"
   grep -q "^FAIL mutation 'rename step' did not reach a verdict:" "$work/result"
   grep -Fq "${check%% *} at $work/Model/Step.lean:3: the mutation changes its statement" "$work/result"
 done
 
+# A new example that repeats an existing example's statement cannot count as a detection.
 printf 'def one : Nat := 1\nexample : True := trivial\n' > "$work/Model/Step.lean"
 bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean
 for edit in \
   $'- def one : Nat := 1\n+ def one : Nat := 1\n+ example : True := by exact 0' \
   $'- trivial\n+ by exact 0\n+ example : True := trivial'; do
   printf 'mutation insert duplicate example\n%s\n' "$edit" > "$work/Model/Step.mutations"
-  if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
-    echo 'FAIL a newly inserted example with an existing statement counted as a detection'
-    exit 1
-  fi
+  rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
   grep -q "^FAIL mutation 'insert duplicate example' did not reach a verdict:" "$work/result"
   grep -Fq 'cannot match this example to a single original check' "$work/result"
 done
 
+# A mutation that breaks only a witness is missed, and a public witness is no coverage target.
 cat > "$work/Model/Step.lean" <<'EOF'
 namespace Step
 def step (n : Nat) : Option Nat := if n < 3 then some (n + 1) else none
@@ -241,10 +218,7 @@ printf 'mutation never step\n- if n < 3 then\n+ if n < 0 then\n' > "$work/Model/
 bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean
 bash "$scripts/lean-check.sh" "$work" | tee "$work/check"
 grep -q '^WITNESS absent Step.witness: ' "$work/check"
-if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
-  echo 'FAIL a mutation that breaks only a witness counted as detected'
-  exit 1
-fi
+rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
 cat "$work/result"
 grep -q '^MISSED never step$' "$work/result"
 if grep -q '^UNCOVERED theorem Step.bounded.witness$' "$work/result"; then
@@ -277,10 +251,7 @@ theorem pick_pos (n : Nat) : 0 < pick n := by unfold pick; split <;> decide'
 frozen_double 2 <<< "$above"
 bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check" || { cat "$work/check"; echo 'FAIL declarations added above a frozen definition changed its record'; exit 1; }
 frozen_double 3 <<< "$above"
-if bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"; then
-  echo 'FAIL an edit to a frozen definition body passed'
-  exit 1
-fi
+rejected bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"
 grep -q '^  definition value changed$' "$work/check"
 
 # A constant that a macro defines has a hygienic name and no record of its own, so a frozen
@@ -308,10 +279,7 @@ frozen_helper 1 <<< 'def proved : {k : Nat // 0 < k} := ⟨2, by decide⟩
 defWithHelper g := 5, 6'
 bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check" || { cat "$work/check"; echo 'FAIL a declaration added above changed the record of a definition that uses a hygienic constant'; exit 1; }
 frozen_helper 2 < /dev/null
-if bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"; then
-  echo 'FAIL an edit to a hygienic constant that a frozen definition uses passed'
-  exit 1
-fi
+rejected bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"
 grep -q '^FROZEN Step.f: statement changed$' "$work/check"
 
 # Lean shares one match helper among the matches of the same shape in a module, and a pattern
@@ -339,10 +307,7 @@ def down : Nat → Nat
   | m + 1 => down m'
 bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check" || { cat "$work/check"; echo 'FAIL a match of the same shape added above changed a frozen record'; exit 1; }
 frozen_match 3 < /dev/null
-if bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"; then
-  echo 'FAIL an edit to a frozen definition match passed'
-  exit 1
-fi
+rejected bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"
 grep -q '^FROZEN Step.pick: statement changed$' "$work/check"
 
 # The mutation runner and the frozen record share one notion of a statement. A theorem that states a
@@ -376,11 +341,7 @@ end Step
 EOF
 printf 'mutation M3 matches every k\n- local notation "M3" => (match 3 with | 0 => 1 | k + 1 => k)\n+ local notation "M3" => (match 3 with | 0 => 1 | k => k)\n' > "$work/Model/Step.mutations"
 bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
-if python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"; then
-  cat "$work/result"
-  echo 'FAIL a mutation that moved a match helper to another place in a statement passed'
-  exit 1
-fi
+rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
 cat "$work/result"
 grep -q '^theorem Step.t: the mutation changes its statement' "$work/result"
 echo 'ok: qualified coverage and proof-sensitivity reporting checked with real Lean'
