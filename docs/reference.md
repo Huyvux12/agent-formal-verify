@@ -78,7 +78,7 @@ For Pi:
 pi update --extensions
 ```
 
-Pin a release by installing `npm:agent-formal-verify@0.4.8` or `git:github.com/michael-denyer/agent-formal-verify@v0.4.8`; a pinned package does not move on update.
+Pin a release by installing `npm:agent-formal-verify@<version>` or `git:github.com/michael-denyer/agent-formal-verify@v<version>`; a pinned package does not move on update.
 
 For OpenCode, `opencode plugin check` reports a newer release on npm, or a newer commit on the default branch for a Git install. To install it, pass the specifier you installed:
 
@@ -87,7 +87,7 @@ opencode plugin update agent-formal-verify
 opencode plugin update 'git+https://github.com/michael-denyer/agent-formal-verify.git'
 ```
 
-Pin a release in OpenCode by installing `agent-formal-verify@0.4.8`.
+Pin a release in OpenCode by installing `agent-formal-verify@<version>`.
 
 Tool caches survive plugin updates. Run setup again only if a release introduces a new system prerequisite.
 

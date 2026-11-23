@@ -10,7 +10,7 @@ The helpers are in the `scripts/` directory of the installed `formal-verify` ski
 
 Stay in the target repository and run each helper with `bash` and its absolute path. Pass absolute paths to model projects and matrices. Keep the installed skill files read-only, and create models and build outputs in the target repository. Shared tool caches can serve several repositories; each repository determines its own tool requirements and Lean pins.
 
-Every runner writes its temporary state into `TMPDIR` (failing cleanly with `FAIL` if an explicitly set `TMPDIR` cannot be created or written) and removes its working directories between matrix runs and on `SIGINT`, `SIGTERM` or `SIGHUP`. Lean builds write into the model project's `.lake` directory, while `lean-check.sh` places its temporary build log in `TMPDIR`. `setup.sh` (`tla`, `rust`, `lean`, and `storage`) reports `TEMP_DIR` free space, warns when the active temporary volume has less than `FORMAL_MIN_FREE_GIB` free (default `64` GiB), and lists larger writable `EXTERNAL_VOLUME` mounts so heavy runs can redirect `TMPDIR` onto an external disk. Checkers also warn once on `stderr` before starting when active temporary space drops below `10` GiB (or `FORMAL_MIN_FREE_GIB` when set).
+Every runner writes its temporary state into `TMPDIR` (failing cleanly with `FAIL` if an explicitly set `TMPDIR` cannot be created or written) and removes its working directories between matrix runs and on `SIGINT`, `SIGTERM` or `SIGHUP`. Lean builds write into the model project's `.lake` directory, while `lean-check.sh` places its temporary build log in `TMPDIR`. `setup.sh` (`tla`, `rust`, `lean`, and `storage`) reports `TEMP_DIR` free space, and `SYSTEM_DISK` free space when the temporary directory is on another device. It warns when the active temporary volume, or the system disk while it holds the temporary directory, has less than `FORMAL_MIN_FREE_GIB` free (default `64` GiB). It also lists larger writable `EXTERNAL_VOLUME` mounts so heavy runs can redirect `TMPDIR` onto an external disk. Checkers also warn once on `stderr` before starting when active temporary space drops below `10` GiB (or `FORMAL_MIN_FREE_GIB` when set).
 
 To stop a checker, a runner suspends the checker and every process it started, then sends them `SIGTERM` and resumes them, so none can start another process meanwhile. This takes a few `ps` calls, a few tens of milliseconds on an idle machine and longer under load. A runner ended in that time by a signal it does not handle, such as `SIGKILL` or `SIGQUIT`, cannot resume them. The checker and the processes suspended so far then stay suspended until something ends them, and the processes it started that were not yet suspended keep running. `SIGINT`, `SIGTERM` and `SIGHUP` do not cause this, because the runner holds them back until the stop finishes and then ends by the signal.
 
@@ -76,7 +76,7 @@ The Lean checker builds every `.lean` file in the project by its path, so a file
 
 The mutation runner reads `Name.mutations` beside `Name.lean`. It elaborates each mutated copy with the project's toolchain and built modules, outside the project, and does not install a toolchain.
 
-Helpers print `UNAVAILABLE` and exit 3 when a required tool is missing, unusable or unverified. Report the target as "not checked" and give the printed remedy. A model or input error prints `FAIL` and exits 1; a usage error exits 2. An unavailable run prints no PASS or SUMMARY line.
+Helpers print `UNAVAILABLE` and exit 3 when a required tool is missing, unusable or unverified. Report the target as "not checked" and give the printed remedy. A model or input error prints `FAIL` and exits 1; a usage error exits 2. An unavailable run prints no PASS or SUMMARY line. One line reuses the token for an optional part of a check that passed: `lean-check.sh` prints `UNAVAILABLE kernel replay` when the pin ships no `leanchecker`, then its `PASS` line, and exits 0.
 
 ## CI
 
@@ -96,4 +96,8 @@ Install the chosen runtime and the pinned TLC JAR in the CI environment, run the
 - run: bash .formal-verify/skills/formal-verify/scripts/setup.sh lean "$GITHUB_WORKSPACE/lean"
 - run: bash .formal-verify/skills/formal-verify/scripts/lean-check.sh "$GITHUB_WORKSPACE/lean"
 - run: python3 .formal-verify/skills/formal-verify/scripts/mutate.py "$GITHUB_WORKSPACE/lean/Model/Name.mutations"
+- run: cargo install --locked kani-verifier --version 0.68.0 && cargo kani setup
+- run: bash .formal-verify/skills/formal-verify/scripts/setup.sh rust
+- run: bash .formal-verify/skills/formal-verify/scripts/kani-check.sh "$GITHUB_WORKSPACE/verify"
+- run: python3 .formal-verify/skills/formal-verify/scripts/mutate.py "$GITHUB_WORKSPACE/verify/src/lib.mutations"
 ```

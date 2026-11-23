@@ -36,7 +36,7 @@ Use an unprefixed branch name. Keep each pull request focused on one problem. De
 
 Update the three plugin manifests, `package.json`, the Claude marketplace entry and `CHANGES.md` together. `node --test tests/plugin.test.mjs` checks that the versions, descriptions and license declarations agree. Document changes to setup requirements or pinned tools so users know what an update requires.
 
-After the release merges, tag the merge commit `v<version>` and push the tag. The publish workflow checks that the tag matches `package.json` and publishes to npm through trusted publishing with provenance. A new file that the Pi package or the OpenCode plugin loads at runtime belongs in the `files` list of `package.json`; the metadata test fails on a root entry that is in neither that list nor its repository-only list.
+After the release merges, tag the merge commit `v<version>` and push the tag. The publish workflow checks that the tag matches `package.json` and publishes to npm through trusted publishing with provenance. A new file that the Pi package or the OpenCode plugin loads at runtime belongs in the `files` list of `package.json` and in the package contents that the metadata test expects, which fails on any other difference from `npm pack`.
 
 ### Claude directory validation
 
@@ -55,7 +55,7 @@ For a credential or download-and-run finding, expand the hold in the portal: its
 
 Dependabot opens weekly update PRs for GitHub Actions, the pinned lint hooks, prek and the isolated-installation `skills` CLI. Updates wait seven days after release and must pass CI before review; they are not merged automatically.
 
-Update the lychee and OSV-Scanner image tags and digests, the Bash 3.2 job's Node image digest, Bash checksum and bison version, zizmor tool version, and elan version and checksum manually in CI. Lean pins and TLC's version and checksum also need deliberate updates: run a valid model and a failing property with the new tools before changing their pins.
+Update the lychee and OSV-Scanner image tags and digests, the Bash 3.2 job's Node image digest, Bash checksum and bison version, and zizmor tool version manually in CI. Lean pins and TLC's version and checksum also need deliberate updates: run a valid model and a failing property with the new tools before changing their pins.
 
 ## License
 
