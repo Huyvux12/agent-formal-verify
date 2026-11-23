@@ -257,8 +257,8 @@ test("sync falls back to the last commit of the model files when the header's co
 test("sync reports a model with no sync commit, and searches a model file only when it is also a source", () => {
   const dir = fixture();
   git(dir, "init", "-b", "main");
-  commit(dir, { "src/lib.rs": "pub fn claim() {}\n" }, "start");
-  commit(dir, { "tla/Queue.tla": "claim\n" }, "model");
+  const start = commit(dir, { "src/lib.rs": "pub fn claim() {}\n" }, "start");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${start} *)\nclaim\n` }, "model");
   writeFileSync(join(dir, "tla/New.tla"), "claim\n");
   const none = sync(dir, ["tla/New.tla", "--name", "claim"]);
   assert.equal(none.status, 0, none.stdout + none.stderr);
@@ -289,6 +289,21 @@ test("sync falls back past production edits to a model file that is also a sourc
   const mixed = sync(dir, ["src/lib.rs", "tla/Queue.tla", "--source", "src/lib.rs"]);
   assert.equal(mixed.status, 0, mixed.stdout + mixed.stderr);
   assert.deepEqual(lines(mixed.stdout, "SYNC"), [`SYNC ${harness} from the last commit of the model files that changed no production code in lib.rs`]);
+
+  // A commit that changed only another model file never synced the harness, so it is not one either (#203).
+  const queue = fixture();
+  git(queue, "init", "-b", "main");
+  commit(queue, { "src/lib.rs": "pub fn claim() -> u8 { 1 }\n" + proofs, "tla/Queue.tla": "claim\n" }, "production, harness and model");
+  commit(queue, { "src/lib.rs": "pub fn claim() -> u8 { 2 }\n" + proofs }, "production edit");
+  commit(queue, { "tla/Queue.tla": "claim, edited\n" }, "model edit");
+  const other = sync(queue, ["src/lib.rs", "tla/Queue.tla", "--source", "src/lib.rs", "--name", "claim"]);
+  assert.equal(other.status, 0, other.stdout + other.stderr);
+  assert.equal(other.stdout, "SYNC none: no commit of the model files changed only the #[cfg(kani)] items of lib.rs; compare the model with the code in full\n");
+  // A harness edit made with a model edit still counts, and the later model-only commit does not hide it.
+  const both = commit(queue, { "src/lib.rs": "pub fn claim() -> u8 { 2 }\n" + proofs.replace("== 1", "== 2"), "tla/Queue.tla": "claim, twice\n" }, "harness and model");
+  commit(queue, { "tla/Queue.tla": "claim, again\n" }, "model edit again");
+  const together = sync(queue, ["src/lib.rs", "tla/Queue.tla", "--source", "src/lib.rs", "--name", "claim"]);
+  assert.deepEqual(lines(together.stdout, "SYNC"), [`SYNC ${both} from the last commit of the model files that changed no production code in lib.rs`]);
 
   // The harness came with the production code, so no commit changed the harness alone.
   const fresh = fixture();
