@@ -324,7 +324,7 @@ def verify(crate, work, kani, name, bound, *, cwd=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("ready", help="check that the pinned Kani bundle runs")
+    commands.add_parser("ready", help="check that the pinned Kani bundle runs, then report the temporary directory's free space")
     check = commands.add_parser("check", help="verify the crate's proof harnesses")
     check.add_argument("crate")
     check.add_argument("harnesses", nargs="*")
@@ -332,6 +332,7 @@ def main():
     kani = Kani()
     if arguments.command == "ready":
         print(f"READY Kani {kani.version}")
+        storage.report()
         return 0
     crate, selected = Path(arguments.crate).resolve(), arguments.harnesses
     temp_root = storage.ensure_temp_root()
