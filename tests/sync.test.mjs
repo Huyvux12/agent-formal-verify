@@ -32,14 +32,16 @@ function diagnosis(dir, output) {
   const [, oid] = unreadable;
   const object = spawnSync("git", ["-C", dir, "cat-file", "-t", oid], { encoding: "utf8", env: gitEnv });
   const found = object.status === 0 ? `is a ${object.stdout.trim()} that reads now` : `is missing: ${object.stderr.trim()}`;
-  const loose = join(dir, ".git/objects", oid.slice(0, 2), oid.slice(2));
-  const file = existsSync(loose) ? `its loose file has ${statSync(loose).size} bytes` : "it has no loose file";
+  let file = "it has no loose file";
+  try {
+    file = `its loose file has ${statSync(join(dir, ".git/objects", oid.slice(0, 2), oid.slice(2))).size} bytes`;
+  } catch {}
   return `DIAGNOSIS ${oid} ${found}; ${file}; fixture kept at ${dir}\n`;
 }
 
 function git(dir, ...args) {
   const result = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", env: gitEnv });
-  assert.equal(result.status, 0, result.stderr + diagnosis(dir, result.stderr));
+  if (result.status !== 0) assert.fail(result.stderr + diagnosis(dir, result.stderr));
   return result.stdout.trim();
 }
 
@@ -55,7 +57,7 @@ function commit(dir, files, message) {
 
 function sync(dir, args, cwd = dir) {
   const result = spawnSync("python3", [join(scripts, "sync.py"), ...args], { cwd, encoding: "utf8", env: gitEnv });
-  result.stdout += diagnosis(dir, result.stdout + result.stderr);
+  if (result.status !== 0) result.stdout += diagnosis(dir, result.stdout + result.stderr);
   return result;
 }
 
@@ -383,9 +385,12 @@ test("sync's tests keep a fixture whose object git cannot read and say whether t
   const result = sync(dir, ["src/lib.rs", "--source", "src/lib.rs"]);
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, new RegExp(`\nDIAGNOSIS ${lost} is missing: .+; it has no loose file; fixture kept at ${dir}\n$`));
-  removeFixtures();
-  assert.ok(existsSync(dir));
-  rmSync(dir, { recursive: true, force: true });
+  try {
+    removeFixtures();
+    assert.ok(existsSync(dir));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("sync fails for a source path that no commit has", () => {
