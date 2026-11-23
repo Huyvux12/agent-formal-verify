@@ -58,7 +58,7 @@ sys.dont_write_bytecode = True
 
 import kani
 import lean_mutations
-import processes
+import runner
 import storage
 import tlc
 
@@ -198,12 +198,7 @@ def tla_runner(spec, mutations):
     for mutation in mutations:
         if mutation.detects not in plan.detectors:
             stop(f"mutation '{mutation.label}': detects '{mutation.detects}', which {matrix} does not check")
-    try:
-        checker = tlc.Tlc()
-    except tlc.Unavailable as error:
-        print(error)
-        sys.exit(3)
-    return plan.properties, partial(check_tla, plan, checker)
+    return plan.properties, partial(check_tla, plan, tlc.Tlc())
 
 
 def lean_runner(model, mutations):
@@ -219,11 +214,7 @@ def rust_runner(model, mutations):
     project = project_root(model, "Cargo.toml")
     if project is None:
         stop(f"{model} is in no Rust crate")
-    try:
-        verifier = kani.Kani()
-    except kani.Unavailable as error:
-        print(f"UNAVAILABLE {error}")
-        sys.exit(3)
+    verifier = kani.Kani()
     with tempfile.TemporaryDirectory(prefix="formal-kani-discover-", dir=storage.ensure_temp_root()) as temporary:
         work = Path(temporary)
         try:
@@ -290,18 +281,12 @@ def main():
         print(LEAN_NOTE)
     print(f"SUMMARY {detected} of {len(mutations)} mutations detected"
           + (f", {len(uncovered)} properties without a mutation" if uncovered else ""))
-    sys.exit(0 if detected == len(mutations) and not uncovered else 1)
+    return 0 if detected == len(mutations) and not uncovered else 1
 
 
 if __name__ == "__main__":
     try:
-        with processes.signal_cleanup():
-            main()
-    except storage.TempDirError as error:
-        print(error)
-        sys.exit(1)
+        runner.run(main)
     except lean_mutations.AnalysisError as error:
         print(error)
         sys.exit(error.status)
-    except processes.SignalTerminated as error:
-        error.exit()

@@ -31,12 +31,12 @@ import hashlib
 import json
 import re
 import sys
-import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
 sys.dont_write_bytecode = True
 
+import runner
 import tlc
 from lean_records import read_record as read_lean_record
 
@@ -474,15 +474,7 @@ def read_record(path):
 
 def write_record(path, models):
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(json.dumps({"format": FORMAT, "models": models}, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-        temporary.replace(path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    runner.atomic_write(path, json.dumps({"format": FORMAT, "models": models}, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
 
 
 def record(record_path, files):
