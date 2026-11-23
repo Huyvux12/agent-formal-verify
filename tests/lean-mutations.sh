@@ -29,6 +29,7 @@ EOF
 printf 'mutation no increment\n- n + 1\n+ n\n' > "$work/Model/Step.mutations"
 bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean
 bash "$scripts/lean-check.sh" "$work"
+# An indented vacuous theorem that shares its name with another must not escape coverage.
 rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
 cat "$work/result"
 grep -q '^DETECTED no increment: proof/check fails: theorem Step.Live.property$' "$work/result"
