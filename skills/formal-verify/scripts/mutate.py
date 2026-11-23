@@ -266,6 +266,8 @@ LANGUAGES = {
 
 
 def main():
+    # A FAIL line can carry Lean's UTF-8 messages, so write them as UTF-8 whatever the locale, as lean.py does.
+    sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape")
     # Users run this file directly, so no shell helper has checked the version for the Rust runner.
     if sys.version_info < (3, 9):  # noqa: UP036 -- ruff assumes the floor this line enforces
         print(f"UNAVAILABLE python3 is Python {'.'.join(map(str, sys.version_info[:3]))}; install Python 3.9 or later")

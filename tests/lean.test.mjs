@@ -6,21 +6,67 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { assertProcessStopped, command, excludes, fixture, includes, leanPin, logs, removeFixtures, run, scripts, writeLeanProject } from "./helpers.mjs";
+import { assertProcessStopped, command, elanListsPin, excludes, fixture, includes, leanPin, logs, removeFixtures, run, scripts, writeLeanProject } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
-test("Lean verification refuses an unprepared toolchain without requesting installation", () => {
-  const dir = fixture();
+// elan run installs a toolchain that is not installed, even without --install, so the checker never runs one.
+test("Lean verification and Lean mutations refuse a toolchain that elan does not list, without running it", () => {
+  const dir = realpathSync(fixture());
   const project = join(dir, "model");
   writeLeanProject(project);
-  command(dir, "elan", 'printf "%s\\n" "$@" >> "$TASK_TRACE"; exit 1');
-  const result = run(dir, "lean-check.sh", [project]);
-  assert.equal(result.status, 3);
-  includes(result.stdout, "UNAVAILABLE ");
-  includes(result.stdout, "setup.sh lean");
-  const args = readFileSync(join(dir, "calls"), "utf8").trim().split("\n");
-  assert.deepEqual(args, ["run", leanPin, "lake", "--version"]);
+  mkdirSync(join(project, "Model"));
+  writeFileSync(join(project, "Model/Step.lean"), "def step (n : Nat) : Nat := n + 1\n");
+  writeFileSync(join(project, "Model/Step.statements"), JSON.stringify({ format: 1, module: "Model.Step", toolchain: leanPin,
+    declarations: [{ name: "step", kind: "definition", type: "Nat → Nat", typeHash: "0", valueHash: "0" }] }));
+  writeFileSync(join(project, "Model/Step.mutations"), "mutation no step\n- n + 1\n+ n\n");
+  command(dir, "elan", [
+    'printf "%s\\n" "$*" >> "$TASK_TRACE"',
+    '[ "$1" = run ] && echo "installing $2" >> "$TASK_TRACE"',
+    'exit 0',
+  ].join("\n"));
+  for (const [script, args] of [["lean-check.sh", [project]], ["mutate.py", [join(project, "Model/Step.mutations")]]]) {
+    const result = run(dir, script, args);
+    assert.equal(result.status, 3, script + result.stdout + result.stderr);
+    assert.equal(result.stdout, `UNAVAILABLE ${leanPin} is not ready; run bash ${scripts}/setup.sh lean ${project}\n`);
+  }
+  assert.deepEqual(readFileSync(join(dir, "calls"), "utf8").trim().split("\n"), ["toolchain list", "toolchain list"]);
+});
+
+test("the Lean checker finds a pin installed under the name elan gives it, and runs only that toolchain", () => {
+  for (let [pinned, listed] of [["4.34.1", leanPin], ["v4.34.1", leanPin], ["leanprover/lean4:4.34.1", leanPin],
+    ["nightly-2025-01-01", "leanprover/lean4-nightly:nightly-2025-01-01"], ["custom", "custom"], [null, "nothing"]]) {
+    const dir = fixture();
+    writeLeanProject(dir);
+    // An absolute path names a toolchain directory, which elan never lists.
+    pinned ??= join(dir, "toolchain");
+    mkdirSync(join(dir, "toolchain"), { recursive: true });
+    writeFileSync(join(dir, "lean-toolchain"), pinned + "\n");
+    command(dir, "elan", [
+      'printf "%s\\n" "$*" >> "$TASK_TRACE"',
+      `[ "$1 $2" = "toolchain list" ] && { echo "${listed} (default)"; exit 0; }`,
+      'exit 1',
+    ].join("\n"));
+    const result = run(dir, "lean-check.sh", [dir]);
+    assert.equal(result.status, 3, pinned + result.stdout);
+    const listing = listed === "nothing" ? [] : ["toolchain list"];
+    assert.deepEqual(readFileSync(join(dir, "calls"), "utf8").trim().split("\n"), [...listing, `run ${pinned} lake --version`], pinned);
+  }
+});
+
+test("a Lean pin that names a release channel fails, since elan resolves it online", () => {
+  for (const pinned of ["stable", "leanprover/lean4:nightly", "beta", "acme/model:lean-toolchain"]) {
+    const dir = fixture();
+    writeLeanProject(dir);
+    writeFileSync(join(dir, "lean-toolchain"), pinned + "\n");
+    command(dir, "elan", 'printf "%s\\n" "$*" >> "$TASK_TRACE"; exit 0');
+    for (const [script, args] of [["lean-check.sh", [dir]], ["setup.sh", ["lean", dir]]]) {
+      const result = run(dir, script, args);
+      assert.equal(result.status, 1, script + result.stdout);
+      includes(result.stdout, `FAIL ${join(dir, "lean-toolchain")} pins ${pinned}, which elan resolves to a release online; pin a release`);
+    }
+    assert.equal(existsSync(join(dir, "calls")), false);
+  }
 });
 
 test("Lean preparation reuses ready pins and installs a changed repository pin once", () => {
@@ -36,6 +82,7 @@ test("Lean preparation reuses ready pins and installs a changed repository pin o
     'printf "%s\\n" "$*" >> "$TASK_TRACE"',
     'case "$1 $2" in',
     '  "toolchain install") printf "%s\\n" "$3" >> "$TASK_INSTALLED" ;;',
+    '  "toolchain list") cat "$TASK_INSTALLED" ;;',
     '  *) grep -Fxq "$2" "$TASK_INSTALLED" ;;',
     'esac',
   ].join("\n"));
@@ -56,7 +103,8 @@ test("Lean preparation reports failure when installation does not produce a work
   const dir = fixture();
   const project = join(dir, "model");
   writeLeanProject(project);
-  command(dir, "elan", 'if [ "$1" = "toolchain" ]; then exit 0; fi; exit 1');
+  // elan lists the toolchain and installs it, but it does not run.
+  command(dir, "elan", [elanListsPin, 'if [ "$1" = "toolchain" ]; then exit 0; fi; exit 1'].join("\n"));
   const result = run(dir, "setup.sh", ["lean", project]);
   assert.equal(result.status, 3);
   excludes(result.stdout, "READY");
@@ -75,6 +123,7 @@ function leanFixture(log, { status = 0, audit = audited, files = [] } = {}) {
     writeFileSync(join(project, file), "");
   }
   command(dir, "elan", [
+    elanListsPin,
     '[ "$4" = "--version" ] && exit 0',
     `[ "$3" = "lean" ] && { echo "${dir}"; exit 0; }`,
     // Lake writes notices, such as one for a project with both lakefiles, to stderr.
@@ -145,6 +194,7 @@ test("the Lean checker names a module path outside Lake's build layout instead o
   writeLeanProject(project);
   writeFileSync(join(project, "Model.lean"), "");
   command(dir, "elan", [
+    elanListsPin,
     '[ "$4" = "--version" ] && exit 0',
     '[ "$6" = "query" ] && { echo "/elsewhere/out/Model.olean"; exit 0; }',
     '[ "$7" = printenv ] && { echo "$LEAN_PATH"; exit 0; }',
@@ -425,6 +475,7 @@ test("lean-check.sh honors TMPDIR, and on SIGTERM stops its build and the proces
   writeFileSync(join(project, "Model.lean"), "def x : Nat := 1\n");
   const readyFile = join(dir, "elan.ready");
   command(dir, "elan", [
+    elanListsPin,
     '[ "$4" = "--version" ] && exit 0',
     'sleep 15 &',
     'echo "$$ $!" > "$TASK_READY_FILE"',

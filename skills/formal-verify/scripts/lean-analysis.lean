@@ -114,6 +114,31 @@ private def atUses (env : Lean.Environment) (exprs : List Lean.Expr) : String :=
   let uses := exprs.foldl (fun acc e => acc ++ usesOf (fun n => (shown env n).getRoot == `_match) e) #[]
   if uses.isEmpty then "" else reprStr (uses.toList.map (content env))
 
+private partial def levelUses : Lean.Level → Array Lean.Name
+  | .succ l => levelUses l
+  | .max a b | .imax a b => levelUses a ++ levelUses b
+  | .param n => #[n]
+  | _ => #[]
+
+private partial def paramUses : Lean.Expr → Array Lean.Name
+  | .sort l => levelUses l
+  | .const _ ls => ls.foldl (· ++ levelUses ·) #[]
+  | .app f a => paramUses f ++ paramUses a
+  | .lam _ t b _ | .forallE _ t b _ => paramUses t ++ paramUses b
+  | .letE _ t v b _ => paramUses t ++ paramUses v ++ paramUses b
+  | .mdata _ e | .proj _ _ e => paramUses e
+  | _ => #[]
+
+-- Two universe parameters look alike in a record when their names differ only in macro scopes, as a macro-made
+-- `u` and the user's own `u` do. When a declaration has two such parameters, its record adds which one sits at
+-- each use in the expressions it shows, in order, by its place in the declaration's parameter list.
+-- A declaration whose parameters all look different gets nothing added.
+private def levelsAlike (levels : List Lean.Name) (exprs : List Lean.Expr) : String :=
+  let alike := levels.filter fun l => (levels.filter (·.eraseMacroScopes == l.eraseMacroScopes)).length > 1
+  if alike.isEmpty then "" else
+  let uses := exprs.foldl (fun acc e => acc ++ (paramUses e).filter alike.contains) #[]
+  s!"\nlevels alike: {reprStr (uses.toList.map fun n => (levels.findIdx? (· == n)).getD 0)}"
+
 -- A hygienic constant or a match helper has no record of its own, so a record that refers to one carries its
 -- type and value, and those of the hygienic constants and helpers they refer to in turn, each once.
 -- Proofs stay out, as in every record.
@@ -138,6 +163,7 @@ private def followed (env : Environment) (roots : List Expr) : String := Id.run 
     seen := seen.push n
     let some info := env.find? n | continue
     out := out ++ s!"\n{shown env n}: {content env n}" ++ atUses env (parts env n info)
+      ++ levelsAlike info.levelParams (parts env n info)
     for e in parts env n info do
       queue := queue ++ unrecorded e
       uses := uses ++ usesOf named e
@@ -152,7 +178,7 @@ private def followed (env : Environment) (roots : List Expr) : String := Id.run 
 -- A statement's identity when the mutation runner compares an original theorem, example or #guard with its
 -- mutated copy: the frozen record's form of its type, without binder names, which change no statement.
 private def statementKey (env : Lean.Environment) (levels : List Lean.Name) (type : Lean.Expr) : String :=
-  reprStr (levels.map (·.eraseMacroScopes), nameless (positionFree env type)) ++ followed env [type]
+  reprStr (levels.map (·.eraseMacroScopes), nameless (positionFree env type)) ++ followed env [type] ++ levelsAlike levels [type]
 
 private def oneLine (s : String) : String :=
   (s.foldl (fun (acc, gap) c =>
@@ -221,13 +247,14 @@ private def audit (freezing : Bool) : CommandElabM Unit := do
         let auxes := auxBodies env name
         let bodies := auxes.foldl (init := reprStr (positionFree env v)) fun acc (aux, auxBody) =>
           acc ++ s!"\n{aux}: {reprStr (positionFree env auxBody)}"
-        toJson (bodies ++ followed env (v :: auxes.map (·.2)))
+        toJson (bodies ++ followed env (v :: auxes.map (·.2)) ++ levelsAlike info.levelParams (v :: auxes.map (·.2)))
       | none => Json.null
     let pp ← liftTermElabM <| Meta.ppExpr info.type
     let record := Json.mkObj [
       ("module", toJson env.header.moduleNames[idx.toNat]!.toString),
       ("name", toJson userName.toString), ("kind", toJson kind),
-      ("typeExpr", toJson (reprStr (info.levelParams.map (·.eraseMacroScopes), positionFree env info.type) ++ followed env [info.type])),
+      ("typeExpr", toJson (reprStr (info.levelParams.map (·.eraseMacroScopes), positionFree env info.type) ++ followed env [info.type]
+        ++ levelsAlike info.levelParams [info.type])),
       ("valueExpr", value), ("type", toJson pp.pretty)]
     IO.println s!"STATEMENT {record.compress}"
     if info matches .thmInfo _ then theorems := theorems.push (name, userName, idx)

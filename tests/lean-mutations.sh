@@ -363,6 +363,46 @@ rejected bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"
 grep -q '^FROZEN Step.r: statement changed$' "$work/check"
 grep -q '^FROZEN Step.s: statement changed$' "$work/check"
 
+# It keeps which of two universe parameters it shows alike sits at each place too: a macro-made `u` and the
+# user's own `u`. The edit swaps them in f's type, so f.{0, 1} takes other arguments. A declaration added
+# above, which renumbers the scopes, changes no record.
+frozen_levels() {
+  cat > "$work/Model/Step.lean" <<EOF
+namespace Step
+macro "mk " n:ident v:ident : command => \`(def \$n.{\$v, u} (α : Sort $1) (β : Sort ($2 + 1)) : Type (max \$v u) := PProd (PLift α) β)
+$(cat)
+mk f u
+end Step
+EOF
+}
+# shellcheck disable=SC2016 # Lean text, not shell expansions.
+frozen_levels '$v' u < /dev/null
+bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
+# shellcheck disable=SC2016
+frozen_levels '$v' u <<< 'def above : Nat := 1'
+bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check" || { cat "$work/check"; echo 'FAIL a declaration added above changed the record of a definition with two universe parameters shown alike'; exit 1; }
+# shellcheck disable=SC2016
+frozen_levels u '$v' < /dev/null
+rejected bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"
+grep -q '^FROZEN Step.f: statement changed$' "$work/check"
+# The same holds inside a hygienic constant that the record carries, here a macro-made aux that g uses.
+frozen_carried() {
+  cat > "$work/Model/Step.lean" <<EOF
+namespace Step
+macro "mk " n:ident v:ident : command => \`(def aux.{\$v, u} : Type (max \$v u) := ULift.{$1} PUnit.{$2+1}
+  def \$n.{a, b} : Type (max a b) := aux.{a, b})
+mk g u
+end Step
+EOF
+}
+# shellcheck disable=SC2016 # Lean text, not shell expansions.
+frozen_carried u '$v'
+bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
+# shellcheck disable=SC2016
+frozen_carried '$v' u
+rejected bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"
+grep -q '^FROZEN Step.g: statement changed$' "$work/check"
+
 # The mutation runner and the frozen record share one notion of a statement. A theorem that states a
 # match of the same shape as a definition's shares that definition's match helper, and a mutation that
 # changes the definition's match gives the theorem a helper of its own. The theorem's statement is
