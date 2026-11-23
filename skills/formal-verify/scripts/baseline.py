@@ -589,7 +589,7 @@ def main():
     recording.add_argument("record_file", type=Path)
     recording.add_argument("models", nargs="+", type=Path)
     commands.add_parser("compare", help="compare every recorded model with its file").add_argument("record_file", type=Path)
-    moving = commands.add_parser("move", help="compare a moved model's recorded entry with its new file")
+    moving = commands.add_parser("move", help="move a model's recorded entry to the file it moved to")
     moving.add_argument("record_file", type=Path)
     moving.add_argument("old_file", type=Path)
     moving.add_argument("new_file", type=Path)
