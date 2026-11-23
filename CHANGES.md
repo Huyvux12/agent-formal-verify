@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The trace reducer `scripts/tlc-trace.py` is now `scripts/tlc_trace.py`, which the matrix runner imports instead of running in a second Python process. Its command line is unchanged. A TLC log that holds bytes that are not UTF-8 now has its trace reduced with those bytes replaced; before this change, the reducer stopped with a decoding error and the runner printed the log's last 40 lines instead.
+
 The Python runners now hold back `SIGINT`, `SIGTERM` and `SIGHUP` while they stop a checker, and end by the signal once the stop has finished. The stop no longer handles a signal at each of its steps. One effect is visible: a Ctrl-C during a stop, such as the TLC timeout stop, no longer shortens the two seconds that the checker's processes get to exit after `SIGTERM` before `SIGKILL`.
 
 A `SIGINT`, `SIGTERM` or `SIGHUP` that reaches the Python runners while they start a checker, such as TLC, Kani or a Lean build step, now stops that checker and the processes it started. Before this change, such a signal could end the runner while `Popen` waited for the checker to start, or just after, before the runner held the checker, and the checker kept running. The runners now start each checker through `processes.guarded`, which holds a signal until the checker is known and then stops it.

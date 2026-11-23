@@ -450,7 +450,7 @@ def render(result):
 
 def reduced_trace(log):
     """Return the error trace reduced to what each step changed, or the end of the log when it holds no trace."""
-    lines = tlc_trace.reduce(log.splitlines())
+    lines = tlc_trace.reduce(re.split(r"\r\n|\r|\n", log))
     return lines if lines is not None else [line for line in log.split("\n") if line.strip()][-40:]
 
 
