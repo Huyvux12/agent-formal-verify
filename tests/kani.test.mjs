@@ -15,7 +15,7 @@ const bundle = (dir) => join(dir, `kani/kani-${KANI}`);
 const python = spawnSync("python3", ["-c", "import sys; print(sys.executable)"], { encoding: "utf8" }).stdout.trim();
 const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value));
 const calls = (dir) => (existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8") : "");
-const runKani = (dir, script, args = [], extra = {}) => run(dir, script, args, { KANI_HOME: join(dir, "kani"), KANI_HARNESS_TIMEOUT: undefined, ...extra });
+const runKani = (dir, script, args = [], extra = {}) => run(dir, script, args, { KANI_HOME: join(dir, "kani"), ...extra });
 
 // Behaves as the pinned kani-driver, configured by driver.json and report.json in the fixture directory.
 const DRIVER = readFileSync(join(logs, "kani-driver.py"), "utf8");
