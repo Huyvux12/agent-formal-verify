@@ -24,7 +24,7 @@ A left-behind checker has lost its runner, so its parent is process 1 or a servi
 
 ## TLA+ and TLC
 
-The setup helper needs a JDK, Python 3.9 or later as `python3`, and `sha256sum` or `shasum` to verify the TLC JAR. If `java` on PATH has no runtime, as with the macOS stub, set `JAVA` to a working JDK's `java` binary. Copy the [TLA+ template](../examples/tla-template/BoundedQueue.tla) with its `BoundedQueue.matrix` and `BoundedQueue.mutations` into the project to start a spec.
+The setup helper needs a JDK and Python 3.9 or later as `python3`. If `java` on PATH has no runtime, as with the macOS stub, set `JAVA` to a working JDK's `java` binary. Copy the [TLA+ template](../examples/tla-template/BoundedQueue.tla) with its `BoundedQueue.matrix` and `BoundedQueue.mutations` into the project to start a spec.
 
 ```shell
 bash <skill-dir>/scripts/setup.sh tla
@@ -32,7 +32,7 @@ bash <skill-dir>/scripts/tlc-matrix.sh /path/to/models/Name.matrix
 python3 <skill-dir>/scripts/mutate.py /path/to/models/Name.mutations
 ```
 
-The plugin does not download TLC. Save `tla2tools.jar` from the [TLA+ release](https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4) pinned in `scripts/tlc-tools.sh` as `~/.cache/tla/tla2tools-v1.7.4.jar`; the setup helper verifies its pinned SHA256 and names that path and release when the file is missing or does not match. Set `TLC_CACHE` to choose another cache directory. Set `TLC_JAR` to use an existing JAR; an explicitly supplied JAR is trusted and must already exist.
+The plugin does not download TLC. Save `tla2tools.jar` from the [TLA+ release](https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4) pinned in `scripts/tlc.py` as `~/.cache/tla/tla2tools-v1.7.4.jar`; the setup helper verifies its pinned SHA256 and names that path and release when the file is missing or does not match. Set `TLC_CACHE` to choose another cache directory. Set `TLC_JAR` to use an existing JAR; an explicitly supplied JAR is trusted and must already exist.
 
 The matrix runner requires the JAR and a working Java runtime. It checks for Python 3.9 or later before running, so a failing model can always print its reduced trace. It does not download tools. Each run checks the formula its spec names `Spec` and sees only the modules beside that spec. `TLC_WORKERS` controls the TLC worker count. Each run stops after sixty minutes by default; set `TLC_TIMEOUT` to change the limit using a whole number from 1 to 4294967295 with an optional unit `s`, `m` or `h`, such as `90s` or `1h`. For any other value, the matrix runner and mutation runner print `UNAVAILABLE` and exit 3 without running TLC. A run that reaches the limit fails with a message naming the limit and `TLC_TIMEOUT`, and a mutation run that reaches it reaches no verdict. During long runs, the runner forwards periodic elapsed-time and `Progress(...)` updates from `tlc.log` to `stderr`. Each run gives the JVM its own `java.io.tmpdir` inside the run directory, so TLC runs started at the same time do not delete each other's copy of the standard modules. A `-Djava.io.tmpdir` in `_JAVA_OPTIONS` overrides it, because the JVM reads that variable after the command line; set the temporary directory with `TMPDIR` instead.
 

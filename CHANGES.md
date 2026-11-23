@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The TLC pin and its readiness check moved from `scripts/tlc-tools.sh` to `scripts/tlc.py`, as Kani's live in `scripts/kani.py`. `setup.sh tla` now runs `python3 tlc.py ready`, and the matrix and mutation runners check TLC in their own process instead of through a `bash` shell that sources `tlc-tools.sh`, which is removed. The readiness messages and exit codes are unchanged. Python now computes the cached JAR's SHA256, so `sha256sum` or `shasum` is no longer a prerequisite.
+
 The TLC matrix runner now handles `SIGINT`, `SIGTERM` and `SIGHUP` while it checks that TLC is ready, as it does during a run, and ends by the signal. Before this change, a Ctrl-C during that check printed a Python traceback.
 
 

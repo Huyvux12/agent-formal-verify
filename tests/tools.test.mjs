@@ -9,16 +9,11 @@ import { command, excludes, fakeTlc, fixture, includes, leanPin, removeFixtures,
 
 afterEach(removeFixtures);
 
-test("missing runtimes and hash tools are unavailable with their remedies", () => {
+test("missing runtimes are unavailable with their remedies", () => {
   const dir = fixture();
-  const jar = join(dir, "tools.jar");
-  writeFileSync(jar, "jar");
   writeFileSync(join(dir, "lean-toolchain"), leanPin + "\n");
-  const java = command(dir, "java", "exit 0");
   const cases = [
-    ["tlc-tools.sh", "require_tlc_runtime", { JAVA: "/absent/java" }, "install a JDK"],
-    ["tlc-tools.sh", "require_tlc_runtime", { JAVA: java }, "install Python 3"],
-    ["tlc-tools.sh", 'check_tlc_jar "$TASK_JAR"', { TASK_JAR: jar }, "install sha256sum or shasum"],
+    ["python-tools.sh", "require_python", {}, "install Python 3"],
     ["lean-tools.sh", 'lean_pin "$TASK_PROJECT"', { TASK_PROJECT: dir }, "install elan"],
   ];
   for (const [script, call, extra, remedy] of cases) {
@@ -43,7 +38,7 @@ test("helpers report a python3 older than 3.9 as unavailable before running it",
     ["bash", [join(scripts, "kani-check.sh"), dir]],
     ["bash", [join(scripts, "setup.sh"), "rust"]],
     ["bash", [join(scripts, "setup.sh"), "storage"]],
-    ["/bin/bash", ["-c", 'source "$1"; require_tlc_runtime', "bash", join(scripts, "tlc-tools.sh")]],
+    ["bash", [join(scripts, "setup.sh"), "tla"]],
   ];
   for (const [shell, args] of cases) {
     const result = spawnSync(shell, args, { encoding: "utf8", env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, JAVA: java } });
