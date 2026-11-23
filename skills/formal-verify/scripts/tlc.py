@@ -24,7 +24,7 @@ Usage: tlc-matrix.sh <matrix-file> [label-substring]
   TLC_TIMEOUT=<lim>  per-run time limit, e.g. 90s, 30m, 1h (default 60m)
 
 Usage: tlc.py ready
-  Checks that Java runs and that the JAR is the pinned release or the one TLC_JAR names, as setup.sh tla does.
+  Checks TLC_TIMEOUT, that Java runs, and that the JAR is the pinned release or the one TLC_JAR names, as setup.sh tla does.
 """
 from __future__ import annotations
 
@@ -172,7 +172,8 @@ class Tlc:
         self.limit, self.timeout_seconds = runner.parse_limit("TLC_TIMEOUT", timeout_raw, "run time limit", "sixty minutes")
         self.java = os.environ.get("JAVA") or "java"
         try:
-            runtime = processes.run_captured([self.java, "-version"]).returncode
+            # The JVM prints in the platform encoding, which need not be UTF-8.
+            runtime = processes.run_captured([self.java, "-version"], errors="replace").returncode
         except OSError:
             runtime = 127
         if runtime:
@@ -185,7 +186,7 @@ class Tlc:
         elif not Path(supplied).is_file():
             raise runner.Unavailable(f"UNAVAILABLE supplied TLC_JAR {supplied} does not exist")
         try:
-            probe = processes.run_captured([self.java, "-cp", self.jar, "tlc2.TLC", "-help"])
+            probe = processes.run_captured([self.java, "-cp", self.jar, "tlc2.TLC", "-help"], errors="replace")
             status, output = probe.returncode, probe.stdout + probe.stderr
         except OSError as error:
             status, output = 127, str(error)
