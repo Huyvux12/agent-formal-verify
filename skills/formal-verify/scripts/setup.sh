@@ -11,6 +11,7 @@ source "$HERE/python-tools.sh"
 
 case ${1:-} in
   tla)
+    [ "$#" -eq 1 ] || { echo "usage: setup.sh tla"; exit 2; }
     require_python || exit 3
     exec python3 "$HERE/tlc.py" ready
     ;;
