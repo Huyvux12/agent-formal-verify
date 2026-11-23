@@ -224,6 +224,7 @@ function leanMutations(model, frozen, baseline, mutations, outcomes, env = {}) {
     'echo analyse >> "$TASK_TRACE"',
     '[[ "$9" == */lean-analysis.lean && "${10}" == analyze ]] || { echo "unexpected elan call: $*" >&2; exit 9; }',
     '[ -z "${TASK_LEAN_NOTE-}" ] || echo "$TASK_LEAN_NOTE"',
+    '[ -z "${TASK_LEAN_FAIL-}" ] || exit 1',
     'python3 "$TASK_LEAN_DRIVER" "$TASK_LEAN_CONFIG" "${11}"',
   ].join("\n"));
   const result = run(dir, "mutate.py", [join(project, "Model/Step.mutations")], {
@@ -251,10 +252,16 @@ test("the Lean mutation runner reads Lean's output as UTF-8 whatever the locale'
   const decls = [leanDecl("Step.property", 2)];
   const mutate = (env) => leanMutations("def step (n : Nat) : Nat := n + 1\n", ["Step.property"], leanAnalysis(decls), noStep,
     [{ text: ":= n\n", analysis: leanAnalysis(decls, [leanError(2)]) }], { TASK_LEAN_NOTE: "ℹ [info] ∀ n, n ≤ n", ...env });
-  const utf8 = mutate({});
-  const ascii = mutate({ PYTHONUTF8: "0", PYTHONCOERCECLOCALE: "0", LC_ALL: "C" });
-  assert.equal(utf8.stdout, "DETECTED no step: proof/check fails: theorem Step.property\n" + leanNote + "SUMMARY 1 of 1 mutations detected\n");
-  assert.deepEqual([ascii.status, ascii.stdout, ascii.stderr], [utf8.status, utf8.stdout, utf8.stderr]);
+  const ascii = { PYTHONUTF8: "0", PYTHONCOERCECLOCALE: "0", LC_ALL: "C" };
+  for (const [env, expected] of [
+    [{}, "DETECTED no step: proof/check fails: theorem Step.property\n" + leanNote + "SUMMARY 1 of 1 mutations detected\n"],
+    [{ TASK_LEAN_FAIL: "1" }, "FAIL Lean declaration analysis did not complete:\nℹ [info] ∀ n, n ≤ n\n"],
+  ]) {
+    const utf8 = mutate(env);
+    assert.equal(utf8.stdout, expected);
+    const result = mutate({ ...env, ...ascii });
+    assert.deepEqual([result.status, result.stdout, result.stderr], [utf8.status, utf8.stdout, utf8.stderr]);
+  }
 });
 
 test("Lean mutation coverage preserves fully qualified identities and private exemptions", () => {

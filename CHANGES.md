@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-The Lean mutation runner now reads the output of its Lean analysis as UTF-8, as the Lean checker does, so it gives the same verdicts under a locale whose encoding is not UTF-8. Before this change, under `LC_ALL=C` with Python's UTF-8 mode off, every Lean mutation run stopped with an `'ascii' codec can't decode` error.
+The Lean mutation runner now reads the output of its Lean analysis as UTF-8, and `mutate.py` writes its output as UTF-8, as the Lean checker does, so a run under a locale whose encoding is not UTF-8 prints the same verdicts and messages. Before this change, under `LC_ALL=C` with Python's UTF-8 mode off, every Lean mutation run stopped with an `'ascii' codec can't decode` error.
 
 `scripts/sync.py` now adds to its `PATH` and `READ` lines each file where a commit since the sync added or removed a covered name as a whole word. It finds those commits with `git log -S` and applies the same rules as its name search. Before this change, a file that held the covered code between the sync and `HEAD`, such as one it moved through, was in neither set, and the `READ` command left out the commits made to the code while it lived there. A file renamed away without a content change counts too, and a changed path with a glob character such as `[id]` matches only itself. The helper still misses a path that held the code only under another name, or a path where each commit since the sync kept the number of times the name appears, such as one that replaced a mention of the name with its definition, and the skill and the helper reference now say so instead of claiming every path.
 
