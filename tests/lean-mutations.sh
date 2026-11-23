@@ -415,4 +415,4 @@ bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
 rejected python3 "$scripts/mutate.py" "$work/Model/Step.mutations" > "$work/result"
 cat "$work/result"
 grep -q '^theorem Step.t: the mutation changes its statement' "$work/result"
-echo 'ok:qualified coverage and proof-sensitivity reporting checked with real Lean'
+echo 'ok: qualified coverage and proof-sensitivity reporting checked with real Lean'
