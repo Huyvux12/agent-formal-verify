@@ -388,7 +388,6 @@ class MutationPlan:
 
     def __init__(self, spec, sections):
         self._spec = spec
-        self._passing_originals = set()
         self.properties = {name for section in sections for name in section.properties}
         self.detectors = self.properties | {name for section in sections for name in section.reaches}
         self._tasks = [task for section in sections for task in section.tasks]
@@ -408,24 +407,40 @@ class MutationPlan:
                     yield Task(self._spec.name, task.run, checks,
                                check_deadlock=not any(check.kind.startswith("PROPERT") for check in checks))
 
-    def check(self, checker, detector, only, source, work):
-        """Return the first confirmed detection, None for a miss, or raise on inconclusive evidence."""
-        results = []
-        for task in self._select(detector):
-            if isinstance(task, Result):
-                results.append((task, False))
-                continue
-            if only not in task.run.label:
-                continue
-            if task not in self._passing_originals:
-                original = run_task(checker, self._spec.parent, task, work)
-                if original.outcome not in (Outcome.PASS, Outcome.WITNESS):
-                    raise ValueError(f"unmutated model did not pass {detector}: " + "\n".join(render(original)))
-                self._passing_originals.add(task)
-            temporal = any(check.kind.startswith("PROPERT") for check in task.checks)
-            results.append((run_task(checker, self._spec.parent, task, work, source), temporal))
-        if not results:
+    def selected(self, detector, only):
+        """Return the tasks that check a mutation naming detector and only; raise ValueError when none can."""
+        tasks = list(self._select(detector))
+        unresolved = [line for task in tasks if isinstance(task, Result) for line in render(task)]
+        if unresolved:
+            raise ValueError("\n".join(unresolved))
+        tasks = [task for task in tasks if only in task.run.label]
+        if not tasks:
             raise ValueError(f"no run matches '{only}' for '{detector}'")
+        return tasks
+
+    def check_originals(self, checker, selections, work):
+        """Run every task that the (detector, only) selections name on the unmutated spec, each once.
+
+        Raise ValueError when a task does not pass, and before running any task when a selection has none to run.
+        """
+        chosen = [(detector, task) for detector, only in selections for task in self.selected(detector, only)]
+        passed = set()
+        for detector, task in chosen:
+            if task in passed:
+                continue
+            original = run_task(checker, self._spec.parent, task, work)
+            if original.outcome not in (Outcome.PASS, Outcome.WITNESS):
+                raise ValueError(f"unmutated model did not pass {detector}: " + "\n".join(render(original)))
+            passed.add(task)
+
+    def check(self, checker, detector, only, source, work):
+        """Return the first confirmed detection, None for a miss, or raise on inconclusive evidence.
+
+        The caller has passed the same detector and only to check_originals.
+        """
+        results = [(run_task(checker, self._spec.parent, task, work, source),
+                    any(check.kind.startswith("PROPERT") for check in task.checks))
+                   for task in self.selected(detector, only)]
         detections, errors = [], []
         for result, temporal in results:
             if result.outcome is Outcome.UNREACHED:
