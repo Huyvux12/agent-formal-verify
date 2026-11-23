@@ -20,8 +20,9 @@ function models() {
     rust: join(dir, "kani/lib.rs"),
     record: join(dir, "record.json"),
   };
-  copyFileSync(join(examples, "tla-template/BoundedQueue.matrix"), paths.matrix);
-  copyFileSync(join(examples, "tla-template/BoundedQueue.tla"), paths.spec);
+  // The TLA+ cases edit this counter spec's exact text, so they read a fixed copy rather than the template.
+  copyFileSync(join(root, "tests/fixtures/tla-baseline/BoundedQueue.matrix"), paths.matrix);
+  copyFileSync(join(root, "tests/fixtures/tla-baseline/BoundedQueue.tla"), paths.spec);
   copyFileSync(join(examples, "lean-template/Model/BoundedQueue.statements"), paths.statements);
   copyFileSync(join(examples, "kani-template/src/lib.rs"), paths.rust);
   return { dir, ...paths };

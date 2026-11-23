@@ -2,25 +2,103 @@
 # plausible bug and names the one property that must fail on it. The text
 # after `- ` must occur exactly once in the spec; `+ ` lines replace it. An
 # optional `only <label-substring>` line limits the matrix runs. Every property
-# the matrix checks needs a mutation.
+# the matrix checks needs a mutation. The only lines here keep each mutation to
+# the smallest runs that show its bug, which bounds the run time; without them
+# a mutation runs on every run that checks its property.
 
 mutation claim one item past the window
 detects InWindow
-- /\ next < consumed + Window
-+ /\ next <= consumed + Window
-
-mutation claim after the last item
-detects TypeOK
-- Claim == /\ next < Items
-+ Claim == /\ next <= Items
-
-mutation consume never runs
-detects AllConsumed
-only items=3
-- Consume == /\ consumed < next
-+ Consume == /\ consumed < 0
+only window=1
+- next < consumed + Window
++ next <= consumed + Window
 
 mutation the window never fills
 detects reach:WindowFull
-- /\ next < consumed + Window
-+ /\ next < consumed + Window - 1
+- next < consumed + Window
++ next < consumed + Window - 1
+
+mutation a woken worker claims without rereading the window, as if a while were an if
+detects InWindow
+only window=1
+- ELSE IF next < consumed + Window
++ ELSE IF wpc[w] = "wait" \/ next < consumed + Window
+
+mutation claim after the last item
+detects TypeOK
+only window=1
+- IF closed \/ next = Items
++ IF closed
+
+mutation publish into the slot claimed last
+detects Owned
+only workers=2
+- /\ slot' = [slot EXCEPT ![item[w]] =
++ /\ slot' = [slot EXCEPT ![next - 1] =
+
+mutation deliver the claim count
+detects InOrder
+only workers=2
+- /\ out' = Append(out, consumed)
++ /\ out' = Append(out, next - 1)
+
+mutation report an error before the items ahead of it
+detects ErrorInOrder
+only fail=1
+- ELSE IF slot[consumed] = "failed"
++ ELSE IF \E i \in Indices : slot[i] = "failed"
+
+mutation close returns before the workers exit
+detects NoLeak
+only window=1
+- cpc = "join"
+-   /\ Exited
++ cpc = "join"
++   /\ TRUE
+
+mutation close returns without freeing the untaken items
+detects NoLeak
+only window=1
+-   /\ slot' = [i \in Indices |-> IF slot[i] \in {"ready", "failed"} THEN "freed" ELSE slot[i]]
++   /\ UNCHANGED slot
+
+mutation next() skips the item whose build failed
+detects NoDeliveryAfterError
+only fail=1
+-      THEN /\ cpc' = "error"
+-           /\ UNCHANGED <<consumed, slot, out, parked>>
++      THEN /\ slot' = [slot EXCEPT ![consumed] = "taken"]
++           /\ consumed' = consumed + 1
++           /\ cpc' = "idle"
++           /\ UNCHANGED <<out, parked>>
+
+mutation publish without waking the waiters
+detects NextReturns
+only window=1
+-   /\ slot' = [slot EXCEPT ![item[w]] = IF item[w] \in FailAt THEN "failed" ELSE "ready"]
+-   /\ parked' = {}
++   /\ slot' = [slot EXCEPT ![item[w]] = IF item[w] \in FailAt THEN "failed" ELSE "ready"]
++   /\ parked' = parked
+
+mutation take an item without waking the waiters
+detects NextReturns
+only window=1
+- /\ consumed' = consumed + 1
+-           /\ parked' = {}
++ /\ consumed' = consumed + 1
++           /\ parked' = parked
+
+mutation close without waking the waiters
+detects CloseReturns
+only window=1
+-   /\ closed' = TRUE
+-   /\ parked' = {}
++   /\ closed' = TRUE
++   /\ parked' = parked
+
+mutation next() returns before it takes the ready item
+detects AllConsumed
+only window=1
+-      THEN /\ slot' = [slot EXCEPT ![consumed] = "taken"]
+-           /\ out' = Append(out, consumed)
+-           /\ consumed' = consumed + 1
++      THEN /\ UNCHANGED <<slot, out, consumed>>
