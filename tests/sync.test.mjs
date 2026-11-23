@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { fixture, removeFixtures, scripts } from "./helpers.mjs";
+import { command, fixture, removeFixtures, scripts } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
@@ -64,6 +64,78 @@ test("sync follows renames, finds where covered names live now, and names the co
   assert.deepEqual(lines(result.stdout, "MISSING"), [`MISSING drain: ${removed}`]);
   const root = git(dir, "rev-parse", "--show-toplevel");
   assert.deepEqual(lines(result.stdout, "READ"), [`READ git -C ${root} log -p ${read}..HEAD -- src/consume.c src/core.c src/queue.c`]);
+});
+
+test("sync's search for files that held a name runs as many git commands for many commits as for a few", () => {
+  // Count the git commands sync runs for a history in which a few or many commits move claim between files.
+  const calls = (moves) => {
+    const dir = fixture();
+    git(dir, "init", "-b", "main");
+    const read = commit(dir, { "src/queue.c": "int claim(void);\n" }, "queue");
+    commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+    // Each step file holds claim for one commit only, so only the search for files that held it finds them.
+    for (let move = 0; move < moves; move++) {
+      commit(dir, { [`src/step${move}.c`]: "int claim(void);\n" }, `step ${move}`);
+      commit(dir, { [`src/step${move}.c`]: "int other(void);\n" }, `step ${move} done`);
+    }
+    const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8", env: gitEnv }).stdout.trim();
+    const log = join(dir, "git-calls");
+    command(dir, "git", `echo "$*" >> "${log}"\nexec "${real}" "$@"`);
+    const result = spawnSync("python3", [join(scripts, "sync.py"), "tla/Queue.tla", "--source", "src/queue.c", "--name", "claim"],
+      { cwd: dir, encoding: "utf8", env: { ...gitEnv, PATH: `${join(dir, "bin")}:${gitEnv.PATH}` } });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(lines(result.stdout, "PATH").length, moves + 1);
+    return readFileSync(log, "utf8").split("\n").filter(Boolean).length;
+  };
+  assert.equal(calls(12), calls(2));
+});
+
+test("sync's search for files that held a name finds every file when one commit's paths need several git grep calls", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const read = commit(dir, { "src/queue.c": "int claim(void);\n" }, "queue");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+  // 600 paths of about 200 bytes are more than one grep call takes, and none holds claim at HEAD.
+  const deep = `src/${"d".repeat(190)}`;
+  const paths = Array.from({ length: 600 }, (_, file) => `${deep}/${String(file).padStart(4, "0")}.c`);
+  commit(dir, Object.fromEntries(paths.map((path) => [path, "int claim(void);\n"])), "add");
+  commit(dir, Object.fromEntries(paths.map((path) => [path, "int other(void);\n"])), "rewrite");
+
+  const result = sync(dir, ["tla/Queue.tla", "--source", "src/queue.c", "--name", "claim"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "PATH"), [...paths, "src/queue.c"].map((path) => `PATH ${path}`));
+});
+
+test("sync's search for files that held a name reads any path, skips a merged history's root and ignores textconv", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const read = commit(dir, { "src/queue.c": "int claim(void);\n", ".gitattributes": "*.t diff=up\n", "src/t.t": "int claim(void);\nclm\n" }, "queue");
+  git(dir, "config", "diff.up.textconv", "sed s/clm/claim/g");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+  // A byte 0x01 and a leading newline are valid in a path.
+  const odd = { "src/a\u0001b.c": "int claim(void);\n", "\nlead.c": "int claim(void);\n", "src/plain.c": "int claim(void);\n" };
+  commit(dir, odd, "add");
+  git(dir, "rm", "-q", ...Object.keys(odd));
+  git(dir, "commit", "-m", "remove");
+  // Only textconv changes the count of claim here, and a later commit leaves only a longer word.
+  commit(dir, { "src/t.t": "int claim(void);\n" }, "textconv only");
+  commit(dir, { "src/t.t": "int claimed(void);\n" }, "claimed");
+  // An unrelated history whose root commit holds claim, merged in.
+  git(dir, "checkout", "-q", "--orphan", "lib");
+  git(dir, "rm", "-q", "-r", "--cached", ".");
+  mkdirSync(join(dir, "lib"));
+  writeFileSync(join(dir, "lib/x.c"), "int claim(void);\n");
+  git(dir, "add", "lib/x.c");
+  git(dir, "commit", "-m", "lib root");
+  writeFileSync(join(dir, "lib/x.c"), "int claimed(void);\n");
+  git(dir, "commit", "-am", "lib claimed");
+  git(dir, "checkout", "-q", "-f", "main");
+  git(dir, "merge", "-q", "--allow-unrelated-histories", "-m", "merge lib", "lib");
+
+  const result = sync(dir, ["tla/Queue.tla", "--source", "src/queue.c", "--name", "claim"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  // The leading newline splits that PATH line in two, so match the PATH lines as one run of text.
+  assert.ok(result.stdout.includes("\nPATH \nlead.c\nPATH src/a\u0001b.c\nPATH src/plain.c\nPATH src/queue.c\nREAD "), result.stdout);
 });
 
 test("sync reads a file that held a covered name only between the sync and now", () => {
