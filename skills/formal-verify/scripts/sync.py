@@ -17,8 +17,8 @@ with its Kani harness, that fallback counts only a commit that changed the code 
 none of the last 100 commits of the model files since the source's last rename qualifies. Each source path is followed through every rename since
 the sync commit in both directions. Each name adds the files where git grep finds it as a whole
 word now, outside the model files that are not also a --source, such as a Kani harness kept
-apart from the production code, and outside documents and TLA+ and Lean files, which cannot
-define it, unless a source path has the same extension. A name in none of the remaining files
+apart from the production code, and outside documents, data files, files with no extension and
+TLA+ and Lean files, which cannot define it, unless a source path has the same extension. A name in none of the remaining files
 is MISSING. Each name also adds, under the same rules, the files where a commit since the sync
 added or removed it as a whole word, which git log -S finds, renames included. A path that held
 the code only under another name, such as code renamed as it moved, is not found, nor is one
@@ -39,8 +39,11 @@ sys.dont_write_bytecode = True
 import baseline
 
 HEADER = re.compile(r"Source read at ([0-9a-fA-F]{7,40})\b")
-# Documents and model files mention covered names but cannot define them, unless a source has the same extension.
-NO_DEFINITIONS = {".md", ".markdown", ".rst", ".txt", ".adoc", ".org", ".tla", ".cfg", ".lean", ".statements", ".matrix", ".mutations"}
+# Documents, data files, files with no extension, such as README, and model files mention covered names but cannot
+# define them, unless a source has the same extension.
+NO_DEFINITIONS = {"", ".md", ".markdown", ".rst", ".txt", ".adoc", ".org", ".html", ".htm", ".tex", ".ipynb", ".json",
+                  ".yaml", ".yml", ".toml", ".xml", ".csv", ".svg", ".tla", ".cfg", ".lean", ".statements", ".matrix",
+                  ".mutations"}
 # #[cfg(kani)] on an item, past any other attributes and its visibility; on a field or a variant it is production code.
 KANI_CFG = re.compile(
     r"#\s*\[\s*cfg\s*\(\s*kani\s*\)\s*\](?=(?:\s*#\s*\[[^\]]*\])*\s*(?:pub\s*(?:\([^)]*\))?\s*)?"

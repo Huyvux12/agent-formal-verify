@@ -199,6 +199,29 @@ test("sync reports a name as missing when only documents and other models still 
   assert.deepEqual(lines(result.stdout, "READ"), [`READ git -C ${root} log -p ${read}..HEAD -- src/queue.c`]);
 });
 
+test("sync reports a name as missing when only extensionless files and other document formats mention it", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const docs = ["README", "CHANGELOG", ".github/CODEOWNERS", "docs/queue.html", "docs/queue.tex", "notes/queue.ipynb", "docs/api.json"];
+  const read = commit(dir, { "src/queue.c": "int claim(void);\nint drain(void);\n", ...Object.fromEntries(docs.map((doc) => [doc, "drain empties the queue\n"])) }, "queue");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+  commit(dir, { "src/queue.c": "int claim(void);\n" }, "remove drain");
+  const removed = git(dir, "rev-parse", "--short", "HEAD");
+
+  const result = sync(dir, ["tla/Queue.tla", "--source", "src/queue.c", "--name", "claim", "--name", "drain"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH src/queue.c"]);
+  assert.deepEqual(lines(result.stdout, "MISSING"), [`MISSING drain: ${removed}`]);
+
+  // An extensionless file is searched when a source has no extension either.
+  const tool = commit(dir, { "bin/tool": "drain() { :; }\n" }, "tool");
+  commit(dir, { "tla/Tool.tla": `(* Source read at ${tool} *)\n` }, "tool model");
+  const script = sync(dir, ["tla/Tool.tla", "--source", "bin/tool", "--name", "drain"]);
+  assert.equal(script.status, 0, script.stdout + script.stderr);
+  assert.deepEqual(lines(script.stdout, "MISSING"), []);
+  assert.ok(lines(script.stdout, "PATH").includes("PATH bin/tool"), script.stdout);
+});
+
 test("sync searches files with a source's extension even when other models use it", () => {
   const dir = fixture();
   git(dir, "init", "-b", "main");
