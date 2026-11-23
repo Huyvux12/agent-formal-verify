@@ -255,6 +255,40 @@ for (const tool of Object.keys(readiness)) {
     });
   }
 
+  // A PYTHONPATH module that shadows shutil, which each check imports before runner.run handles signals, holds the
+  // check in its imports long enough to be signalled there.
+  test(`SIGINT sent to setup.sh ${tool} during its readiness check's imports ends setup.sh by SIGINT with no traceback`, async () => {
+    const dir = fixture();
+    const marker = join(dir, "importing");
+    mkdirSync(join(dir, "pylib"));
+    writeFileSync(join(dir, "pylib/shutil.py"), "import os, time\nopen(os.environ.get('IMPORT_MARKER'), 'w').close()\ntime.sleep(10)\n");
+    const { args, env } = readiness[tool](dir, join(dir, "probe.pids"));
+    const result = await new Promise((resolve) => {
+      const child = spawn("bash", [join(scripts, "setup.sh"), ...args], {
+        env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, FORMAL_MIN_FREE_GIB: "0", ...env,
+               PYTHONPATH: join(dir, "pylib"), IMPORT_MARKER: marker },
+      });
+      let stdout = "", stderr = "", sent;
+      child.stdout.on("data", (data) => (stdout += data));
+      child.stderr.on("data", (data) => (stderr += data));
+      const timer = setInterval(() => {
+        if (existsSync(marker)) {
+          clearInterval(timer);
+          sent = Date.now();
+          child.kill("SIGINT");
+        }
+      }, 20);
+      child.on("close", (exitCode, signalName) => {
+        clearInterval(timer);
+        resolve({ exitCode, signalName, stdout, stderr, elapsed: Date.now() - sent });
+      });
+    });
+    assert.equal(result.signalName, "SIGINT", JSON.stringify(result));
+    assert.equal(result.stderr, "", JSON.stringify(result));
+    excludes(result.stdout, "READY");
+    assert.ok(result.elapsed < 2000, JSON.stringify(result));
+  });
+
   test(`Ctrl-C to setup.sh ${tool}'s process group stops its readiness check and ends setup.sh by SIGINT`, async () => {
     const result = await signalSetup(tool, "SIGINT", true);
     for (const pid of result.pids) assertProcessStopped(pid);
