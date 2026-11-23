@@ -41,6 +41,8 @@ export function fakeTlc(dir, body) {
   return command(dir, "tlc-java", '[[ "$*" == *"-help"* ]] && exit 0\n[ "$1" = "-version" ] && exit 0\n' + body);
 }
 export const leanPin = "leanprover/lean4:v4.34.1";
+// A fake elan line that lists the pin as installed, as the Lean checker asks before any elan run.
+export const elanListsPin = `[ "$1 $2" = "toolchain list" ] && { echo "${leanPin} (default)"; exit 0; }`;
 export function writeLeanProject(project) {
   mkdirSync(project, { recursive: true });
   writeFileSync(join(project, "lakefile.toml"), 'name = "model"\n');

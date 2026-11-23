@@ -73,6 +73,11 @@ def logical_path(path):
     return os.path.normpath(path)
 
 
+# Release names that elan resolves to a release online, as a channel or as the release a repository's
+# lean-toolchain file names.
+CHANNELS = {"stable", "beta", "nightly", "lean-toolchain"}
+
+
 def pin(project):
     """Return the toolchain pin of the Lake project, or raise when it has none or elan is missing."""
     path = Path(project) / "lean-toolchain"
@@ -81,14 +86,38 @@ def pin(project):
     if shutil.which("elan") is None:
         raise runner.Unavailable("UNAVAILABLE elan is not on PATH; install elan from https://github.com/leanprover/elan")
     try:
-        return path.read_text(encoding="utf-8").replace("\r", "").replace("\n", "")
+        toolchain = path.read_text(encoding="utf-8").replace("\r", "").replace("\n", "")
     except (OSError, UnicodeDecodeError) as error:
         raise CheckError(f"FAIL cannot read {path}: {error}") from error
+    if toolchain.rpartition(":")[2] in CHANNELS:
+        raise CheckError(f"FAIL {path} pins {toolchain}, which elan resolves to a release online; pin a release, "
+                         "such as leanprover/lean4:v<version>")
+    return toolchain
+
+
+def installed(toolchain):
+    """Whether elan lists the toolchain, under the name elan gives a pin, so that no elan run downloads it.
+
+    A pin that is an absolute path names a toolchain directory, which elan runs without installing anything.
+    """
+    if os.path.isabs(toolchain):
+        return os.path.isdir(toolchain)
+    origin, _, channel = toolchain.rpartition(":")
+    origin = origin or "leanprover/lean4"
+    if channel[:1].isdigit():
+        channel = "v" + channel
+    if channel.startswith("nightly-") and not origin.endswith("-nightly"):
+        origin += "-nightly"
+    listed = processes.run_captured(["elan", "toolchain", "list"], encoding="utf-8", errors="replace")
+    names = {line.split()[0] for line in listed.stdout.splitlines() if line.strip()}
+    return listed.returncode == 0 and bool(names & {toolchain, f"{origin}:{channel}"})
 
 
 def pin_ready(toolchain):
+    """Whether the toolchain is installed and runs Lake. elan run installs a missing toolchain, so check first."""
     try:
-        return processes.run_captured(["elan", "run", toolchain, "lake", "--version"], encoding="utf-8", errors="replace").returncode == 0
+        return installed(toolchain) and processes.run_captured(["elan", "run", toolchain, "lake", "--version"],
+                                                               encoding="utf-8", errors="replace").returncode == 0
     except OSError:
         return False
 
