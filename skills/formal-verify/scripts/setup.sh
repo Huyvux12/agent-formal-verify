@@ -15,11 +15,8 @@ report_storage() {
 
 case ${1:-} in
   tla)
-    # shellcheck source=skills/formal-verify/scripts/tlc-tools.sh
-    source "$HERE/tlc-tools.sh"
-    require_tlc_runtime
-    tlc_jar_ready
-    echo "READY TLC $TLC_JAR"
+    require_python || exit 3
+    python3 "$HERE/tlc.py" ready
     report_storage
     ;;
   rust)
