@@ -21,10 +21,14 @@ change, and so is an added item whose kind narrows what is checked.
 Usage:
   baseline.py record <record-file> <model-file>...   record these files, keep the other entries
   baseline.py compare <record-file>                  exit 1 when a recorded file changed
+  baseline.py move <record-file> <old> <new> [--module OLD NEW]
+                                                     compare old's entry with new from now on
 
 Compare prints UNCHANGED or CHANGED per file, indented lines for each item that
-changed, and a SUMMARY line. Exit codes: 0 unchanged, 1 changed or a record or
-model file that fails to parse, 2 usage error.
+changed, and a SUMMARY line. Move prints MOVED; it reads only the record, never
+the new file, and with --module renames the recorded Kani owners under module
+OLD to sit under NEW. Exit codes: 0 unchanged, 1 changed or a record or model
+file that fails to parse, 2 usage error.
 """
 import argparse
 import hashlib
@@ -497,6 +501,50 @@ def record(record_path, files):
     return 0
 
 
+KANI_KEY = re.compile(r"(harness |(?:assume|cover|stub) .* in )(\S+)( #\d+)?", re.DOTALL)
+
+
+def renamed(surface, old_module, new_module):
+    """Rewrite each Kani owner under old_module to sit under new_module, where `crate` is the file's root."""
+    old, new = ([] if path == "crate" else path.split("::") for path in (old_module, new_module))
+    result = {}
+    for name, value in surface.items():
+        head, owner, duplicate = KANI_KEY.fullmatch(name).groups()
+        parts = owner.split("::")
+        if parts[:len(old)] == old:
+            owner = "::".join(new + parts[len(old):])
+        result[f"{head}{owner}{duplicate or ''}"] = value
+    if len(result) != len(surface):
+        raise ValueError(f"renaming {old_module} to {new_module} merges recorded items")
+    return result
+
+
+def move(record_path, old_file, new_file, module):
+    models = read_record(record_path) if record_path.is_file() else {}
+    old, new = str(old_file.resolve()), str(new_file.resolve())
+    if old not in models:
+        print(f"usage: {old} has no record entry; record it before the move")
+        return 2
+    kind = models[old]["kind"]
+    if KINDS.get(new_file.suffix) != kind:
+        print(f"usage: {new} is not a {kind} model file")
+        return 2
+    if module and kind != "kani":
+        print("usage: --module applies only to a Kani harness file")
+        return 2
+    surface = models.pop(old)["surface"]
+    if module:
+        surface = renamed(surface, *module)
+    if new in models:
+        if overlap := surface.keys() & models[new]["surface"].keys():
+            raise ValueError(f"{new} already records {', '.join(sorted(overlap))}")
+        surface = {**models[new]["surface"], **surface}
+    models[new] = {"kind": kind, "digest": digest(surface), "surface": surface}
+    write_record(record_path, models)
+    print(f"MOVED {old} -> {new}")
+    return 0
+
+
 def differences(kind, old, new):
     lines = []
     if kind == "tla" and not any(name.startswith("imports ") for name in old):
@@ -541,9 +589,17 @@ def main():
     recording.add_argument("record_file", type=Path)
     recording.add_argument("models", nargs="+", type=Path)
     commands.add_parser("compare", help="compare every recorded model with its file").add_argument("record_file", type=Path)
+    moving = commands.add_parser("move", help="compare a moved model's recorded entry with its new file")
+    moving.add_argument("record_file", type=Path)
+    moving.add_argument("old_file", type=Path)
+    moving.add_argument("new_file", type=Path)
+    moving.add_argument("--module", nargs=2, metavar=("OLD", "NEW"),
+                        help="the Kani harnesses moved from module OLD to NEW; crate names the file's root")
     arguments = parser.parse_args()
     if arguments.command == "record":
         return record(arguments.record_file, arguments.models)
+    if arguments.command == "move":
+        return move(arguments.record_file, arguments.old_file, arguments.new_file, arguments.module)
     return compare(arguments.record_file)
 
 

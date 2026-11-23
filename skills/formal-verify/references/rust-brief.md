@@ -2,7 +2,8 @@
 
 Use Kani for a Rust function whose inputs and loops can be bounded. Call the real
 function from one `#[kani::proof]` harness per property. Do not transcribe its
-implementation. Edit an existing harness in place, and start a new one from
+implementation. Edit an existing harness in place unless it moves, as "Moving
+a harness" says, and start a new one from
 [the bounded queue template](../examples/kani-template/src/lib.rs).
 
 ## Files
@@ -19,9 +20,11 @@ code. `#[cfg(kani)]` leaves the module out of every other build, and the main
 thread declares `cfg(kani)` in the crate's `Cargo.toml`; if a check warns about
 an unexpected `cfg` condition named `kani`, report it and leave `Cargo.toml`
 alone. Own only that module and the mutations file, and change no other line of
-the production file unless the user has authorized a production fix. A harness
-that an earlier run wrote in a crate of its own keeps its layout: edit it and
-its mutations file where they are.
+the production file unless the user has authorized a production fix. Move a
+harness that an earlier run wrote in a crate of its own into its production
+file, as "Moving a harness" says, unless it copies a production function or
+calls functions from more than one file. Edit such a harness and its mutations
+file where they are.
 
 Cite the production source paths and line numbers that each property models in
 the harness header, the functions it calls, and the commit they were read at as
@@ -40,6 +43,37 @@ property only with that evidence or a specification correction accepted by the
 main thread under step 3 of the skill. Add a mutation, with `detects`
 naming the harness, for each branch or step the update adds. Update the header
 to the code you read.
+
+## Moving a harness
+
+A harness that an earlier run wrote in a crate of its own can mutate only that
+crate's files, so none of its mutations reach the production code. Move it into
+the production file that defines the functions it calls:
+
+1. Move its helpers and harnesses into the `#[cfg(kani)] mod proofs` at the
+   end of the production file, creating the module if the file has none, and
+   its header comment to directly above that module. Replace each `use` that
+   names the production crate, such as `use prod::*;`, with `use super::*;`.
+   Change nothing else in this step. The main thread compares the moved
+   harnesses with its record of the old ones and reads any other difference as
+   a change that needs the evidence your row cites.
+2. Move its `.mutations` file beside the production file as `<Name>.mutations`,
+   or append its mutations to the one already there. Rename each `detects` to
+   the harness's new qualified name, such as `proofs::claim_keeps_invariant`
+   for `claim_keeps_invariant`. Replace each mutation that edits the harness
+   with one that edits the production function, and replay the row's fix
+   commits there.
+3. Leave the old harness file and the rest of its crate in place, so the
+   workspace still builds, and name the file and the crate in your report. The
+   main thread deletes them.
+4. Run the checker on the production crate and the mutation runner on the new
+   mutations file. Then make any update your row asks for, as "Existing model"
+   says.
+
+Stop and restore the old layout when the checker's discovery fails in
+production code or a dependency, as the Check section describes, and report it.
+Report the old module path and the new one, such as the crate root and
+`proofs`.
 
 ## Model
 
