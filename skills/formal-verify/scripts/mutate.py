@@ -187,7 +187,8 @@ def project_root(model, *markers):
 
 
 def tla_runner(spec, mutations):
-    """Preserve the execution plan of every matching spec section, and check TLC once."""
+    """Preserve the execution plan of every matching spec section, check TLC once, and pass the unmutated
+    spec on every run the mutations select."""
     matrix = spec.with_suffix(".matrix")
     if not matrix.is_file():
         stop(f"{matrix} is missing; mutations use its checks and runs")
@@ -198,7 +199,17 @@ def tla_runner(spec, mutations):
     for mutation in mutations:
         if mutation.detects not in plan.detectors:
             stop(f"mutation '{mutation.label}': detects '{mutation.detects}', which {matrix} does not check")
-    return plan.properties, partial(check_tla, plan, tlc.Tlc())
+        try:
+            plan.selected(mutation.detects, mutation.only)
+        except ValueError as error:
+            stop(f"mutation '{mutation.label}': {error}")
+    checker = tlc.Tlc()
+    with tempfile.TemporaryDirectory(prefix="formal-tlc-originals-", dir=storage.ensure_temp_root()) as temporary:
+        try:
+            plan.check_originals(checker, [(mutation.detects, mutation.only) for mutation in mutations], Path(temporary))
+        except ValueError as error:
+            stop(str(error))
+    return plan.properties, partial(check_tla, plan, checker)
 
 
 def lean_runner(model, mutations):
@@ -236,7 +247,8 @@ def rust_runner(model, mutations):
     return targets, partial(check_rust, model, project, verifier, bounds, sources)
 
 
-# Each runner checks the names the mutations detect, then returns the names they must cover and a check for one mutation.
+# Each runner checks the names the mutations detect and that the unmutated model passes the checks they select,
+# then returns the names they must cover and a check for one mutation.
 # A TLA+ or Rust mutation covers the name it detects; a Lean mutation covers the theorems that fail on it.
 LANGUAGES = {
     ".tla": Language("TLA+", needs_detects=True, takes_only=True, runner=tla_runner),
