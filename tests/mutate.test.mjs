@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { command, excludes, fakeTlc, fixture, includes, leanPin, logs, removeFixtures, run, scripts, writeLeanProject } from "./helpers.mjs";
+import { command, elanListsPin, excludes, fakeTlc, fixture, includes, leanPin, logs, removeFixtures, run, scripts, writeLeanProject } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
@@ -216,6 +216,7 @@ function leanMutations(model, frozen, baseline, mutations, outcomes) {
   const config = join(dir, "analysis.json");
   writeFileSync(config, JSON.stringify({ baseline, mutations: outcomes }));
   command(dir, "elan", [
+    elanListsPin,
     '[ "$4" = "--version" ] && { echo version >> "$TASK_TRACE"; exit 0; }',
     '[ "$6" = query ] && { echo "$TASK_PROJECT/.lake/build/lib/lean/Model/Step.olean"; exit 0; }',
     '[[ "$9" == */lean-analysis.lean && "${10}" == audit ]] && { echo "$TASK_AUDIT"; echo "AUDITED 1 declarations"; exit 0; }',
