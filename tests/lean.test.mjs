@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -263,6 +264,16 @@ test("the Lean checker freezes unfinished statements deterministically without c
   assert.equal(readFileSync(path, "utf8"), frozen);
   assert.equal(existsSync(join(project, "Model/Sub.statements")), false);
   assert.equal(check(["Model.lean"]).status, 1);
+});
+
+test("the Lean checker reads Lean's output as UTF-8 whatever the locale's encoding", () => {
+  const type = "∀ (n : Nat), n ≤ n";
+  const { project, check } = leanFixture("lake-search.log", { audit: statementAudit(statement("refl", "theorem", type)) });
+  const result = check(["--freeze", "Model.lean"], undefined, { PYTHONUTF8: "0", PYTHONCOERCECLOCALE: "0", LC_ALL: "C" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [record] = JSON.parse(readFileSync(join(project, "Model.statements"), "utf8")).declarations;
+  assert.equal(record.type, type);
+  assert.equal(record.typeHash, createHash("sha256").update(type, "utf8").digest("hex"));
 });
 
 for (const [label, changed] of [

@@ -80,7 +80,7 @@ def pin(project):
 
 def pin_ready(toolchain):
     try:
-        return processes.run_captured(["elan", "run", toolchain, "lake", "--version"]).returncode == 0
+        return processes.run_captured(["elan", "run", toolchain, "lake", "--version"], encoding="utf-8", errors="replace").returncode == 0
     except OSError:
         return False
 
@@ -96,7 +96,8 @@ def ready_pin(project):
 def step(command, *, merge=True, env=None):
     """Run one build step and return its status as a shell reports it, its stdout and its stderr.
 
-    With merge, stderr joins stdout in the order the step wrote them, and the returned stderr is empty.
+    With merge, stderr joins stdout in the order the step wrote them, and the returned stderr is empty. Lean and Lake
+    write UTF-8 whatever the locale, and the frozen records hash that text, so it is read as UTF-8.
     """
     def collect(process):
         stdout, stderr = process.communicate()
@@ -104,7 +105,8 @@ def step(command, *, merge=True, env=None):
         return (128 - status if status < 0 else status), stdout, stderr or ""
     try:
         return processes.guarded(command, collect, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT if merge else subprocess.PIPE, text=True, env=env)
+                                 stderr=subprocess.STDOUT if merge else subprocess.PIPE, encoding="utf-8",
+                                 errors="replace", env=env)
     except OSError as error:
         return 127, "", f"cannot run {command[0]}: {error}\n"
 
@@ -370,7 +372,8 @@ def checked(project, toolchain, files, freeze, out, work):
     # replayer rather than its CLI's prefix search, which also finds deleted sources' cached objects. A named
     # module rests on the project modules it imports, so replay those too.
     prefix = processes.guarded(["elan", "run", toolchain, "lean", "--print-prefix"],
-                               lambda process: process.communicate()[0], stdout=subprocess.PIPE, text=True)
+                               lambda process: process.communicate()[0], stdout=subprocess.PIPE,
+                               encoding="utf-8", errors="replace")
     prefix = prefix.rstrip("\n")
     replay = "unavailable"
     if os.access(f"{prefix}/bin/leanchecker", os.X_OK):
@@ -420,6 +423,8 @@ def ready(project):
 
 
 def main():
+    # Lean's output is UTF-8 whatever the locale; pass it through unchanged, as the shell checker did.
+    sys.stdout.reconfigure(encoding="utf-8")
     command, *arguments = sys.argv[1:] or [""]
     if command == "ready" and len(arguments) == 1:
         return ready(arguments[0])
