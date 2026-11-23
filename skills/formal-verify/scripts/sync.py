@@ -6,7 +6,7 @@
   SYNC <commit> <reason>     the commit the model was last synced at, or SYNC none
   PATH <path>                a path the covered code has had since that commit
   MISSING <name>: <commits>  a covered name that git grep finds in no file that could define it,
-                             with the commits since the sync that removed it
+                             with the commits since the sync that added or removed it
   READ <command>             the git log command that shows every commit to read
 
 The sync commit is the header's `Source read at <commit>` when that commit is in HEAD's
@@ -20,8 +20,9 @@ word now, outside the model files that are not also a --source, such as a Kani h
 apart from the production code, and outside documents and TLA+ and Lean files, which cannot
 define it, unless a source path has the same extension. A name in none of the remaining files
 is MISSING. Each name also adds, under the same rules, the files where a commit since the sync
-added or removed it as a whole word, which git log -S finds. A path that held the code only
-under another name, such as code renamed as it moved, is not found. Exits 1 outside a git
+added or removed it as a whole word, which git log -S finds, renames included. A path that held
+the code only under another name, such as code renamed as it moved, is not found, nor is one
+whose commits all kept the number of times the name appears. Exits 1 outside a git
 repository, for a source path that no commit has, or when git grep fails.
 
 Usage: sync.py <model file>... [--source <path>]... [--name <name>]...
@@ -154,9 +155,10 @@ def renamed(root, sync, paths):
 def held(root, sync, name, pathspec):
     """Return the files where a commit since sync added or removed name as a whole word."""
     files = set()
-    for commit in git(root, "log", "-S", name, "--format=%H", f"{sync}..HEAD", "--", *pathspec).stdout.split():
+    # Without --no-renames, a rename that keeps the name's count pairs the old path with the new one and -S skips both.
+    for commit in git(root, "log", "--no-renames", "-S", name, "--format=%H", f"{sync}..HEAD", "--", *pathspec).stdout.split():
         changed = git(root, "diff-tree", "-r", "--no-commit-id", "--name-only", "-z", "-S", name, commit, "--", *pathspec).stdout.split("\0")
-        changed = [file for file in changed if file]
+        changed = [f":(literal){file}" for file in changed if file]
         for revision in (commit, f"{commit}^") if changed else ():
             found = git(root, "grep", "-l", "-z", "-w", "-F", "-e", name, revision, "--", *changed, check=False)
             files.update(file.removeprefix(f"{revision}:") for file in found.stdout.split("\0") if file)
