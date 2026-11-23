@@ -164,6 +164,38 @@ test("sync falls back past production edits to a model file that is also a sourc
   assert.equal(none.stdout, "SYNC none: no commit of the model files changed only the #[cfg(kani)] items of lib.rs; compare the model with the code in full\n");
 });
 
+test("sync's fallback counts #[cfg(kani)] on an item only, and says when it stops at a rename or after the last 100 commits", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const proofs = "\n#[cfg(kani)]\nmod proofs {\n    #[kani::proof]\n    fn check() { assert!(super::claim() == 1); }\n}\n";
+  const event = "pub enum Event {\n    #[cfg(kani)]\n    Ghost,\n    Release,\n}\n";
+  commit(dir, { "src/lib.rs": event + "pub fn claim() -> u8 { 1 }\n" }, "production");
+  const harness = commit(dir, { "src/lib.rs": event + "pub fn claim() -> u8 { 1 }\n" + proofs }, "harness");
+  commit(dir, { "src/lib.rs": event + "pub fn claim() -> u8 { 2 }\n" + proofs }, "production edit");
+  const variant = sync(dir, ["src/lib.rs", "--source", "src/lib.rs"]);
+  assert.equal(variant.status, 0, variant.stdout + variant.stderr);
+  assert.deepEqual(lines(variant.stdout, "SYNC"), [`SYNC ${harness} from the last commit of the model files that changed no production code in lib.rs`]);
+
+  git(dir, "mv", "src/lib.rs", "src/core.rs");
+  git(dir, "commit", "-m", "rename");
+  const moved = git(dir, "rev-parse", "HEAD");
+  commit(dir, { "src/core.rs": event + "pub fn claim() -> u8 { 3 }\n" + proofs }, "production edit after the rename");
+  const renamed = sync(dir, ["src/core.rs", "--source", "src/core.rs"]);
+  assert.equal(renamed.status, 0, renamed.stdout + renamed.stderr);
+  assert.equal(
+    renamed.stdout,
+    `SYNC none: no commit of the model files changed only the #[cfg(kani)] items of core.rs since the rename to core.rs in ${moved}, which git log does not follow; compare the model with the code in full\n`,
+  );
+
+  for (let edit = 4; edit < 105; edit++) {
+    writeFileSync(join(dir, "src/core.rs"), event + `pub fn claim() -> u8 { ${edit} }\n` + proofs);
+    git(dir, "commit", "-am", `edit ${edit}`);
+  }
+  const long = sync(dir, ["src/core.rs", "--source", "src/core.rs"]);
+  assert.equal(long.status, 0, long.stdout + long.stderr);
+  assert.equal(long.stdout, "SYNC none: no commit of the last 100 commits of the model files changed only the #[cfg(kani)] items of core.rs; compare the model with the code in full\n");
+});
+
 test("sync leaves a model file out of the name search when it is not also a source", () => {
   const dir = fixture();
   git(dir, "init", "-b", "main");
