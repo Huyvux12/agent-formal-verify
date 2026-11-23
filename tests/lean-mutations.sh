@@ -335,6 +335,34 @@ grep -q '^FROZEN Step.t: statement changed$' "$work/check"
 grep -q '^FROZEN Step.v: statement changed$' "$work/check"
 grep -q '^FROZEN Step.f: statement changed$' "$work/check"
 
+# A record also keeps which of two constants it shows alike sits at each place: two macro-made `a`s, whose
+# names differ only in their macro scopes, in r, and a macro-made `a` and the user's own `a` in s. The edit
+# swaps one for the other in both. A declaration added above, which renumbers the scopes, changes neither record.
+frozen_same() {
+  cat > "$work/Model/Step.lean" <<EOF
+namespace Step
+macro "inner " n:ident x:ident : command => \`(def a : Nat := 2
+  def \$n : Nat := \$x + a + $1)
+macro "outer " n:ident : command => \`(def a : Nat := 1
+  inner \$n a)
+$(cat)
+outer r
+def a : Nat := 1
+inner s a
+end Step
+EOF
+}
+# shellcheck disable=SC2016 # Lean text, not shell expansions.
+frozen_same '$x' < /dev/null
+bash "$scripts/lean-check.sh" "$work" --freeze Model/Step.lean > /dev/null
+# shellcheck disable=SC2016
+frozen_same '$x' <<< 'outer q'
+bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check" || { cat "$work/check"; echo 'FAIL a declaration added above changed the record of a definition that uses two constants shown alike'; exit 1; }
+frozen_same a < /dev/null
+rejected bash "$scripts/lean-check.sh" "$work" Model/Step.lean > "$work/check"
+grep -q '^FROZEN Step.r: statement changed$' "$work/check"
+grep -q '^FROZEN Step.s: statement changed$' "$work/check"
+
 # The mutation runner and the frozen record share one notion of a statement. A theorem that states a
 # match of the same shape as a definition's shares that definition's match helper, and a mutation that
 # changes the definition's match gives the theorem a helper of its own. The theorem's statement is
