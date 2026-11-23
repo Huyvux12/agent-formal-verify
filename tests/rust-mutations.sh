@@ -7,6 +7,8 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 scripts=$ROOT/skills/formal-verify/scripts
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+# shellcheck source=tests/lib.sh
+source "$ROOT/tests/lib.sh"
 
 for layout in standalone workspace; do
   p=$work/$layout/project
@@ -122,10 +124,7 @@ fn same_file() {
     kani::cover!(n == 254);
 }
 EOF
-  if python3 "$scripts/mutate.py" "$p/proof/src/lib.mutations" > "$work/coverage"; then
-    echo 'FAIL another harness in the same file was omitted from coverage'
-    exit 1
-  fi
+  rejected python3 "$scripts/mutate.py" "$p/proof/src/lib.mutations" > "$work/coverage"
   grep -q '^UNCOVERED same_file$' "$work/coverage"
   if grep -q '^UNCOVERED unrelated::' "$work/coverage"; then
     echo 'FAIL unrelated files contributed to coverage'
@@ -171,10 +170,7 @@ mod proofs {
 }
 EOF
 bash "$scripts/kani-check.sh" "$p" proofs::stubbed
-if bash "$scripts/kani-check.sh" "$p" proofs::vacuous > "$work/vacuous"; then
-  echo 'FAIL all-unreachable harness passed'
-  exit 1
-fi
+rejected bash "$scripts/kani-check.sh" "$p" proofs::vacuous > "$work/vacuous"
 grep -q 'no satisfied kani::cover! witness' "$work/vacuous"
 # Both harnesses use the assertion; target only the broken harness's unique block.
 cat > "$p/src/lib.mutations" <<'EOF'
@@ -187,10 +183,7 @@ detects proofs::already_broken
 +         let n: u8 = kani::any();
 +         assert!(n == 8);
 EOF
-if python3 "$scripts/mutate.py" "$p/src/lib.mutations" > "$work/baseline"; then
-  echo 'FAIL already broken baseline counted as detection'
-  exit 1
-fi
+rejected python3 "$scripts/mutate.py" "$p/src/lib.mutations" > "$work/baseline"
 grep -q "unmutated Rust harness 'proofs::already_broken' did not pass" "$work/baseline"
 if grep -q '^DETECTED ' "$work/baseline"; then
   echo 'FAIL mutation ran before its baseline passed'

@@ -6,13 +6,12 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 scripts=$ROOT/skills/formal-verify/scripts
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+# shellcheck source=tests/lib.sh
+source "$ROOT/tests/lib.sh"
 
 missed() {
   local out
-  if out=$(python3 "$scripts/mutate.py" "$work/$1.mutations"); then
-    echo "FAIL an undetected mutation passed: $1"
-    exit 1
-  fi
+  out=$(rejected python3 "$scripts/mutate.py" "$work/$1.mutations")
   printf '%s\n' "$out"
   grep -q '^MISSED ' <<< "$out"
 }
@@ -126,9 +125,6 @@ for detector in Within reach:Within; do
     sed -i.orig 's/detects Within/detects reach:Within/' "$work/Scope.mutations"
   fi
   printf 'spec Scope.tla\n%s\nrun small | Large=FALSE\n' "$check" > "$work/Scope.matrix"
-  if python3 "$scripts/mutate.py" "$work/Scope.mutations" > "$work/original.out"; then
-    echo "FAIL credited a pre-existing failure of $detector"
-    exit 1
-  fi
+  rejected python3 "$scripts/mutate.py" "$work/Scope.mutations" > "$work/original.out"
   grep -q "unmutated.*$detector" "$work/original.out"
 done
