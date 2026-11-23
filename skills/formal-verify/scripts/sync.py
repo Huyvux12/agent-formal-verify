@@ -14,7 +14,7 @@ history, and otherwise the last commit that changed the model files; the SYNC li
 why the header's commit was not used. When a model file is also a --source, such as a Rust file
 with its Kani harness, that fallback counts only a commit that changed the code of its
 #[cfg(kani)] items and none of its other code, whatever it did to the other model files,
-following each source back through its renames along the renaming commit's parent, so not into a branch merged after the
+following each source back through its renames into every parent's history, including a branch merged after the
 rename; SYNC none follows when none of the last 100 commits of the model files it reads qualifies. Each source path is followed through every rename since
 the sync commit in both directions. Each name adds the files where git grep finds it as a whole
 word now, outside the model files that are not also a --source, such as a Kani harness kept
@@ -163,23 +163,38 @@ def sync_commit(root, models, shared):
     if shared:
         names = ", ".join(model.name for model in shared)
         sources = [str(model.relative_to(root)) for model in shared]
-        # git log does not follow a rename, so the walk starts again at the renaming commit's parent under the old path.
-        # A branch merged after the rename is not followed back past it.
-        paths, start, left, more = relative, "HEAD", FALLBACK_COMMITS, False
+        # git log does not follow a rename, so the walk starts again under the old path. It starts again from HEAD,
+        # not from the renaming commit's parent: a branch merged after the rename is reachable only from HEAD. It
+        # also needs --full-history: plain git log prunes a merged branch's commits as unchanged under the new path.
+        # A rename does not end the pass: a commit under the current path that the log lists after it may still
+        # qualify, such as a harness commit on a branch that renamed the file to the same name. Only a commit that
+        # is an ancestor of the renaming commit is left for the walk under the old path, where it is reached in
+        # order; any other commit in the pass is examined here.
+        paths, left, more, seen = relative, FALLBACK_COMMITS, False, set()
         while left:
-            commits = git(root, "log", f"-{left + 1}", "--format=%H", start, "--", *paths).stdout.split()
-            more, renames = len(commits) > left, {}
-            for commit in commits[:left]:
+            commits = git(root, "log", "--full-history", f"-{left + 1 + len(seen)}", "--format=%H", "HEAD", "--", *paths).stdout.split()
+            fresh = [commit for commit in commits if commit not in seen]
+            more, pending, rename_commit = len(fresh) > left, None, None
+            for commit in fresh:
+                if not left:
+                    break
+                if pending is not None and git(root, "merge-base", "--is-ancestor", commit, rename_commit, check=False).returncode == 0:
+                    continue
                 left -= 1
+                seen.add(commit)
                 found, renames = changed_only_harness(root, commit, paths, sources)
                 if found:
                     return commit, "; ".join([f"from the last commit of the model files that changed no production code in {names}", *unused])
-                if renames:
-                    break
-            if not renames:
+                if renames and pending is None:
+                    following = [[renames.get(path, path) for path in group] for group in (paths, sources)]
+                    if following != [paths, sources]:
+                        pending, rename_commit = following, commit
+            if pending is None:
                 break
-            paths, sources = ([renames.get(path, path) for path in group] for group in (paths, sources))
-            start, more = f"{commit}^", True
+            paths, sources = pending
+            if not left:
+                # The budget ended at the rename, so the history under the old path is unexamined.
+                more = True
         read = f"the last {FALLBACK_COMMITS} commits of the model files" if more and not left else "the model files"
         return None, "; ".join([f"no commit of {read} changed only the #[cfg(kani)] items of {names}", *unused])
     last = git(root, "log", "-1", "--format=%H", "--", *relative).stdout.strip()

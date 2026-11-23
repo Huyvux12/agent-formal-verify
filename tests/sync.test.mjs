@@ -416,6 +416,96 @@ test("sync's fallback counts #[cfg(kani)] on an item only, follows a rename, and
   assert.equal(long.stdout, "SYNC none: no commit of the last 100 commits of the model files changed only the #[cfg(kani)] items of core.rs; compare the model with the code in full\n");
 });
 
+test("sync's fallback follows a rename into a branch merged after it", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const proofs = "\n#[cfg(kani)]\nmod proofs {\n    #[kani::proof]\n    fn check() { assert!(super::claim() == 1); }\n}\n";
+  commit(dir, { "src/lib.rs": "pub fn claim() -> u8 { 1 }\n" }, "production");
+  git(dir, "checkout", "-qb", "side");
+  const harness = commit(dir, { "src/lib.rs": "pub fn claim() -> u8 { 1 }\n" + proofs }, "harness");
+  git(dir, "checkout", "-q", "main");
+  git(dir, "mv", "src/lib.rs", "src/core.rs");
+  git(dir, "commit", "-m", "rename");
+  git(dir, "merge", "-q", "-m", "merge side", "side");
+
+  const result = sync(dir, ["src/core.rs", "--source", "src/core.rs"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "SYNC"), [`SYNC ${harness} from the last commit of the model files that changed no production code in core.rs`]);
+  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH src/core.rs", "PATH src/lib.rs"]);
+
+  // The mirror case, with the rename on the branch and the harness commit on main, gives the same.
+  const mirror = fixture();
+  git(mirror, "init", "-b", "main");
+  commit(mirror, { "src/lib.rs": "pub fn claim() -> u8 { 1 }\n" }, "production");
+  git(mirror, "checkout", "-qb", "side");
+  git(mirror, "mv", "src/lib.rs", "src/core.rs");
+  git(mirror, "commit", "-m", "rename");
+  git(mirror, "checkout", "-q", "main");
+  const onMain = commit(mirror, { "src/lib.rs": "pub fn claim() -> u8 { 1 }\n" + proofs }, "harness");
+  git(mirror, "merge", "-q", "-m", "merge side", "side");
+  const merged = sync(mirror, ["src/core.rs", "--source", "src/core.rs"]);
+  assert.equal(merged.status, 0, merged.stdout + merged.stderr);
+  assert.deepEqual(lines(merged.stdout, "SYNC"), [`SYNC ${onMain} from the last commit of the model files that changed no production code in core.rs`]);
+
+  // A production edit on the merged branch is still not a harness commit.
+  const edited = fixture();
+  git(edited, "init", "-b", "main");
+  commit(edited, { "src/lib.rs": "pub fn claim() -> u8 { 1 }\n" }, "production");
+  git(edited, "checkout", "-qb", "side");
+  commit(edited, { "src/lib.rs": "pub fn claim() -> u8 { 2 }\n" }, "production edit");
+  git(edited, "checkout", "-q", "main");
+  git(edited, "mv", "src/lib.rs", "src/core.rs");
+  git(edited, "commit", "-m", "rename");
+  git(edited, "merge", "-q", "-m", "merge side", "side");
+  const none = sync(edited, ["src/core.rs", "--source", "src/core.rs"]);
+  assert.equal(none.status, 0, none.stdout + none.stderr);
+  assert.equal(none.stdout, "SYNC none: no commit of the model files changed only the #[cfg(kani)] items of core.rs; compare the model with the code in full\n");
+});
+
+test("sync's fallback keeps a harness commit listed after a rename in the same pass, and says when the budget ends at a rename", () => {
+  // Two branches rename the file to the same name; the harness commit on the side branch sorts after main's rename.
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const proofs = "\n#[cfg(kani)]\nmod proofs {\n    #[kani::proof]\n    fn check() { assert!(super::claim() == 1); }\n}\n";
+  const harnessText = "pub fn claim() -> u8 { 1 }\n" + proofs;
+  commit(dir, { "src/lib.rs": "pub fn claim() -> u8 { 1 }\n" }, "production");
+  git(dir, "checkout", "-qb", "side");
+  git(dir, "mv", "src/lib.rs", "src/core.rs");
+  git(dir, "commit", "-m", "rename on the branch");
+  const harness = commit(dir, { "src/core.rs": harnessText }, "harness");
+  git(dir, "checkout", "-q", "main");
+  git(dir, "mv", "src/lib.rs", "src/core.rs");
+  git(dir, "commit", "-m", "rename");
+  const conflict = spawnSync("git", ["-C", dir, "merge", "-m", "merge side", "side"], { encoding: "utf8", env: gitEnv });
+  assert.notEqual(conflict.status, 0);
+  commit(dir, { "src/core.rs": harnessText }, "merge side");
+
+  const result = sync(dir, ["src/core.rs", "--source", "src/core.rs"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "SYNC"), [`SYNC ${harness} from the last commit of the model files that changed no production code in core.rs`]);
+
+  // The rename is the 100th commit the fallback reads, so the harness commit past it stays past the budget.
+  const long = fixture();
+  git(long, "init", "-b", "main");
+  commit(long, { "src/lib.rs": "pub fn claim() -> u8 { 1 }\n" }, "production");
+  git(long, "checkout", "-qb", "side");
+  commit(long, { "src/lib.rs": harnessText }, "harness");
+  git(long, "checkout", "-q", "main");
+  git(long, "mv", "src/lib.rs", "src/core.rs");
+  git(long, "commit", "-m", "rename");
+  for (let edit = 2; edit < 100; edit++) {
+    writeFileSync(join(long, "src/core.rs"), `pub fn claim() -> u8 { ${edit} }\n`);
+    git(long, "commit", "-am", `edit ${edit}`);
+  }
+  const merged = spawnSync("git", ["-C", long, "merge", "-m", "merge side", "side"], { encoding: "utf8", env: gitEnv });
+  if (merged.status !== 0) {
+    commit(long, { "src/core.rs": "pub fn claim() -> u8 { 99 }\n" + proofs }, "merge side");
+  }
+  const none = sync(long, ["src/core.rs", "--source", "src/core.rs"]);
+  assert.equal(none.status, 0, none.stdout + none.stderr);
+  assert.equal(none.stdout, "SYNC none: no commit of the last 100 commits of the model files changed only the #[cfg(kani)] items of core.rs; compare the model with the code in full\n");
+});
+
 test("sync leaves a model file out of the name search when it is not also a source", () => {
   const dir = fixture();
   git(dir, "init", "-b", "main");
