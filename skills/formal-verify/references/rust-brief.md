@@ -9,9 +9,19 @@ implementation. Edit an existing harness in place, and start a new one from
 
 Work in the target repository. `<skill-dir>` means the absolute path to this
 plugin's `skills/formal-verify` directory, not a directory in the target crate.
-Own only the assigned harness file and its adjacent `<Name>.mutations` file.
-Coordinate any shared crate or module wiring with its owner. Keep production
-files untouched unless the user has authorized a production fix.
+Write the harnesses in a `#[cfg(kani)] mod proofs` at the end of the production
+file that defines the function, with the header comment directly above it, as
+the template does. Write `<Name>.mutations` beside that file, where `<Name>` is
+the file's stem, such as `lib`. The mutation runner applies a mutation only to
+the file beside the mutations file and checks the harnesses of that file's
+crate, so a harness in another crate cannot detect a mutation of the production
+code. `#[cfg(kani)]` leaves the module out of every other build, and the main
+thread declares `cfg(kani)` in the crate's `Cargo.toml`; if a check warns about
+an unexpected `cfg` condition named `kani`, report it and leave `Cargo.toml`
+alone. Own only that module and the mutations file, and change no other line of
+the production file unless the user has authorized a production fix. A harness
+that an earlier run wrote in a crate of its own keeps its layout: edit it and
+its mutations file where they are.
 
 Cite the production source paths and line numbers that each property models in
 the harness header, the functions it calls, and the commit they were read at as
@@ -88,7 +98,7 @@ production crate, and report the target as not checked by Kani. A harness in a
 separate crate that copies the function checks the copy, not the production
 code, so report it as a model and name the copied source and commit.
 
-Put `<Name>.mutations` beside the assigned `<Name>.rs`. Use
+Put `<Name>.mutations` beside the production file `<Name>.rs`. Use
 `detects <fully-qualified-harness>` for each mutation. The mutation runner uses
 the bundled Cargo to find the crate's workspace and local dependencies, copies
 them to temporary storage with their relative paths intact, and checks the

@@ -58,7 +58,7 @@ Then ask the user whether to add an independent review of each model's propertie
 
 Prepare tools after picking targets and before launching agents. The helpers are in this skill's `scripts/` directory. Stay in the target repository and run each helper with `bash` and its absolute path. Pass absolute paths to models and matrices. [Tool setup](references/setup.md) describes the pins, caches and environment settings.
 
-- When a target needs Kani, run `bash <skill-dir>/scripts/setup.sh rust`. Copy the Kani template into a verification crate only when it helps add harnesses that call the production function.
+- When a target needs Kani, run `bash <skill-dir>/scripts/setup.sh rust`. Before any agent starts, declare `cfg(kani)` in each target crate's `Cargo.toml`, as the Kani template's `[lints.rust]` entry does, or under `[workspace.lints.rust]` when the crate sets `lints.workspace = true`. Without it, rustc warns about every harness module, and a build with `-D warnings` fails.
 - When a target needs TLA+, run `bash <skill-dir>/scripts/setup.sh tla`.
 - When a target needs Lean, every Lean model in the repository shares one Lake project. If the repository has none, copy `lakefile.toml`, `lake-manifest.json` and `lean-toolchain` from `<skill-dir>/examples/lean-template/` to `lean/` in the target repository, once. Then run `bash <skill-dir>/scripts/setup.sh lean <absolute-model-project-path>`.
 
@@ -84,14 +84,14 @@ Run every existing model's checker and mutations once, before any agent changes 
 Spawn one agent per target, in parallel when supported. Use the host runtime's agent tools and follow the user's model configuration when selecting agents. An agent does not see this skill. Its brief contains:
 
 - the target's row from the table, with its source files and line ranges;
-- the model's name, `<Name>`, and for a Lean target the absolute path of the Lake project, or for Kani the absolute path of the crate;
+- the model's name, `<Name>`, which for a new Kani harness is the stem of its production file, such as `lib`, and for a Lean target the absolute path of the Lake project, or for Kani the absolute path of the crate;
 - the absolute path of this skill's directory as `<skill-dir>`, and any `JAVA` setting;
 - the instruction to read `<skill-dir>/references/tla-brief.md` for a protocol, `<skill-dir>/references/lean-brief.md` for arithmetic, or `<skill-dir>/references/rust-brief.md` for a Rust function, in full and to follow it;
 - for an existing model, its files.
 
 Name the brief file and leave its text out of the prompt. The [TLA+ brief](references/tla-brief.md), the [Lean brief](references/lean-brief.md) and the [Rust brief](references/rust-brief.md) hold the modelling requirements, the files to write, the commands to run and what to report. If delegation is unavailable, read the brief for each target and model the targets yourself, one at a time.
 
-An agent writes only its own files, `tla/<Name>.tla`, `.matrix` and `.mutations`, `lean/Model/<Name>.lean`, `.mutations` and `.statements`, or the assigned Rust harness and `.mutations` files in a separate crate, so parallel agents share none. An existing Lean project keeps its layout and must pin Lean 4.20.0 or later.
+An agent writes only its own files, `tla/<Name>.tla`, `.matrix` and `.mutations`, `lean/Model/<Name>.lean`, `.mutations` and `.statements`, or the `#[cfg(kani)]` harness module in the production file that defines its Rust function and the `.mutations` file beside it, so parallel agents share none. Give one agent every Rust target in one production file. An existing Lean project keeps its layout and must pin Lean 4.20.0 or later. A Kani harness that an earlier run wrote in a crate of its own keeps its layout too, and its agent writes that harness file and its `.mutations` file.
 
 When the agents have reported, rerun every check in this thread: the matrix runner on each matrix file, the Lean checker on the whole project without a file name, the Rust checker on each crate, and the mutation runner on each mutations file. Take each verdict from these runs, not from an agent's report. Then run `python3 <skill-dir>/scripts/baseline.py compare <record-file>`. It exits 1 and prints CHANGED with the changed parts when a recorded property, fairness condition, matrix line, `.statements` record, Kani cover or stub changed, a Kani harness was removed or renamed, or a Kani assumption was added or changed. Also read `git diff` for each model that existed before this run, for the changes the record does not cover, such as a theorem newly marked `private`, a new guard in a TLA+ action, or a removed assertion or narrowed input in a Kani harness. Each such change needs the evidence its row cites, a specification correction accepted below, or for a re-freeze another reason the Lean brief permits. Revert any change without it and give the model back to its agent with the reason. Run the comparison again until it exits 0.
 
@@ -123,7 +123,7 @@ Each fact about a model has one home:
 - The project's testing documentation, when it has any, has one row per model: what it checks, in the words the Reply section asks for, and its boundary configuration. Update the row when the model changes.
 - A pull request description tells its bug's story once and links to the model.
 
-When a model's covered code is gone, propose retiring it in the reply. With the user's agreement, delete its files, including a Lean model's `.statements` record, its CI steps and its row in the testing documentation.
+When a model's covered code is gone, propose retiring it in the reply. With the user's agreement, delete its files, including a Lean model's `.statements` record, its CI steps and its row in the testing documentation. For a Kani harness in a production file, delete its `#[cfg(kani)]` module, the header comment above it and its mutations file, not the production file.
 
 Do not add a report file per bug, and do not paste run tables or traces into several documents. Write `<skill-dir>` for the installed skill in any committed command; a path from this machine does not work for the next reader.
 
