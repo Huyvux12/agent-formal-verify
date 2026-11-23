@@ -5,7 +5,6 @@
 import argparse
 import json
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -15,6 +14,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 import processes
+import runner
 import storage
 
 STATUSES = {"Success", "Failure", "Unreachable", "Undetermined", "Satisfied", "Unsatisfiable"}
@@ -27,10 +27,6 @@ PROPERTY_OUTCOMES = ({"Success", "Unreachable"}, {"Failure"})
 
 
 class CheckError(Exception):
-    pass
-
-
-class Unavailable(Exception):
     pass
 
 
@@ -99,22 +95,17 @@ class Kani:
     def __init__(self):
         home = Path(os.environ.get("KANI_HOME", Path.home() / ".kani")).resolve()
         self.timeout = os.environ.get("KANI_HARNESS_TIMEOUT", "").strip() or "5m"
-        limit = re.fullmatch(r"\+?0*([1-9][0-9]{0,9})([smh]?)", self.timeout)
-        if not limit or int(limit[1]) >= 2**32:
-            raise Unavailable(f"KANI_HARNESS_TIMEOUT={self.timeout!r} is not a harness time limit; set a whole "
-                              "number from 1 to 4294967295 with an optional unit s, m or h, such as 90s or 20m, "
-                              "or unset it for five minutes")
-        # Kani reads a number with no unit as seconds; name the unit when reporting the limit.
-        self.limit = limit[1] + (limit[2] or "s")
+        # Kani reads a number with no unit as seconds; the label names the unit when reporting the limit.
+        self.limit = runner.parse_limit("KANI_HARNESS_TIMEOUT", self.timeout, "harness time limit", "five minutes")[0]
         bundle = home / f"kani-{self.version}"
         remedy = (f"run cargo install --locked kani-verifier --version {self.version} "
                   "then cargo kani setup")
         for binary in ("bin/kani-driver", "bin/kani-compiler", "bin/cbmc", "toolchain/bin/rustc", "toolchain/bin/cargo"):
             path = bundle / binary
             if not path.is_file() or not os.access(path, os.X_OK):
-                raise Unavailable(f"Kani {self.version} bundle is incomplete; {remedy}")
+                raise runner.Unavailable(f"UNAVAILABLE Kani {self.version} bundle is incomplete; {remedy}")
         if any(home.glob("*.tar.gz")):
-            raise Unavailable(f"incomplete Kani setup at {home}; finish cargo kani setup before checking")
+            raise runner.Unavailable(f"UNAVAILABLE incomplete Kani setup at {home}; finish cargo kani setup before checking")
         self.bundle = bundle
         self.driver = bundle / "bin/kani-driver"
         self.cargo = bundle / "toolchain/bin/cargo"
@@ -134,9 +125,9 @@ class Kani:
         try:
             done = self.run("--version")
         except CheckError as error:
-            raise Unavailable(f"Kani {self.version} cannot run: {error}; {remedy}") from error
+            raise runner.Unavailable(f"UNAVAILABLE Kani {self.version} cannot run: {error}; {remedy}") from error
         if done.returncode or not done.stdout.startswith(f"Kani Rust Verifier {self.version} (cargo plugin)\n"):
-            raise Unavailable(f"Kani {self.version} is required; {remedy}")
+            raise runner.Unavailable(f"UNAVAILABLE Kani {self.version} is required; {remedy}")
 
     def run(self, *arguments, cwd=None, tmpdir=None):
         env = self.env if tmpdir is None else self.env | {"TMPDIR": str(tmpdir)}
@@ -338,50 +329,38 @@ def main():
     check.add_argument("crate")
     check.add_argument("harnesses", nargs="*")
     arguments = parser.parse_args()
-    try:
-        kani = Kani()
-    except Unavailable as error:
-        print(f"UNAVAILABLE {error}")
-        return 3
+    kani = Kani()
     if arguments.command == "ready":
         print(f"READY Kani {kani.version}")
         return 0
     crate, selected = Path(arguments.crate).resolve(), arguments.harnesses
-    try:
-        temp_root = storage.ensure_temp_root()
-        storage.warn_runtime()
-        with tempfile.TemporaryDirectory(prefix="formal-kani-", dir=temp_root) as temporary:
-            work = Path(temporary)
-            try:
-                bounds = discover(crate, work, kani)
-                names = list(dict.fromkeys(selected)) if selected else sorted(bounds)
-                unknown = set(names) - set(bounds)
-                if unknown:
-                    raise CheckError("unknown harnesses: " + ", ".join(sorted(unknown)))
-                reject_should_panic(bounds, names)
-            except CheckError as error:
-                print(f"FAIL {error}")
-                return 1
-            passed = 0
-            for name in names:
-                outcome = verify(crate, work, kani, name, bounds[name].unwind)
-                ok = outcome.verdict is Verdict.PASS
-                passed += ok
-                print(f"{'PASS' if ok else 'FAIL'} {name} unwind={bounds[name].unwind} checks={outcome.checks}"
-                      + (": " + "; ".join(outcome.failures) if outcome.failures else ""))
-                if not ok:
-                    print(outcome.output.rstrip())
-            print(f"SUMMARY {passed} of {len(names)} harnesses passed")
-            return 0 if passed == len(names) else 1
-    except storage.TempDirError as error:
-        print(error)
-        return 1
+    temp_root = storage.ensure_temp_root()
+    storage.warn_runtime()
+    with tempfile.TemporaryDirectory(prefix="formal-kani-", dir=temp_root) as temporary:
+        work = Path(temporary)
+        try:
+            bounds = discover(crate, work, kani)
+            names = list(dict.fromkeys(selected)) if selected else sorted(bounds)
+            unknown = set(names) - set(bounds)
+            if unknown:
+                raise CheckError("unknown harnesses: " + ", ".join(sorted(unknown)))
+            reject_should_panic(bounds, names)
+        except CheckError as error:
+            print(f"FAIL {error}")
+            return 1
+        passed = 0
+        for name in names:
+            outcome = verify(crate, work, kani, name, bounds[name].unwind)
+            ok = outcome.verdict is Verdict.PASS
+            passed += ok
+            print(f"{'PASS' if ok else 'FAIL'} {name} unwind={bounds[name].unwind} checks={outcome.checks}"
+                  + (": " + "; ".join(outcome.failures) if outcome.failures else ""))
+            if not ok:
+                print(outcome.output.rstrip())
+        print(f"SUMMARY {passed} of {len(names)} harnesses passed")
+        return 0 if passed == len(names) else 1
 
 
 if __name__ == "__main__":
-    # The readiness check runs Kani too, so a second signal while it is stopped must be ignored there as well.
-    try:
-        with processes.signal_cleanup():
-            sys.exit(main())
-    except processes.SignalTerminated as error:
-        error.exit()
+    # The readiness check runs Kani too, so the signal handling covers all of main.
+    runner.run(main)

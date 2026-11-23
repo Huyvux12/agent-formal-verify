@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 import processes
+import runner
 import storage
 import tlc_trace
 
@@ -122,26 +123,9 @@ def _directives(lines):
             yield Malformed(f"unknown directive: {line}")
 
 
-class Unavailable(Exception):
-    pass
-
-
 DEFAULT_TIMEOUT = "60m"
-TIME_UNITS = {"": 1, "s": 1, "m": 60, "h": 3600}
 PROGRESS_DELAY = 15.0
 PROGRESS_INTERVAL = 30.0
-
-
-def parse_timeout(raw):
-    """Parse a positive integer duration with optional s/m/h unit into (normalized_label, seconds)."""
-    limit = re.fullmatch(r"\+?0*([1-9][0-9]{0,9})([smh]?)", raw)
-    if not limit or int(limit[1]) >= 2**32:
-        raise Unavailable(
-            f"UNAVAILABLE TLC_TIMEOUT={raw!r} is not a run time limit; set a whole number from 1 to 4294967295 "
-            "with an optional unit s, m or h, such as 90s or 20m, or unset it for sixty minutes"
-        )
-    unit = limit[2] or "s"
-    return limit[1] + unit, int(limit[1]) * TIME_UNITS[limit[2]]
 
 
 def _read_progress(log_path, offset, partial):
@@ -174,12 +158,12 @@ class Tlc:
 
     def __init__(self):
         timeout_raw = os.environ.get("TLC_TIMEOUT", "").strip() or DEFAULT_TIMEOUT
-        self.limit, self.timeout_seconds = parse_timeout(timeout_raw)
+        self.limit, self.timeout_seconds = runner.parse_limit("TLC_TIMEOUT", timeout_raw, "run time limit", "sixty minutes")
         done = subprocess.run(
             ["bash", "-c", 'source "$1/tlc-tools.sh" && require_tlc_runtime && tlc_jar_ready && printf "%s\\n%s\\n" "$JAVA" "$TLC_JAR"',
              "bash", str(HERE)], capture_output=True, text=True, check=False)
         if done.returncode:
-            raise Unavailable(done.stdout.rstrip("\n"))
+            raise runner.Unavailable(done.stdout.rstrip("\n"))
         self.java, self.jar = done.stdout.splitlines()[-2:]
         self.workers = os.environ.get("TLC_WORKERS") or "auto"
         self._warned_disk = False
@@ -568,31 +552,21 @@ def main():
     if not Path(matrix).is_file():
         print(f"FAIL {matrix} does not exist")
         return 1
-    try:
-        tlc = Tlc()
-    except Unavailable as error:
-        print(error)
-        return 3
-    try:
-        with processes.signal_cleanup(), tempfile.TemporaryDirectory(dir=storage.ensure_temp_root()) as work:
-            runner = Runner(tlc, Path(matrix).resolve().parent, only, lambda result: print("\n".join(render(result)), flush=True), Path(work))
-            for task in MatrixPlan(matrix):
-                runner.check(task)
-    except storage.TempDirError as error:
-        print(error)
-        return 1
-    except processes.SignalTerminated as error:
-        error.exit()
-    if runner.runs_total == 0:
+    tlc = Tlc()
+    with tempfile.TemporaryDirectory(dir=storage.ensure_temp_root()) as work:
+        matrix_runner = Runner(tlc, Path(matrix).resolve().parent, only, lambda result: print("\n".join(render(result)), flush=True), Path(work))
+        for task in MatrixPlan(matrix):
+            matrix_runner.check(task)
+    if matrix_runner.runs_total == 0:
         matching = f"matching '{only}' " if only else ""
         print(f"FAIL no run {matching}in {matrix}")
         return 1
-    summary = f"SUMMARY {runner.passed} of {runner.runs_total} runs passed"
-    if runner.reach_total:
-        summary += f", {runner.reached} of {runner.reach_total} reach checks passed"
-    print(f"{summary}, {runner.states} distinct states in total")
-    return int(runner.failed)
+    summary = f"SUMMARY {matrix_runner.passed} of {matrix_runner.runs_total} runs passed"
+    if matrix_runner.reach_total:
+        summary += f", {matrix_runner.reached} of {matrix_runner.reach_total} reach checks passed"
+    print(f"{summary}, {matrix_runner.states} distinct states in total")
+    return int(matrix_runner.failed)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    runner.run(main)

@@ -7,11 +7,11 @@ import argparse
 import hashlib
 import json
 import sys
-import tempfile
 from pathlib import Path
 
 sys.dont_write_bytecode = True
 
+import runner
 from lean_records import read_record
 
 
@@ -67,15 +67,7 @@ def freeze(toolchain, modules, sources):
                   "declarations": [records[name] for name in sorted(records)]}
         pending.append((source.with_suffix(".statements"), json.dumps(record, ensure_ascii=False, indent=2) + "\n"))
     for path, contents in pending:
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
-                temporary = Path(stream.name)
-                stream.write(contents)
-            temporary.replace(path)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        runner.atomic_write(path, contents)
         print(f"FROZEN {path}: statements recorded; proofs not checked")
     return 0
 
