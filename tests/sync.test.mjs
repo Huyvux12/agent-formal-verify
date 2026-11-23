@@ -199,18 +199,19 @@ test("sync reports a name as missing when only documents and other models still 
   assert.deepEqual(lines(result.stdout, "READ"), [`READ git -C ${root} log -p ${read}..HEAD -- src/queue.c`]);
 });
 
-test("sync reports a name as missing when only extensionless files and other document formats mention it", () => {
+test("sync reports a name as missing when only extensionless documents and data files mention it, and reads the data files", () => {
   const dir = fixture();
   git(dir, "init", "-b", "main");
-  const docs = ["README", "CHANGELOG", ".github/CODEOWNERS", "docs/queue.html", "docs/queue.tex", "notes/queue.ipynb", "docs/api.json"];
-  const read = commit(dir, { "src/queue.c": "int claim(void);\nint drain(void);\n", ...Object.fromEntries(docs.map((doc) => [doc, "drain empties the queue\n"])) }, "queue");
+  const docs = ["README", "CHANGELOG", ".github/CODEOWNERS", "docs/queue.tex"];
+  const data = ["Makefile", ".github/workflows/ci.yml", "docs/queue.html", "notes/queue.ipynb", "docs/api.json"];
+  const read = commit(dir, { "src/queue.c": "int claim(void);\nint drain(void);\n", ...Object.fromEntries([...docs, ...data].map((doc) => [doc, "drain empties the queue\n"])) }, "queue");
   commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
   commit(dir, { "src/queue.c": "int claim(void);\n" }, "remove drain");
   const removed = git(dir, "rev-parse", "--short", "HEAD");
 
   const result = sync(dir, ["tla/Queue.tla", "--source", "src/queue.c", "--name", "claim", "--name", "drain"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH src/queue.c"]);
+  assert.deepEqual(lines(result.stdout, "PATH"), [...data, "src/queue.c"].sort().map((path) => `PATH ${path}`));
   assert.deepEqual(lines(result.stdout, "MISSING"), [`MISSING drain: ${removed}`]);
 
   // An extensionless file is searched when a source has no extension either.

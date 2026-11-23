@@ -17,8 +17,9 @@ with its Kani harness, that fallback counts only a commit that changed the code 
 none of the last 100 commits of the model files since the source's last rename qualifies. Each source path is followed through every rename since
 the sync commit in both directions. Each name adds the files where git grep finds it as a whole
 word now, outside the model files that are not also a --source, such as a Kani harness kept
-apart from the production code, and outside documents, data files, files with no extension and
-TLA+ and Lean files, which cannot define it, unless a source path has the same extension. A name in none of the remaining files
+apart from the production code, and outside documents, such as README, and TLA+ and Lean files,
+which cannot define it, unless a source path has the same extension. A name in none of the remaining files,
+or only in files with no extension and data files such as .json, .yml or .html, which seldom define it,
 is MISSING. Each name also adds, under the same rules, the files where a commit since the sync
 added or removed it as a whole word, which git log -S finds, renames included. A path that held
 the code only under another name, such as code renamed as it moved, is not found, nor is one
@@ -39,11 +40,15 @@ sys.dont_write_bytecode = True
 import baseline
 
 HEADER = re.compile(r"Source read at ([0-9a-fA-F]{7,40})\b")
-# Documents, data files, files with no extension, such as README, and model files mention covered names but cannot
-# define them, unless a source has the same extension.
-NO_DEFINITIONS = {"", ".md", ".markdown", ".rst", ".txt", ".adoc", ".org", ".html", ".htm", ".tex", ".ipynb", ".json",
-                  ".yaml", ".yml", ".toml", ".xml", ".csv", ".svg", ".tla", ".cfg", ".lean", ".statements", ".matrix",
-                  ".mutations"}
+# Documents and model files mention covered names but cannot define them, unless a source has the same extension.
+NO_DEFINITIONS = {".md", ".markdown", ".rst", ".txt", ".adoc", ".org", ".tex", ".csv", ".tla", ".cfg", ".lean", ".statements",
+                  ".matrix", ".mutations"}
+# Nor can a document with no extension.
+DOCUMENT_NAMES = {"README", "CHANGELOG", "CHANGES", "HISTORY", "NEWS", "TODO", "AUTHORS", "CONTRIBUTORS", "COPYING",
+                  "LICENSE", "NOTICE", "CODEOWNERS"}
+# Other files with no extension and data formats can hold code, such as a Makefile or a CI workflow, but seldom the
+# definition of a covered name, so they are read but do not keep a name from being MISSING.
+SELDOM_DEFINE = {"", ".html", ".htm", ".ipynb", ".json", ".yaml", ".yml", ".toml", ".xml", ".svg"}
 # #[cfg(kani)] on an item, past any other attributes and its visibility; on a field or a variant it is production code.
 KANI_CFG = re.compile(
     r"#\s*\[\s*cfg\s*\(\s*kani\s*\)\s*\](?=(?:\s*#\s*\[[^\]]*\])*\s*(?:pub\s*(?:\([^)]*\))?\s*)?"
@@ -51,6 +56,17 @@ KANI_CFG = re.compile(
 )
 # The fallback reads at most this many commits of the model files, since each costs a parse of the file twice.
 FALLBACK_COMMITS = 100
+
+
+def role(file, paths, suffixes):
+    """Return "defines" for a file that may define a covered name it holds, "uses" for one that may only use it, or None."""
+    path = Path(file)
+    suffix = path.suffix.lower()
+    if file in paths or suffix in suffixes:
+        return "defines"
+    if suffix in NO_DEFINITIONS or not suffix and path.name.upper() in DOCUMENT_NAMES:
+        return None
+    return "uses" if suffix in SELDOM_DEFINE else "defines"
 
 
 def git(root, *arguments, check=True):
@@ -233,17 +249,17 @@ def main():
         sources.append(str(path.relative_to(root)))
     paths = renamed(root, sync, sources)
     excluded = [f":(exclude){path}" for path in relative if path not in sources]
-    cannot_define = NO_DEFINITIONS - {Path(path).suffix.lower() for path in paths}
+    suffixes = {Path(path).suffix.lower() for path in paths}
     missing = []
     for name in arguments.name:
         found = git(root, "grep", "-l", "-z", "-w", "-F", "-e", name, "--", ".", *excluded, check=False)
         if found.returncode > 1:
             raise RuntimeError(f"git grep for {name} failed: {found.stderr.strip()}")
-        files = [file for file in found.stdout.split("\0") if file and (file in paths or Path(file).suffix.lower() not in cannot_define)]
-        if not files:
+        roles = {file: role(file, paths, suffixes) for file in found.stdout.split("\0") if file}
+        if "defines" not in roles.values():
             missing.append(name)
-        files += held(root, sync, name, [".", *excluded])
-        paths.update(file for file in files if file in paths or Path(file).suffix.lower() not in cannot_define)
+        files = [*roles, *held(root, sync, name, [".", *excluded])]
+        paths.update(file for file in files if role(file, paths, suffixes))
     for path in sorted(paths):
         print(f"PATH {path}")
     for name in missing:
