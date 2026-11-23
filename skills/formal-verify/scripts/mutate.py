@@ -199,6 +199,10 @@ def tla_runner(spec, mutations):
     for mutation in mutations:
         if mutation.detects not in plan.detectors:
             stop(f"mutation '{mutation.label}': detects '{mutation.detects}', which {matrix} does not check")
+        try:
+            plan.selected(mutation.detects, mutation.only)
+        except ValueError as error:
+            stop(f"mutation '{mutation.label}': {error}")
     checker = tlc.Tlc()
     with tempfile.TemporaryDirectory(prefix="formal-tlc-originals-", dir=storage.ensure_temp_root()) as temporary:
         try:

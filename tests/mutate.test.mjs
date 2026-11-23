@@ -118,7 +118,7 @@ test("a mutation filter cannot move a target check onto an earlier run", () => {
   const { dir, result } = tlaMutations([], ["mutation skip", "detects Small", "only early", "- x + 1", "+ x \\* BUG"], undefined, undefined,
     ["spec One.tla", "run early | N=4", "check INVARIANT Small", "run later | N=5"]);
   assert.equal(result.status, 1);
-  includes(result.stdout, "no run matches 'early' for 'Small'");
+  includes(result.stdout, "FAIL mutation 'skip': no run matches 'early' for 'Small'");
   assert.equal(existsSync(join(dir, "calls")), false);
 });
 
@@ -531,7 +531,7 @@ test("reach mutation filters retain the matrix's first selected run", () => {
   const result = reachMutation('echo "Model checking completed. No error has been found."',
     "spec One.tla\nreach Full | n=\nrun n=4 | N=4\nrun n=5 | N=5\n", "n=5");
   assert.equal(result.status, 1);
-  includes(result.stdout, "no run matches 'n=5' for 'reach:Full'");
+  includes(result.stdout, "FAIL mutation 'never full': no run matches 'n=5' for 'reach:Full'");
   excludes(result.stdout, "DETECTED");
 });
 

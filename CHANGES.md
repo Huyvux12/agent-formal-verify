@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-The mutation runner now checks a TLA+ model's unmutated spec on every run that its mutations select before it applies the first mutation, as it already did for Lean and Rust models. A model that fails one of those runs stops the runner with `FAIL unmutated model did not pass <Property>` and no verdict lines. Before this change, the runner checked each run the first time a mutation selected it, so it reported a broken model partway through the list, as the error of whichever mutation reached the run first, after earlier mutations had printed their verdicts. A mutation whose `only` line matches no run, or whose reach check has no run, is now reported before TLC checks any run, instead of as that mutation's error.
+The mutation runner now checks a TLA+ model's unmutated spec on every run that its mutations select before it applies the first mutation, as it already did for Lean and Rust models. A model that fails one of those runs stops the runner with `FAIL unmutated model did not pass <Property>` and no verdict lines. Before this change, the runner checked each run the first time a mutation selected it, so it reported a broken model partway through the list, as the error of whichever mutation reached the run first, after earlier mutations had printed their verdicts. A mutation whose `only` line matches no run, or whose reach check has no run, now stops the runner with that mutation's label before TLC checks any run.
 
 The TLC matrix runner now handles `SIGINT`, `SIGTERM` and `SIGHUP` while it checks that TLC is ready, as it does during a run, and ends by the signal. Before this change, a Ctrl-C during that check printed a Python traceback.
 
