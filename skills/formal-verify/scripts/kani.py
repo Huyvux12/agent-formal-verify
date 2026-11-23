@@ -2,6 +2,14 @@
 # Copyright (c) 2026 Michael Denyer
 # SPDX-License-Identifier: GPL-3.0-only
 """Run the pinned Kani and validate its versioned discovery and result records."""
+import signal
+
+if __name__ == "__main__":
+    # Python's SIGINT handler raises KeyboardInterrupt, which prints a traceback when it arrives during the imports.
+    # Until runner.run installs its own handlers, the default action ends the process by the signal instead.
+    if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
 import argparse
 import json
 import os
