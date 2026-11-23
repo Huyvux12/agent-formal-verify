@@ -65,7 +65,9 @@ def logical_path(path):
     return os.path.normpath(path)
 
 
-CHANNELS = {"stable", "beta", "nightly"}
+# Release names that elan resolves to a release online, as a channel or as the release a repository's
+# lean-toolchain file names.
+CHANNELS = {"stable", "beta", "nightly", "lean-toolchain"}
 
 
 def pin(project):
@@ -80,13 +82,18 @@ def pin(project):
     except (OSError, UnicodeDecodeError) as error:
         raise CheckError(f"FAIL cannot read {path}: {error}") from error
     if toolchain.rpartition(":")[2] in CHANNELS:
-        raise runner.Unavailable(f"UNAVAILABLE {path} pins the channel {toolchain}, which elan resolves to a release online; "
-                                 "pin a release such as leanprover/lean4:v4.35.0")
+        raise CheckError(f"FAIL {path} pins {toolchain}, which elan resolves to a release online; pin a release, "
+                         "such as leanprover/lean4:v<version>")
     return toolchain
 
 
 def installed(toolchain):
-    """Whether elan lists the toolchain, under the name elan gives a pin, so that no elan run downloads it."""
+    """Whether elan lists the toolchain, under the name elan gives a pin, so that no elan run downloads it.
+
+    A pin that is an absolute path names a toolchain directory, which elan runs without installing anything.
+    """
+    if os.path.isabs(toolchain):
+        return os.path.isdir(toolchain)
     origin, _, channel = toolchain.rpartition(":")
     origin = origin or "leanprover/lean4"
     if channel[:1].isdigit():

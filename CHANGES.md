@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-The Lean checker and the Lean mutation runner no longer download a toolchain that is not installed. `elan run` installs a missing toolchain even without its install flag, so they now look for the pin in `elan toolchain list` first, under the name elan gives it, and print `UNAVAILABLE <pin> is not ready` with the `setup.sh lean` command when it is not there. A `lean-toolchain` that names the channel `stable`, `beta` or `nightly` is now UNAVAILABLE, in `setup.sh lean` too, because elan resolves a channel to a release online. Before this change, `lean-check.sh` on a project pinned to a toolchain the machine lacked downloaded it, though `references/setup.md` said it reported UNAVAILABLE.
+The Lean checker and the Lean mutation runner no longer download a toolchain that is not installed. `elan run` installs a missing toolchain even without its install flag, so they now look for the pin in `elan toolchain list` first, under the name elan gives it, and print `UNAVAILABLE <pin> is not ready` with the `setup.sh lean` command when it is not there. A `lean-toolchain` that names the channel `stable`, `beta` or `nightly`, or a repository's `lean-toolchain` release name, now fails in the checker and in `setup.sh lean`, because elan resolves it to a release online. A pin that is an absolute path to a toolchain directory is ready when the directory exists. Before this change, `lean-check.sh` on a project pinned to a toolchain the machine lacked downloaded it, though `references/setup.md` said it reported UNAVAILABLE.
 
 `setup.sh tla` now prints `usage: setup.sh tla` and exits 2 when it gets an argument after `tla`, as `setup.sh rust` and `setup.sh storage` do for theirs. Before this change, it ignored the argument and ran the readiness check.
 
