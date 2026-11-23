@@ -5,8 +5,8 @@
 
   SYNC <commit> <reason>     the commit the model was last synced at, or SYNC none
   PATH <path>                a path the covered code has had since that commit
-  MISSING <name>: <commits>  a covered name that git grep finds nowhere, with the commits
-                             since the sync that removed it
+  MISSING <name>: <commits>  a covered name that git grep finds in no file that could define it,
+                             with the commits since the sync that removed it
   READ <command>             the git log command that shows every commit to read
 
 The sync commit is the header's `Source read at <commit>` when that commit is in HEAD's
@@ -17,7 +17,9 @@ with its Kani harness, that fallback counts only a commit that changed the code 
 none of the last 100 commits of the model files since the source's last rename qualifies. Each source path is followed through every rename since
 the sync commit in both directions. Each name adds the files where git grep finds it as a whole
 word now, outside the model files that are not also a --source, such as a Kani harness kept
-apart from the production code. Exits 1 outside a git repository, for a source path that no
+apart from the production code, and outside documents and TLA+ and Lean files, which cannot
+define it, unless a source path has the same extension. A name in none of the remaining files
+is MISSING. Exits 1 outside a git repository, for a source path that no
 commit has, or when git grep fails.
 
 Usage: sync.py <model file>... [--source <path>]... [--name <name>]...
@@ -34,6 +36,8 @@ sys.dont_write_bytecode = True
 import baseline
 
 HEADER = re.compile(r"Source read at ([0-9a-fA-F]{7,40})\b")
+# Documents and model files mention covered names but cannot define them, unless a source has the same extension.
+NO_DEFINITIONS = {".md", ".markdown", ".rst", ".txt", ".adoc", ".org", ".tla", ".cfg", ".lean", ".statements", ".matrix", ".mutations"}
 # #[cfg(kani)] on an item, past any other attributes and its visibility; on a field or a variant it is production code.
 KANI_CFG = re.compile(
     r"#\s*\[\s*cfg\s*\(\s*kani\s*\)\s*\](?=(?:\s*#\s*\[[^\]]*\])*\s*(?:pub\s*(?:\([^)]*\))?\s*)?"
@@ -177,12 +181,13 @@ def main():
         sources.append(str(path.relative_to(root)))
     paths = renamed(root, sync, sources)
     excluded = [f":(exclude){path}" for path in relative if path not in sources]
+    cannot_define = NO_DEFINITIONS - {Path(path).suffix.lower() for path in paths}
     missing = []
     for name in arguments.name:
         found = git(root, "grep", "-l", "-z", "-w", "-F", "-e", name, "--", ".", *excluded, check=False)
         if found.returncode > 1:
             raise RuntimeError(f"git grep for {name} failed: {found.stderr.strip()}")
-        files = [file for file in found.stdout.split("\0") if file]
+        files = [file for file in found.stdout.split("\0") if file and (file in paths or Path(file).suffix.lower() not in cannot_define)]
         paths.update(files)
         if not files:
             missing.append(name)
