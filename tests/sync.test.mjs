@@ -66,6 +66,40 @@ test("sync follows renames, finds where covered names live now, and names the co
   assert.deepEqual(lines(result.stdout, "READ"), [`READ git -C ${root} log -p ${read}..HEAD -- src/consume.c src/core.c src/queue.c`]);
 });
 
+test("sync reports a name as missing when only documents and other models still mention it", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const read = commit(dir, {
+    "src/queue.c": "int claim(void);\nint drain(void);\n",
+    "docs/queue.md": "drain empties the queue\n",
+    "tla/Other.tla": "(* Covers claim and drain. *)\n",
+    "lean/Model/Queue.lean": "-- drain\n",
+  }, "queue");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+  commit(dir, { "src/queue.c": "int claim(void);\n" }, "remove drain");
+  const removed = git(dir, "rev-parse", "--short", "HEAD");
+
+  const result = sync(dir, ["tla/Queue.tla", "--source", "src/queue.c", "--name", "claim", "--name", "drain"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH src/queue.c"]);
+  assert.deepEqual(lines(result.stdout, "MISSING"), [`MISSING drain: ${removed}`]);
+  const root = git(dir, "rev-parse", "--show-toplevel");
+  assert.deepEqual(lines(result.stdout, "READ"), [`READ git -C ${root} log -p ${read}..HEAD -- src/queue.c`]);
+});
+
+test("sync searches files with a source's extension even when other models use it", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const read = commit(dir, { "lean/Queue.lean": "def claim := 1\n" }, "queue");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+  git(dir, "rm", "lean/Queue.lean");
+  commit(dir, { "lean/Claim.lean": "namespace Slots\nopen Nat\ndef claim := 1\ntheorem one : claim = 1 := rfl\nend Slots\n" }, "move claim");
+  const result = sync(dir, ["tla/Queue.tla", "--source", "lean/Queue.lean", "--name", "claim"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH lean/Claim.lean", "PATH lean/Queue.lean"]);
+  assert.deepEqual(lines(result.stdout, "MISSING"), []);
+});
+
 test("sync falls back to the last commit of the model files when the header's commit is not in HEAD's history", () => {
   const dir = fixture();
   git(dir, "init", "-b", "main");
