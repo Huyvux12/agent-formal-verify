@@ -13,8 +13,8 @@ The sync commit is the header's `Source read at <commit>` when that commit is in
 history, and otherwise the last commit that changed the model files; the SYNC line then says
 why the header's commit was not used. When a model file is also a --source, such as a Rust file
 with its Kani harness, that fallback counts only a commit that changed the code of its
-#[cfg(kani)] items, or another model file, and none of its other code, following each source
-back through its renames along the renaming commit's parent, so not into a branch merged after the
+#[cfg(kani)] items and none of its other code, whatever it did to the other model files,
+following each source back through its renames along the renaming commit's parent, so not into a branch merged after the
 rename; SYNC none follows when none of the last 100 commits of the model files it reads qualifies. Each source path is followed through every rename since
 the sync commit in both directions. Each name adds the files where git grep finds it as a whole
 word now, outside the model files that are not also a --source, such as a Kani harness kept
@@ -119,7 +119,7 @@ def split_harness(text):
 
 
 def changed_only_harness(root, commit, models, sources):
-    """Whether commit changed the model files and, in those that are also a source, no code outside the #[cfg(kani)] items.
+    """Whether commit changed the #[cfg(kani)] items of a model file that is also a source, and no code outside them.
 
     Also returns each source that commit renamed, mapped to its path before, so the caller can follow it.
     """
@@ -131,7 +131,8 @@ def changed_only_harness(root, commit, models, sources):
         renames = {fields[at + 2]: fields[at + 1] for at in range(len(fields) - 2)
                    if re.fullmatch(r"R[0-9]*", fields[at]) and fields[at + 2] in befores}
         befores.update({path: git(root, "show", f"{commit}^:{old}", check=False) for path, old in renames.items()})
-    changed = bool(touched - set(sources))
+    # A commit that changed only another model file never synced the harness in a source, so only a harness edit counts.
+    changed = False
     for path, before in befores.items():
         after = git(root, "show", f"{commit}:{path}", check=False)
         if before.returncode or after.returncode:
