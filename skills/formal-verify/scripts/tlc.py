@@ -5,7 +5,7 @@
 
 Prints one PASS or FAIL line per run with its distinct state count, then a
 SUMMARY line with the totals. A failing run prints TLC's error and its error
-trace reduced to the variables each step changed (tlc-trace.py).
+trace reduced to the variables each step changed (tlc_trace.py).
 
 Matrix file, one directive per line (# starts a comment):
   spec <path.tla>             the spec for the runs below, relative to the file;
@@ -40,6 +40,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 import processes
 import storage
+import tlc_trace
 
 HERE = Path(__file__).resolve().parent
 CHECK_KINDS = ("INVARIANT", "INVARIANTS", "PROPERTY", "PROPERTIES")
@@ -244,14 +245,40 @@ class Outcome(Enum):
 
 
 @dataclass(frozen=True)
+class Violation:
+    """A property violation as TLC's first error line names it."""
+    kind: str
+    name: str | None
+    initial: bool
+
+
+# TLC names the property it found violated in one of these lines; a temporal violation names none.
+VIOLATION = re.compile(r"Error: (?:(Invariant|Property|Action property) (.+) is violated(\.| by the initial state:)"
+                       r"|(Temporal) properties were violated\.)")
+
+
+def violation(error):
+    """Return the violation that TLC's error line reports, or None for any other error."""
+    match = VIOLATION.fullmatch(error)
+    if not match:
+        return None
+    return Violation(match[1] or match[4], match[2], match[3] == " by the initial state:")
+
+
+@dataclass(frozen=True)
 class Result:
-    """One line of the runner's report and the output printed under it."""
+    """One line of the runner's report and the output printed under it.
+
+    detail is the text printed after the label; states and violation hold what callers count and match on.
+    """
     outcome: Outcome
     name: str = ""
     label: str = ""
     operator: str = ""
     detail: str = ""
     lines: tuple = ()
+    states: int = 0
+    violation: Violation | None = None
 
 
 @dataclass(frozen=True)
@@ -377,21 +404,11 @@ class MutationPlan:
             results.append((run_task(checker, self._spec.parent, task, work, source), temporal))
         if not results:
             raise ValueError(f"no run matches '{only}' for '{detector}'")
-        violations = {
-            f"Error: Invariant {detector} is violated.",
-            f"Error: Invariant {detector} is violated by the initial state:",
-            f"Error: Property {detector} is violated by the initial state:",
-            f"Error: Action property {detector} is violated.",
-            "Error: Temporal properties were violated.",
-        }
-        # TLC checks a property such as []P as the invariant P and names P. The config holds only the detector.
-        inner_invariant = re.compile(r"Error: Invariant .+ is violated(?:\.| by the initial state:)")
         detections, errors = [], []
         for result, temporal in results:
             if result.outcome is Outcome.UNREACHED:
                 detections.append((result.label, "the model never reaches this state"))
-            elif result.outcome is Outcome.FAIL and (result.detail in violations
-                                                     or (temporal and inner_invariant.fullmatch(result.detail))):
+            elif result.outcome is Outcome.FAIL and result.violation and detects(result.violation, detector, temporal):
                 detections.append((result.label, result.detail.removeprefix("Error: ").rstrip(".")))
             elif result.outcome not in (Outcome.PASS, Outcome.WITNESS):
                 errors.extend(render(result))
@@ -401,6 +418,18 @@ class MutationPlan:
             label, reason = detections[0]
             return f"{detector} fails in run '{label}' ({reason})"
         return None
+
+
+def detects(found, detector, temporal):
+    """Return whether TLC's violation shows the detector failing, in the forms TLC reports for each kind."""
+    if found.kind == "Temporal":
+        return True
+    if found.kind == "Invariant":
+        # TLC checks a property such as []P as the invariant P and names P. The config holds only the detector.
+        return found.name == detector or temporal
+    if found.kind == "Property":
+        return found.name == detector and found.initial
+    return found.name == detector and not found.initial
 
 
 def render(result):
@@ -419,13 +448,10 @@ def render(result):
     return [head, *result.lines]
 
 
-def reduced_trace(log_path, log):
-    done = subprocess.run([sys.executable, str(HERE / "tlc-trace.py"), str(log_path)], capture_output=True, text=True, check=False)
-    sys.stderr.write(done.stderr)
-    lines = done.stdout.removesuffix("\n").split("\n") if done.stdout else []
-    if done.returncode:
-        lines += [line for line in log.split("\n") if line.strip()][-40:]
-    return lines
+def reduced_trace(log):
+    """Return the error trace reduced to what each step changed, or the end of the log when it holds no trace."""
+    lines = tlc_trace.reduce(re.split(r"\r\n|\r|\n", log))
+    return lines if lines is not None else [line for line in log.split("\n") if line.strip()][-40:]
 
 
 def run_task(checker, matrix_dir, task, work, source=None):
@@ -453,7 +479,7 @@ def run_task(checker, matrix_dir, task, work, source=None):
                 reach=False, progress_label=f"{name} {run.label}",
             )
             shutil.rmtree(directory / "states", ignore_errors=True)
-            return ordinary(name, run, status, log, directory / "tlc.log", checker.limit if timed_out else None)
+            return ordinary(name, run, status, log, checker.limit if timed_out else None)
         wrapper = f"Reach{uuid.uuid4().hex}"
         invariant = f"{wrapper}Negated"
         (directory / f"{wrapper}.tla").write_text(f"---- MODULE {wrapper} ----\nEXTENDS {name}\n{invariant} == ~{operator}\n====\n", encoding="utf-8")
@@ -469,7 +495,7 @@ def run_task(checker, matrix_dir, task, work, source=None):
 
 
 
-def ordinary(name, run, status, log, log_path, timeout_limit=None):
+def ordinary(name, run, status, log, timeout_limit=None):
     if timeout_limit:
         tail = tuple(line for line in log.split("\n") if line.strip())[-10:]
         return Result(Outcome.FAIL, name, run.label,
@@ -477,10 +503,11 @@ def ordinary(name, run, status, log, log_path, timeout_limit=None):
     if status == 0 and "No error has been found" in log:
         found = re.findall(r"[0-9,]* distinct states found", log)
         states = found[-1] if found else ""
-        return Result(Outcome.PASS, name, run.label, detail=states)
+        return Result(Outcome.PASS, name, run.label, detail=states, states=int(states.partition(" ")[0].replace(",", "") or 0))
     errors = [line for line in log.split("\n") if line.startswith("Error:")]
-    return Result(Outcome.FAIL, name, run.label, detail=errors[0] if errors else "",
-                  lines=(*errors[1:5], *reduced_trace(log_path, log)))
+    first = errors[0] if errors else ""
+    return Result(Outcome.FAIL, name, run.label, detail=first, lines=(*errors[1:5], *reduced_trace(log)),
+                  violation=violation(first))
 
 
 def witness(name, run, operator, invariant, status, log, timeout_limit=None):
@@ -527,7 +554,7 @@ class Runner:
         result = run_task(self.tlc, self.matrix_dir, task, self.work)
         if result.outcome is Outcome.PASS:
             self.passed += 1
-            self.states += int(result.detail.partition(" ")[0].replace(",", "") or 0)
+            self.states += result.states
         elif result.outcome is Outcome.WITNESS:
             self.reached += 1
         self.report(result)
