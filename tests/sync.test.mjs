@@ -66,6 +66,46 @@ test("sync follows renames, finds where covered names live now, and names the co
   assert.deepEqual(lines(result.stdout, "READ"), [`READ git -C ${root} log -p ${read}..HEAD -- src/consume.c src/core.c src/queue.c`]);
 });
 
+test("sync reads a file that held a covered name only between the sync and now", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const read = commit(dir, { "src/queue.c": "int claim(void) { return 1; }\nint drain(void) { return 0; }\n" }, "queue");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+  const other = "int reset(void) { return 0; }\nint flush(void) { return 0; }\n";
+  commit(dir, { "src/queue.c": "int drain(void) { return 0; }\n", "src/core.c": other + "int claim(void) { return 1; }\n" }, "copy claim to core.c");
+  const changed = commit(dir, { "src/core.c": other + "int claim(void) { return 2; }\n" }, "change claim in core.c");
+  commit(dir, { "src/core.c": other, "src/claim.c": "int claim(void) { return 2; }\n" }, "move claim to claim.c");
+  // A longer word that contains the name does not make a file one that held it.
+  commit(dir, { "src/log.c": "int claimed(void);\n" }, "log");
+
+  const result = sync(dir, ["tla/Queue.tla", "--source", "src/queue.c", "--name", "claim"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH src/claim.c", "PATH src/core.c", "PATH src/queue.c"]);
+  const root = git(dir, "rev-parse", "--show-toplevel");
+  assert.deepEqual(lines(result.stdout, "READ"), [`READ git -C ${root} log -p ${read}..HEAD -- src/claim.c src/core.c src/queue.c`]);
+  const log = git(dir, "log", "--format=%H", `${read}..HEAD`, "--", "src/claim.c", "src/core.c", "src/queue.c");
+  assert.ok(log.split("\n").includes(changed), log);
+});
+
+test("sync finds a file renamed away without a content change, and reads changed paths literally", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const read = commit(dir, { "src/queue.c": "int claim(void);\n", "src/util.c": "void use(void) { claim(); }\n" }, "queue");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n`, "src/i.c": "void model(void) { claim(); }\n" }, "model");
+  const call = commit(dir, { "src/util.c": "void use(int x) { claim(); }\n" }, "change the caller");
+  git(dir, "mv", "src/util.c", "src/helpers.c");
+  git(dir, "commit", "-m", "rename util.c");
+  commit(dir, { "src/helpers.c": "void use(void) {}\n" }, "drop the call");
+  // A glob character in a changed path matches only that path, not the model file src/i.c.
+  commit(dir, { "src/[id].c": "int route(void) { return claim(); }\n" }, "route");
+
+  const result = sync(dir, ["tla/Queue.tla", "src/i.c", "--source", "src/queue.c", "--name", "claim"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH src/[id].c", "PATH src/helpers.c", "PATH src/queue.c", "PATH src/util.c"]);
+  const log = git(dir, "log", "--format=%H", `${read}..HEAD`, "--", "src/[id].c", "src/helpers.c", "src/queue.c", "src/util.c");
+  assert.ok(log.split("\n").includes(call), log);
+});
+
 test("sync reports a name as missing when only documents and other models still mention it", () => {
   const dir = fixture();
   git(dir, "init", "-b", "main");
