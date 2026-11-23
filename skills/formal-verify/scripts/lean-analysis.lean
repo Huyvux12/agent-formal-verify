@@ -87,13 +87,13 @@ private partial def positionFree (env : Lean.Environment) : Lean.Expr → Lean.E
 private def auxBodies (env : Lean.Environment) (name : Lean.Name) : List (String × Lean.Expr) :=
   ["_f", "_unary", "_mutual", "_unsafe_rec"].filterMap fun aux => ((env.find? (.str name aux)).bind body?).map (aux, ·)
 
--- The match helpers an expression uses, one per use, in the order they occur.
-private partial def helperUses (env : Lean.Environment) : Lean.Expr → Array Lean.Name
-  | .const n _ => if (shown env n).getRoot == `_match then #[n] else #[]
-  | .app f a => helperUses env f ++ helperUses env a
-  | .lam _ t b _ | .forallE _ t b _ => helperUses env t ++ helperUses env b
-  | .letE _ t v b _ => helperUses env t ++ helperUses env v ++ helperUses env b
-  | .mdata _ e | .proj _ _ e => helperUses env e
+-- The constants an expression uses that keep selects, one per use, in the order they occur.
+private partial def usesOf (keep : Lean.Name → Bool) : Lean.Expr → Array Lean.Name
+  | .const n _ => if keep n then #[n] else #[]
+  | .app f a => usesOf keep f ++ usesOf keep a
+  | .lam _ t b _ | .forallE _ t b _ => usesOf keep t ++ usesOf keep b
+  | .letE _ t v b _ => usesOf keep t ++ usesOf keep v ++ usesOf keep b
+  | .mdata _ e | .proj _ _ e => usesOf keep e
   | _ => #[]
 
 -- What a record shows of a constant with no record of its own: its type, its value and its auxiliaries' bodies.
@@ -111,16 +111,23 @@ private def content (env : Lean.Environment) (n : Lean.Name) : String :=
 -- helper at each use, in order: two expressions that use the same helpers at different places then differ,
 -- while a helper renamed differs not. Expressions that use no match helper get nothing added.
 private def atUses (env : Lean.Environment) (exprs : List Lean.Expr) : String :=
-  let uses := exprs.foldl (fun acc e => acc ++ helperUses env e) #[]
+  let uses := exprs.foldl (fun acc e => acc ++ usesOf (fun n => (shown env n).getRoot == `_match) e) #[]
   if uses.isEmpty then "" else reprStr (uses.toList.map (content env))
 
 -- A hygienic constant or a match helper has no record of its own, so a record that refers to one carries its
 -- type and value, and those of the hygienic constants and helpers they refer to in turn, each once.
 -- Proofs stay out, as in every record.
+-- Two constants look alike in a record when their names differ only in macro scopes, as two macro-made `a`s do,
+-- or a macro-made `a` and the user's own. When the expressions a record shows use two such constants, it adds
+-- which one sits at each use, in order: its place among the constants the record carries, or the name of one with
+-- a record of its own.
+-- A record that uses no two constants alike gets nothing added.
 open Lean in
 private def followed (env : Environment) (roots : List Expr) : String := Id.run do
   let unrecorded (e : Expr) := e.getUsedConstants.filter fun c => shown env c != c && !abstractedProof (erased c)
+  let named (c : Name) := (shown env c).getRoot != `_match && !abstractedProof (erased c)
   let mut queue := roots.foldl (fun acc e => acc ++ unrecorded e) #[]
+  let mut uses := roots.foldl (fun acc e => acc ++ usesOf named e) #[]
   let mut seen : Array Name := #[]
   let mut out := atUses env roots
   let mut i := 0
@@ -133,7 +140,14 @@ private def followed (env : Environment) (roots : List Expr) : String := Id.run 
     out := out ++ s!"\n{shown env n}: {content env n}" ++ atUses env (parts env n info)
     for e in parts env n info do
       queue := queue ++ unrecorded e
-  return out
+      uses := uses ++ usesOf named e
+  let distinct := uses.foldl (fun acc c => if acc.contains c then acc else acc.push c) #[]
+  let alike := distinct.filter fun c => distinct.any fun d => d != c && shown env d == shown env c
+  if alike.isEmpty then return out
+  let which (c : Name) := match seen.findIdx? (· == c) with
+    | some k => toString k
+    | none => c.toString
+  return out ++ s!"\nalike: {reprStr ((uses.filter alike.contains).toList.map which)}"
 
 -- A statement's identity when the mutation runner compares an original theorem, example or #guard with its
 -- mutated copy: the frozen record's form of its type, without binder names, which change no statement.
