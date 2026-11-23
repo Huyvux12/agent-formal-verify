@@ -5,16 +5,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { assertProcessStopped, command, excludes, fakeTlc, fixture, includes, leanPin, removeFixtures, root, run, scripts } from "./helpers.mjs";
+import { assertProcessStopped, command, excludes, fakeTlc, fixture, includes, leanPin, removeFixtures, root, run, scripts, writeLeanProject } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
 test("missing runtimes are unavailable with their remedies", () => {
   const dir = fixture();
-  writeFileSync(join(dir, "lean-toolchain"), leanPin + "\n");
   const cases = [
     ["python-tools.sh", "require_python", {}, "install Python 3"],
-    ["lean-tools.sh", 'lean_pin "$TASK_PROJECT"', { TASK_PROJECT: dir }, "install elan"],
   ];
   for (const [script, call, extra, remedy] of cases) {
     const result = spawnSync("/bin/bash", ["-c", 'source "$1"; ' + call, "bash", join(scripts, script)], {
@@ -25,6 +23,17 @@ test("missing runtimes are unavailable with their remedies", () => {
     includes(result.stdout, remedy);
     excludes(result.stdout, "PASS");
     excludes(result.stdout, "SUMMARY");
+  }
+});
+
+test("the Lean checker and Lean setup report a missing elan as unavailable with its remedy", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "lean-toolchain"), leanPin + "\n");
+  writeFileSync(join(dir, "lakefile.toml"), 'name = "model"\n');
+  for (const args of [[join(scripts, "lean-check.sh"), dir], [join(scripts, "setup.sh"), "lean", dir]]) {
+    const result = spawnSync("bash", args, { encoding: "utf8", env: { ...process.env, PATH: "/usr/bin:/bin" } });
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    assert.equal(result.stdout, "UNAVAILABLE elan is not on PATH; install elan from https://github.com/leanprover/elan\n");
   }
 });
 
@@ -39,6 +48,7 @@ test("helpers report a python3 older than 3.9 as unavailable before running it",
     ["bash", [join(scripts, "setup.sh"), "rust"]],
     ["bash", [join(scripts, "setup.sh"), "storage"]],
     ["bash", [join(scripts, "setup.sh"), "tla"]],
+    ["bash", [join(scripts, "setup.sh"), "lean", dir]],
   ];
   for (const [shell, args] of cases) {
     const result = spawnSync(shell, args, { encoding: "utf8", env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, JAVA: java } });
@@ -184,6 +194,12 @@ const readiness = {
       chmodSync(join(bundle, path), 0o755);
     }
     return { args: ["rust"], env: { KANI_HOME: join(dir, "kani") } };
+  },
+  lean(dir, pids) {
+    const project = join(dir, "lean");
+    writeLeanProject(project);
+    command(dir, "elan", probe(pids));
+    return { args: ["lean", project], env: {} };
   },
 };
 

@@ -76,7 +76,7 @@ function leanFixture(log, { status = 0, audit = audited, files = [] } = {}) {
   command(dir, "elan", [
     '[ "$4" = "--version" ] && exit 0',
     `[ "$3" = "lean" ] && { echo "${dir}"; exit 0; }`,
-    '[ "$7" = python3 ] && { shift 6; exec "$@"; }',
+    '[ "$7" = printenv ] && { echo "$LEAN_PATH"; exit 0; }',
     'if [[ "$8" == */lean-replay.lean ]]; then echo replay >> "$TASK_TRACE"; sed "s/^/replaying /" "$AFV_REPLAY_MODULES"; [ -z "$TASK_REPLAY" ] || { echo "$TASK_REPLAY"; exit 1; }; exit 0; fi',
     'if [[ "$9" == */lean-analysis.lean && "${10}" == audit ]]; then echo audit >> "$TASK_TRACE"; sed "s/^/module /" "${@: -1}"; printf "%s\\n" "$TASK_AUDIT"; exit 0; fi',
     'shift 6; printf "%s\\n" "$@" > "$TASK_BUILT"',
@@ -145,7 +145,7 @@ test("the Lean checker names a module path outside Lake's build layout instead o
   command(dir, "elan", [
     '[ "$4" = "--version" ] && exit 0',
     '[ "$6" = "query" ] && { echo "/elsewhere/out/Model.olean"; exit 0; }',
-    '[ "$7" = python3 ] && { shift 6; exec "$@"; }',
+    '[ "$7" = printenv ] && { echo "$LEAN_PATH"; exit 0; }',
     'echo audit >> "$TASK_TRACE"; exit 1',
   ].join("\n"));
   const result = run(dir, "lean-check.sh", [project]);

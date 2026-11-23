@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.dont_write_bytecode = True
+import lean
 import processes
 from lean_records import read_record
 
@@ -31,9 +32,10 @@ def _checked_record(model, project):
         record = read_record(path)
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise AnalysisError(f"FAIL invalid statements record {path}: {error}") from error
-    done = processes.run_captured(["bash", str(HERE / "lean-check.sh"), str(project), str(model)])
-    if done.returncode:
-        raise AnalysisError((done.stdout + done.stderr).strip(), done.returncode)
+    output = []
+    status = lean.check(str(project), [str(model)], False, output.append)
+    if status:
+        raise AnalysisError("\n".join(output).strip(), status)
     return record
 
 
