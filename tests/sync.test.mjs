@@ -331,7 +331,7 @@ test("sync falls back past production edits to a model file that is also a sourc
   assert.equal(none.stdout, "SYNC none: no commit of the model files changed only the #[cfg(kani)] items of lib.rs; compare the model with the code in full\n");
 });
 
-test("sync's fallback counts #[cfg(kani)] on an item only, and says when it stops at a rename or after the last 100 commits", () => {
+test("sync's fallback counts #[cfg(kani)] on an item only, follows a rename, and says when it stops after the last 100 commits", () => {
   const dir = fixture();
   git(dir, "init", "-b", "main");
   const proofs = "\n#[cfg(kani)]\nmod proofs {\n    #[kani::proof]\n    fn check() { assert!(super::claim() == 1); }\n}\n";
@@ -343,19 +343,38 @@ test("sync's fallback counts #[cfg(kani)] on an item only, and says when it stop
   assert.equal(variant.status, 0, variant.stdout + variant.stderr);
   assert.deepEqual(lines(variant.stdout, "SYNC"), [`SYNC ${harness} from the last commit of the model files that changed no production code in lib.rs`]);
 
+  // The fallback follows the source back through renames to the harness commit under its old name.
   git(dir, "mv", "src/lib.rs", "src/core.rs");
   git(dir, "commit", "-m", "rename");
-  const moved = git(dir, "rev-parse", "HEAD");
   commit(dir, { "src/core.rs": event + "pub fn claim() -> u8 { 3 }\n" + proofs }, "production edit after the rename");
-  const renamed = sync(dir, ["src/core.rs", "--source", "src/core.rs"]);
+  git(dir, "mv", "src/core.rs", "src/queue.rs");
+  git(dir, "commit", "-m", "second rename");
+  const renamed = sync(dir, ["src/queue.rs", "--source", "src/queue.rs"]);
   assert.equal(renamed.status, 0, renamed.stdout + renamed.stderr);
-  assert.equal(
-    renamed.stdout,
-    `SYNC none: no commit of the model files changed only the #[cfg(kani)] items of core.rs since the rename to core.rs in ${moved}, which git log does not follow; compare the model with the code in full\n`,
-  );
+  assert.deepEqual(lines(renamed.stdout, "SYNC"), [`SYNC ${harness} from the last commit of the model files that changed no production code in queue.rs`]);
+  assert.deepEqual(lines(renamed.stdout, "PATH"), ["PATH src/core.rs", "PATH src/lib.rs", "PATH src/queue.rs"]);
 
-  for (let edit = 4; edit < 105; edit++) {
-    writeFileSync(join(dir, "src/core.rs"), event + `pub fn claim() -> u8 { ${edit} }\n` + proofs);
+  // A rename that also edits the harness alone is a harness commit.
+  const both = event + "pub fn claim() -> u8 { 3 }\n" + proofs.replace("== 1", "== 3");
+  git(dir, "mv", "src/queue.rs", "src/slots.rs");
+  writeFileSync(join(dir, "src/slots.rs"), both);
+  git(dir, "commit", "-am", "rename and harness");
+  const edited = git(dir, "rev-parse", "HEAD");
+  const moved = sync(dir, ["src/slots.rs", "--source", "src/slots.rs"]);
+  assert.equal(moved.status, 0, moved.stdout + moved.stderr);
+  assert.deepEqual(lines(moved.stdout, "SYNC"), [`SYNC ${edited} from the last commit of the model files that changed no production code in slots.rs`]);
+  // A path may begin with a newline.
+  git(dir, "mv", "src/slots.rs", "\nlead.rs");
+  git(dir, "commit", "-m", "rename to a path that begins with a newline");
+  commit(dir, { "\nlead.rs": event + "pub fn claim() -> u8 { 4 }\n" + proofs.replace("== 1", "== 3") }, "production edit");
+  git(dir, "mv", "\nlead.rs", "src/core.rs");
+  git(dir, "commit", "-m", "rename back");
+  const lead = sync(dir, ["src/core.rs", "--source", "src/core.rs"]);
+  assert.equal(lead.status, 0, lead.stdout + lead.stderr);
+  assert.deepEqual(lines(lead.stdout, "SYNC"), [`SYNC ${edited} from the last commit of the model files that changed no production code in core.rs`]);
+
+  for (let edit = 5; edit < 106; edit++) {
+    writeFileSync(join(dir, "src/core.rs"), event + `pub fn claim() -> u8 { ${edit} }\n` + proofs.replace("== 1", "== 3"));
     git(dir, "commit", "-am", `edit ${edit}`);
   }
   const long = sync(dir, ["src/core.rs", "--source", "src/core.rs"]);
