@@ -13,17 +13,8 @@ scripts=$ROOT/skills/formal-verify/scripts
 examples=$ROOT/skills/formal-verify/examples
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-
-# Runs a check that must fail as a failed check does: with exit 1, not 0, a usage error (2) or a missing tool (3).
-rejected() {
-  local out status=0
-  out=$("$@") || status=$?
-  printf '%s\n' "$out"
-  if [ "$status" -ne 1 ]; then
-    echo "FAIL a check that must fail exited $status, not 1: $*"
-    exit 1
-  fi
-}
+# shellcheck source=tests/lib.sh
+source "$ROOT/tests/lib.sh"
 
 bash "$scripts/setup.sh" tla
 bash "$scripts/setup.sh" lean "$examples/lean-template"
@@ -48,8 +39,7 @@ rejected python3 "$scripts/mutate.py" "$work/tla-missed/BoundedQueue.mutations" 
 grep -q "^MISSED reorder a sum$" "$work/tla.out"
 grep -q "^UNCOVERED AllConsumed$" "$work/tla.out"
 
-mkdir -p "$work/lean/Model"
-cp "$examples/lean-template"/{lakefile.toml,lake-manifest.json,lean-toolchain} "$work/lean/"
+lean_project "$work/lean"
 cp "$examples/lean-template/Model"/BoundedQueue.* "$work/lean/Model/"
 bash "$scripts/lean-check.sh" "$work/lean" | tee "$work/vectors.out"
 grep -qF "VECTOR w=0 input=0,0 claim=none consume=none" "$work/vectors.out"
@@ -207,8 +197,7 @@ echo 'theorem unproved : (10 : Nat) < 3 := sorry' > "$p/Scratch/Model/BoundedQue
 rejected bash "$scripts/lean-check.sh" "$p" | tee "$work/lean.out"
 grep -q "unknown module source path .*/Scratch/Model/BoundedQueue.lean" "$work/lean.out"
 
-mkdir -p "$work/frozen/Model"
-cp "$examples/lean-template"/{lakefile.toml,lake-manifest.json,lean-toolchain} "$work/frozen/"
+lean_project "$work/frozen"
 cat > "$work/frozen/Model/Frozen.lean" <<'EOF'
 namespace Frozen
 def step (n : Nat) : Nat := n + 1
@@ -297,8 +286,7 @@ rejected bash "$scripts/lean-check.sh" "$work/frozen" | tee "$work/frozen.out"
 grep -q '^FROZEN Other.property: statement changed (source deleted)' "$work/frozen.out"
 bash "$scripts/lean-check.sh" "$work/frozen" Model/Frozen.lean
 
-mkdir -p "$work/frozen-opaque/Model"
-cp "$examples/lean-template"/{lakefile.toml,lake-manifest.json,lean-toolchain} "$work/frozen-opaque/"
+lean_project "$work/frozen-opaque"
 cat > "$work/frozen-opaque/Model/Frozen.lean" <<'EOF'
 namespace Frozen
 opaque step : Nat := 1
@@ -320,8 +308,7 @@ bash "$scripts/lean-check.sh" "$work/frozen-opaque" Model/Frozen.lean
 # recursion, _unary or _mutual for well-founded recursion, _unsafe_rec for the
 # code that runs, which a noncomputable definition lacks. Each edit below names
 # the declaration that must report it; isOdd's body sits in isEven._mutual.
-mkdir -p "$work/frozen-recursive/Model"
-cp "$examples/lean-template"/{lakefile.toml,lake-manifest.json,lean-toolchain} "$work/frozen-recursive/"
+lean_project "$work/frozen-recursive"
 cat > "$work/frozen-recursive/original" <<'EOF'
 namespace Frozen
 noncomputable def halve (a b : Nat) : Nat := if a < 2 then b else halve (a - 2) (b + 1)

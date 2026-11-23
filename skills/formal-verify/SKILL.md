@@ -25,12 +25,7 @@ Use the tool the user names. When the table gives another tool for part of the t
 
 When the repository has models from an earlier run, start with them. Find every model, wherever it lives: `.tla` specs with their `.matrix` and `.mutations` files, Lean models with their `.mutations` and `.statements` files, and Kani harness files. Each is a row in the table this step writes.
 
-Take each model's sync commit from the `Source read at` line in its header when `git merge-base --is-ancestor <commit> HEAD` succeeds, and otherwise from `git log -1 --format=%H -- <model files>`. A model with no sync commit has no log to read, so compare it with the code in full. For the others, collect every path the covered code has had since the sync commit:
-
-- Follow each source file in the header through the renames that `git log -M --diff-filter=R --name-status --format= <sync>..HEAD` lists, and keep every path on the way, not only the first and last.
-- Add the files where the functions and shared variables it covers live now, from `git grep -l -w -e <name> -- . ':(exclude)<model file>'`. Exclude only model files that hold no production code; a Kani harness written inside a production file stays in the search.
-
-Then read `git log -p <sync>..HEAD -- <paths collected>`, which includes commits made at an intermediate path and code that moved to another file. A covered name that `git grep` finds nowhere was renamed, moved or deleted. Find the commit that removed it with `git log -S <name> <sync>..HEAD -- <paths collected>` and read all of it with `git show <commit>`. When it renamed or moved the code, follow the code to its new name and file. Mark the row for retirement as step 5 says only when the code is gone.
+For each model, run `python3 <skill-dir>/scripts/sync.py <model files> --source <file> ... --name <name> ...` with the source files and the covered functions and shared variables that its header names. Name a model file that holds production code, such as a Rust file with its Kani harness, as a `--source` too. `SYNC none` means the model has no sync commit, so compare it with the code in full. Otherwise run the `git log -p` command on its `READ` line, which covers every path the covered code has had since the sync commit. A `MISSING <name>` line names a covered name that `git grep` finds nowhere, with the commits since the sync that removed it; read each with `git show <commit>`. When one renamed or moved the code, follow the code to its new name and file. Mark the row for retirement as step 5 says only when the code is gone.
 
 Record the sync commit, the commits read and the answers to two questions in the row:
 
@@ -58,7 +53,7 @@ Then ask the user whether to add an independent review of each model's propertie
 
 Prepare tools after picking targets and before launching agents. The helpers are in this skill's `scripts/` directory. Stay in the target repository and run each helper with `bash` and its absolute path. Pass absolute paths to models and matrices. [Tool setup](references/setup.md) describes the pins, caches and environment settings.
 
-- When a target needs Kani, run `bash <skill-dir>/scripts/setup.sh rust`. Copy the Kani template into a verification crate only when it helps add harnesses that call the production function.
+- When a target needs Kani, run `bash <skill-dir>/scripts/setup.sh rust`. Before any agent starts, declare `cfg(kani)` in each target crate's `Cargo.toml`, as the Kani template's `[lints.rust]` entry does, or under `[workspace.lints.rust]` when the crate sets `lints.workspace = true`. Without it, rustc warns about every harness module, and a build with `-D warnings` fails.
 - When a target needs TLA+, run `bash <skill-dir>/scripts/setup.sh tla`.
 - When a target needs Lean, every Lean model in the repository shares one Lake project. If the repository has none, copy `lakefile.toml`, `lake-manifest.json` and `lean-toolchain` from `<skill-dir>/examples/lean-template/` to `lean/` in the target repository, once. Then run `bash <skill-dir>/scripts/setup.sh lean <absolute-model-project-path>`.
 
@@ -75,6 +70,7 @@ Read the [helper reference](references/helpers.md) before you interpret a helper
 - The Lean checker, [`scripts/lean-check.sh`](scripts/lean-check.sh): builds and audits `.lean` models, checks `<Property>.witness` theorems, replays modules through `leanchecker`, and freezes specifications with `--freeze`. Template: [`examples/lean-template/Model/BoundedQueue.lean`](examples/lean-template/Model/BoundedQueue.lean).
 - The Rust checker, [`scripts/kani-check.sh`](scripts/kani-check.sh): runs the pinned Kani across the crate's proof harnesses and prints concrete playback tests. Template: [`examples/kani-template/`](examples/kani-template/src/lib.rs).
 - The mutation runner, [`scripts/mutate.py`](scripts/mutate.py): tests `<Name>.mutations` against copied models (`DETECTED`, `MISSED`, `UNCOVERED`).
+- The sync helper, [`scripts/sync.py`](scripts/sync.py): lists the commits and paths to read since an existing model's sync commit.
 - The baseline helper, [`scripts/baseline.py`](scripts/baseline.py): snapshots and compares model specifications (`record` and `compare`).
 
 Run every existing model's checker and mutations once, before any agent changes a model, and record the results. Then record what the models specify with `python3 <skill-dir>/scripts/baseline.py record <record-file> <model files>`, naming each existing `.matrix`, `.statements` and Kani harness file. Put `<record-file>` in a temporary directory outside the repository, and leave its path out of every brief. For a TLA+ or Lean model a pass shows only that the old description still holds; a Kani harness runs the code as it is now. A model that still describes the code needs no agent. When it passes, refresh its header as step 5 says; when it fails, take the failure through step 4. A Kani compile error means the harness no longer fits the code, so give it to an agent. An UNCOVERED line means the mutations file lacks a bug that the property detects, not that the code fails; give the model to an agent to add one. A check that passes here and fails after the update was passing on a stale description; say so in the reply.
@@ -84,14 +80,14 @@ Run every existing model's checker and mutations once, before any agent changes 
 Spawn one agent per target, in parallel when supported. Use the host runtime's agent tools and follow the user's model configuration when selecting agents. An agent does not see this skill. Its brief contains:
 
 - the target's row from the table, with its source files and line ranges;
-- the model's name, `<Name>`, and for a Lean target the absolute path of the Lake project, or for Kani the absolute path of the crate;
+- the model's name, `<Name>`, which for a new Kani harness is the stem of its production file, such as `lib`, and for a Lean target the absolute path of the Lake project, or for Kani the absolute path of the crate;
 - the absolute path of this skill's directory as `<skill-dir>`, and any `JAVA` setting;
 - the instruction to read `<skill-dir>/references/tla-brief.md` for a protocol, `<skill-dir>/references/lean-brief.md` for arithmetic, or `<skill-dir>/references/rust-brief.md` for a Rust function, in full and to follow it;
 - for an existing model, its files.
 
 Name the brief file and leave its text out of the prompt. The [TLA+ brief](references/tla-brief.md), the [Lean brief](references/lean-brief.md) and the [Rust brief](references/rust-brief.md) hold the modelling requirements, the files to write, the commands to run and what to report. If delegation is unavailable, read the brief for each target and model the targets yourself, one at a time.
 
-An agent writes only its own files, `tla/<Name>.tla`, `.matrix` and `.mutations`, `lean/Model/<Name>.lean`, `.mutations` and `.statements`, or the assigned Rust harness and `.mutations` files in a separate crate, so parallel agents share none. An existing Lean project keeps its layout and must pin Lean 4.20.0 or later.
+An agent writes only its own files, `tla/<Name>.tla`, `.matrix` and `.mutations`, `lean/Model/<Name>.lean`, `.mutations` and `.statements`, or the `#[cfg(kani)]` harness module in the production file that defines its Rust function and the `.mutations` file beside it, so parallel agents share none. Give one agent every Rust target in one production file. An existing Lean project keeps its layout and must pin Lean 4.20.0 or later. A Kani harness that an earlier run wrote in a crate of its own keeps its layout too, and its agent writes that harness file and its `.mutations` file.
 
 When the agents have reported, rerun every check in this thread: the matrix runner on each matrix file, the Lean checker on the whole project without a file name, the Rust checker on each crate, and the mutation runner on each mutations file. Take each verdict from these runs, not from an agent's report. Then run `python3 <skill-dir>/scripts/baseline.py compare <record-file>`. It exits 1 and prints CHANGED with the changed parts when a recorded property, fairness condition, matrix line, `.statements` record, Kani cover or stub changed, a Kani harness was removed or renamed, or a Kani assumption was added or changed. Also read `git diff` for each model that existed before this run, for the changes the record does not cover, such as a theorem newly marked `private`, a new guard in a TLA+ action, or a removed assertion or narrowed input in a Kani harness. Each such change needs the evidence its row cites, a specification correction accepted below, or for a re-freeze another reason the Lean brief permits. Revert any change without it and give the model back to its agent with the reason. Run the comparison again until it exits 0.
 
@@ -123,7 +119,7 @@ Each fact about a model has one home:
 - The project's testing documentation, when it has any, has one row per model: what it checks, in the words the Reply section asks for, and its boundary configuration. Update the row when the model changes.
 - A pull request description tells its bug's story once and links to the model.
 
-When a model's covered code is gone, propose retiring it in the reply. With the user's agreement, delete its files, including a Lean model's `.statements` record, its CI steps and its row in the testing documentation.
+When a model's covered code is gone, propose retiring it in the reply. With the user's agreement, delete its files, including a Lean model's `.statements` record, its CI steps and its row in the testing documentation. For a Kani harness in a production file, delete its `#[cfg(kani)]` module, the header comment above it and its mutations file, not the production file.
 
 Do not add a report file per bug, and do not paste run tables or traces into several documents. Write `<skill-dir>` for the installed skill in any committed command; a path from this machine does not work for the next reader.
 
