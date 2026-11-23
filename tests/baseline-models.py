@@ -30,7 +30,7 @@ def matrix_order(work):
     shutil.copytree(EXAMPLES / "tla-template", project)
     matrix, spec, record = project / "BoundedQueue.matrix", project / "BoundedQueue.tla", work / "tla.json"
     checks = "check INVARIANTS TypeOK InWindow\ncheck PROPERTIES AllConsumed\n"
-    runs = "run one | Window=1 Items=3\n"
+    runs = "run one | Window=1 Items=3 Workers={w1} FailAt={}\n"
     matrix.write_text("spec BoundedQueue.tla\n" + checks + runs)
     run(0, "tlc-matrix.sh", matrix)
     run(0, "baseline.py", "record", record, matrix)

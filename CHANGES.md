@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The TLA+ template now models what the TLA+ brief asks for. Worker threads claim items under a mutex, build them without it and publish them. The consumer's `next()` waits on a condition variable that admits spurious wakeups, and its `close()` wakes every waiter, joins the workers and frees the items never taken. A build fails for each item in `FailAt`. The template checks item ownership, delivery order, error ordering, no delivery after an error and no leak at close. It also checks that `next()` and `close()` return, and that a consumer that keeps calling `next()` reaches the end. Its matrix covers windows of 1, 2 and 4, 0, 1, 3 and 5 items, and one to three workers. It has reach checks for a full window, a parked worker, a parked consumer and a failure, and its header lists its assumptions. Before this change, the template modelled only the window counters, the same arithmetic that the Lean template proves. The template's matrix explores 50,021 states, and its 12 mutations carry `only` lines that keep each one to the runs that show its bug.
+
 The TLC matrix runner now handles `SIGINT`, `SIGTERM` and `SIGHUP` while it checks that TLC is ready, as it does during a run, and ends by the signal. Before this change, a Ctrl-C during that check printed a Python traceback.
 
 
