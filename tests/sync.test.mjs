@@ -73,7 +73,11 @@ test("sync's search for files that held a name runs as many git commands for man
     git(dir, "init", "-b", "main");
     const read = commit(dir, { "src/queue.c": "int claim(void);\n" }, "queue");
     commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
-    for (let move = 0; move < moves; move++) commit(dir, { [`src/step${move}.c`]: "int claim(void);\n" }, `step ${move}`);
+    // Each step file holds claim for one commit only, so only the search for files that held it finds them.
+    for (let move = 0; move < moves; move++) {
+      commit(dir, { [`src/step${move}.c`]: "int claim(void);\n" }, `step ${move}`);
+      commit(dir, { [`src/step${move}.c`]: "int other(void);\n" }, `step ${move} done`);
+    }
     const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8", env: gitEnv }).stdout.trim();
     const log = join(dir, "git-calls");
     command(dir, "git", `echo "$*" >> "${log}"\nexec "${real}" "$@"`);
@@ -84,6 +88,38 @@ test("sync's search for files that held a name runs as many git commands for man
     return readFileSync(log, "utf8").split("\n").filter(Boolean).length;
   };
   assert.equal(calls(12), calls(2));
+});
+
+test("sync's search for files that held a name reads any path, skips a merged history's root and ignores textconv", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const read = commit(dir, { "src/queue.c": "int claim(void);\n", ".gitattributes": "*.t diff=up\n", "src/t.t": "int claim(void);\nclm\n" }, "queue");
+  git(dir, "config", "diff.up.textconv", "sed s/clm/claim/g");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+  // A byte 0x01 and a leading newline are valid in a path.
+  const odd = { "src/a\u0001b.c": "int claim(void);\n", "\nlead.c": "int claim(void);\n", "src/plain.c": "int claim(void);\n" };
+  commit(dir, odd, "add");
+  git(dir, "rm", "-q", ...Object.keys(odd));
+  git(dir, "commit", "-m", "remove");
+  // Only textconv changes the count of claim here, and a later commit leaves only a longer word.
+  commit(dir, { "src/t.t": "int claim(void);\n" }, "textconv only");
+  commit(dir, { "src/t.t": "int claimed(void);\n" }, "claimed");
+  // An unrelated history whose root commit holds claim, merged in.
+  git(dir, "checkout", "-q", "--orphan", "lib");
+  git(dir, "rm", "-q", "-r", "--cached", ".");
+  mkdirSync(join(dir, "lib"));
+  writeFileSync(join(dir, "lib/x.c"), "int claim(void);\n");
+  git(dir, "add", "lib/x.c");
+  git(dir, "commit", "-m", "lib root");
+  writeFileSync(join(dir, "lib/x.c"), "int claimed(void);\n");
+  git(dir, "commit", "-am", "lib claimed");
+  git(dir, "checkout", "-q", "-f", "main");
+  git(dir, "merge", "-q", "--allow-unrelated-histories", "-m", "merge lib", "lib");
+
+  const result = sync(dir, ["tla/Queue.tla", "--source", "src/queue.c", "--name", "claim"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  // The leading newline splits that PATH line in two, so match the PATH lines as one run of text.
+  assert.ok(result.stdout.includes("\nPATH \nlead.c\nPATH src/a\u0001b.c\nPATH src/plain.c\nPATH src/queue.c\nREAD "), result.stdout);
 });
 
 test("sync reads a file that held a covered name only between the sync and now", () => {

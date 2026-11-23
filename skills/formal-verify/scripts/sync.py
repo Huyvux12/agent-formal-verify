@@ -154,23 +154,44 @@ def renamed(root, sync, paths):
 
 def held(root, sync, name, pathspec):
     """Return the files where a commit since sync added or removed name as a whole word."""
-    # One log lists each such commit, its parents and the files where the count of name changed, and one grep reads
-    # those files at each commit and its first parent. Without --no-renames, a rename that keeps the name's count
-    # pairs the old path with the new one and -S skips both.
-    log = git(root, "log", "--no-renames", "-S", name, "--format=%x01%H %P", "--name-only", "-z", f"{sync}..HEAD", "--", *pathspec).stdout
+    # One log lists each such commit, its parents and the files where the raw count of name changed, and a few greps
+    # read those files at each commit and its first parent. Without --no-renames, a rename that keeps the name's
+    # count pairs the old path with the new one and -S skips both. A path holds no NUL, so the two NULs before each
+    # header mark it, and -z puts one newline before the header's first path.
+    log = git(root, "log", "--no-renames", "--no-textconv", "-S", name, "--format=%x00%x00%H %P", "--name-only", "-z",
+              f"{sync}..HEAD", "--", *pathspec).stdout
     changed = {}
-    for entry in log.split("\x01")[1:]:
+    for entry in re.split("\0\0+", log)[1:]:
         header, _, names = entry.partition("\0")
         commit, *parents = header.split()
-        files = {file.lstrip("\n") for file in names.split("\0") if file.strip("\n")}
-        for revision in (commit, *parents[:1]):
-            changed.setdefault(revision, set()).update(files)
-    if not changed:
-        return set()
-    paths = sorted(set().union(*changed.values()))
-    found = git(root, "grep", "-l", "-z", "-w", "-F", "-e", name, *changed, "--", *(f":(literal){path}" for path in paths), check=False)
-    hits = (hit.partition(":") for hit in found.stdout.split("\0") if hit)
-    return {file for revision, _, file in hits if file in changed.get(revision, ())}
+        # A root commit, such as one of a history merged in, changed nothing since the sync.
+        for revision in (commit, parents[0]) if parents else ():
+            changed.setdefault(revision, set()).update(file for file in names.removeprefix("\n").split("\0") if file)
+    files = set()
+    for revisions in batches(changed):
+        paths = sorted(set().union(*(changed[revision] for revision in revisions)))
+        found = git(root, "grep", "-l", "-z", "-w", "-F", "-e", name, *revisions, "--", *(f":(literal){path}" for path in paths), check=False)
+        if found.returncode > 1:
+            raise RuntimeError(f"git grep for {name} failed: {found.stderr.strip()}")
+        hits = (hit.partition(":") for hit in found.stdout.split("\0") if hit)
+        files.update(file for revision, _, file in hits if file in changed[revision])
+    return files
+
+
+def batches(changed, limit=100_000):
+    """Split the revisions of changed into groups whose revisions and paths stay within limit bytes of arguments."""
+    group, paths, size = [], set(), 0
+    for revision, files in changed.items():
+        grown = sum(len(path.encode()) + 12 for path in files - paths) + len(revision) + 1
+        if group and size + grown > limit:
+            yield group
+            group, paths, size = [], set(), 0
+            grown = sum(len(path.encode()) + 12 for path in files) + len(revision) + 1
+        group.append(revision)
+        paths |= files
+        size += grown
+    if group:
+        yield group
 
 
 def main():
