@@ -585,6 +585,81 @@ test("a deleted model file is changed", () => {
   assertChanged(recordedThenEdited(null, "rust", ({ rust: path }) => rmSync(path)), "rust", "file is missing");
 });
 
+// A harness that an earlier run wrote at the root of a crate of its own, and the production file it
+// moves into, where the same functions sit in `mod proofs`. A cover message holds " in ", and
+// `inputs` repeats an assumption, so the record has a numbered duplicate.
+const harnessBody = [
+  "fn inputs() -> u8 { let n: u8 = kani::any(); kani::assume(n < 10); kani::assume(n < 10); n }",
+  '#[kani::proof] #[kani::unwind(2)] fn first() { let n = inputs(); kani::cover!(n == 9, "n in range"); }',
+  '#[kani::proof] #[kani::unwind(2)] fn second() { let n = inputs(); kani::cover!(n == 0, "n in range"); }',
+].join("\n");
+const production = "pub fn target(n: u8) -> u8 { n }\n";
+
+function moved(change = (body) => body, module = ["--module", "crate", "proofs"]) {
+  const files = models();
+  const old = join(files.dir, "kani/verify.rs");
+  writeFileSync(old, `use prod::*;\n${harnessBody}\n`);
+  assert.equal(baseline(files.dir, "record", files.record, old).status, 0);
+  writeFileSync(files.rust, `${production}#[cfg(kani)]\nmod proofs {\n    use super::*;\n${change(harnessBody)}\n}\n`);
+  rmSync(old);
+  const move = baseline(files.dir, "move", files.record, old, files.rust, ...module);
+  return { old, move, ...compared(files) };
+}
+
+function compared(files) {
+  const result = baseline(files.dir, "compare", files.record);
+  return { files, result, out: lines(result) };
+}
+
+test("a Kani harness moved into a module of its production file compares unchanged against its old record", () => {
+  const outcome = moved();
+  assert.equal(outcome.move.status, 0, outcome.move.stdout);
+  assert.deepEqual(lines(outcome.move), [`MOVED ${outcome.old} -> ${outcome.files.rust}`]);
+  assertUnchanged(outcome, "rust");
+});
+
+test("a moved Kani harness that gains an assumption or loses a harness is changed", () => {
+  const narrowed = moved((body) => body.replace("let n = inputs();", "let n = inputs(); kani::assume(n == 9);"));
+  assertChanged(narrowed, "rust", "added assume n == 9 in proofs::first");
+  const dropped = moved((body) => body.split("\n").filter((line) => !line.includes("fn second")).join("\n"));
+  assertChanged(dropped, "rust", "removed harness proofs::second", 'removed cover n == 0, "n in range" in proofs::second');
+});
+
+test("a move without --module keeps each recorded qualified name", () => {
+  const files = models();
+  const old = join(files.dir, "kani/verify.rs");
+  copyFileSync(files.rust, old);
+  assert.equal(baseline(files.dir, "record", files.record, old).status, 0);
+  rmSync(old);
+  assert.equal(baseline(files.dir, "move", files.record, old, files.rust).status, 0);
+  assertUnchanged(compared(files), "rust");
+});
+
+test("a move into a recorded production file compares both harness modules", () => {
+  const files = models();
+  const old = join(files.dir, "kani/verify.rs");
+  writeFileSync(old, `use prod::*;\n${harnessBody}\n`);
+  const existing = "#[cfg(kani)]\nmod existing {\n    #[kani::proof] #[kani::unwind(2)] fn third() { kani::assume(true); kani::cover!(true); }\n}\n";
+  writeFileSync(files.rust, production + existing);
+  assert.equal(baseline(files.dir, "record", files.record, old, files.rust).status, 0);
+  writeFileSync(files.rust, `${production}${existing}#[cfg(kani)]\nmod proofs {\n    use super::*;\n${harnessBody}\n}\n`);
+  rmSync(old);
+  assert.equal(baseline(files.dir, "move", files.record, old, files.rust, "--module", "crate", "proofs").status, 0);
+  assertUnchanged(compared(files), "rust");
+  edit(files.rust, "kani::assume(true);", "");
+  assertChanged(compared(files), "rust", "removed assume true in existing::third");
+});
+
+test("a move of an unrecorded file or into another kind of model is a usage error", () => {
+  const unrecorded = moved();
+  const again = baseline(unrecorded.files.dir, "move", unrecorded.files.record, unrecorded.old, unrecorded.files.rust);
+  assert.equal(again.status, 2);
+  assert.ok(again.stdout.includes("has no record entry"), again.stdout);
+  const kind = baseline(unrecorded.files.dir, "move", unrecorded.files.record, unrecorded.files.rust, unrecorded.files.matrix);
+  assert.equal(kind.status, 2);
+  assert.ok(kind.stdout.includes("not a kani model file"), kind.stdout);
+});
+
 test("a malformed record fails", () => {
   const files = models();
   writeFileSync(files.record, "{}\n");
