@@ -114,41 +114,6 @@ private def atUses (env : Lean.Environment) (exprs : List Lean.Expr) : String :=
   let uses := exprs.foldl (fun acc e => acc ++ usesOf (fun n => (shown env n).getRoot == `_match) e) #[]
   if uses.isEmpty then "" else reprStr (uses.toList.map (content env))
 
--- A hygienic constant or a match helper has no record of its own, so a record that refers to one carries its
--- type and value, and those of the hygienic constants and helpers they refer to in turn, each once.
--- Proofs stay out, as in every record.
--- Two constants look alike in a record when their names differ only in macro scopes, as two macro-made `a`s do,
--- or a macro-made `a` and the user's own. When the expressions a record shows use two such constants, it adds
--- which one sits at each use, in order: its place among the constants the record carries, or the name of one with
--- a record of its own.
--- A record that uses no two constants alike gets nothing added.
-open Lean in
-private def followed (env : Environment) (roots : List Expr) : String := Id.run do
-  let unrecorded (e : Expr) := e.getUsedConstants.filter fun c => shown env c != c && !abstractedProof (erased c)
-  let named (c : Name) := (shown env c).getRoot != `_match && !abstractedProof (erased c)
-  let mut queue := roots.foldl (fun acc e => acc ++ unrecorded e) #[]
-  let mut uses := roots.foldl (fun acc e => acc ++ usesOf named e) #[]
-  let mut seen : Array Name := #[]
-  let mut out := atUses env roots
-  let mut i := 0
-  while i < queue.size do
-    let n := queue[i]!
-    i := i + 1
-    if seen.contains n then continue
-    seen := seen.push n
-    let some info := env.find? n | continue
-    out := out ++ s!"\n{shown env n}: {content env n}" ++ atUses env (parts env n info)
-    for e in parts env n info do
-      queue := queue ++ unrecorded e
-      uses := uses ++ usesOf named e
-  let distinct := uses.foldl (fun acc c => if acc.contains c then acc else acc.push c) #[]
-  let alike := distinct.filter fun c => distinct.any fun d => d != c && shown env d == shown env c
-  if alike.isEmpty then return out
-  let which (c : Name) := match seen.findIdx? (· == c) with
-    | some k => toString k
-    | none => c.toString
-  return out ++ s!"\nalike: {reprStr ((uses.filter alike.contains).toList.map which)}"
-
 private partial def levelUses : Lean.Level → Array Lean.Name
   | .succ l => levelUses l
   | .max a b | .imax a b => levelUses a ++ levelUses b
@@ -173,6 +138,42 @@ private def levelsAlike (levels : List Lean.Name) (exprs : List Lean.Expr) : Str
   if alike.isEmpty then "" else
   let uses := exprs.foldl (fun acc e => acc ++ (paramUses e).filter alike.contains) #[]
   s!"\nlevels alike: {reprStr (uses.toList.map fun n => (levels.findIdx? (· == n)).getD 0)}"
+
+-- A hygienic constant or a match helper has no record of its own, so a record that refers to one carries its
+-- type and value, and those of the hygienic constants and helpers they refer to in turn, each once.
+-- Proofs stay out, as in every record.
+-- Two constants look alike in a record when their names differ only in macro scopes, as two macro-made `a`s do,
+-- or a macro-made `a` and the user's own. When the expressions a record shows use two such constants, it adds
+-- which one sits at each use, in order: its place among the constants the record carries, or the name of one with
+-- a record of its own.
+-- A record that uses no two constants alike gets nothing added.
+open Lean in
+private def followed (env : Environment) (roots : List Expr) : String := Id.run do
+  let unrecorded (e : Expr) := e.getUsedConstants.filter fun c => shown env c != c && !abstractedProof (erased c)
+  let named (c : Name) := (shown env c).getRoot != `_match && !abstractedProof (erased c)
+  let mut queue := roots.foldl (fun acc e => acc ++ unrecorded e) #[]
+  let mut uses := roots.foldl (fun acc e => acc ++ usesOf named e) #[]
+  let mut seen : Array Name := #[]
+  let mut out := atUses env roots
+  let mut i := 0
+  while i < queue.size do
+    let n := queue[i]!
+    i := i + 1
+    if seen.contains n then continue
+    seen := seen.push n
+    let some info := env.find? n | continue
+    out := out ++ s!"\n{shown env n}: {content env n}" ++ atUses env (parts env n info)
+      ++ levelsAlike info.levelParams (parts env n info)
+    for e in parts env n info do
+      queue := queue ++ unrecorded e
+      uses := uses ++ usesOf named e
+  let distinct := uses.foldl (fun acc c => if acc.contains c then acc else acc.push c) #[]
+  let alike := distinct.filter fun c => distinct.any fun d => d != c && shown env d == shown env c
+  if alike.isEmpty then return out
+  let which (c : Name) := match seen.findIdx? (· == c) with
+    | some k => toString k
+    | none => c.toString
+  return out ++ s!"\nalike: {reprStr ((uses.filter alike.contains).toList.map which)}"
 
 -- A statement's identity when the mutation runner compares an original theorem, example or #guard with its
 -- mutated copy: the frozen record's form of its type, without binder names, which change no statement.
