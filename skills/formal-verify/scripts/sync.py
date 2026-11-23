@@ -20,7 +20,7 @@ word now, outside the model files that are not also a --source, such as a Kani h
 apart from the production code, and outside documents, such as README, and TLA+ and Lean files,
 which cannot define it, unless a source path has the same extension. A name in none of the remaining files,
 or only in files with no extension and data files such as .json, .yml or .html, which seldom define it,
-is MISSING. Each name also adds, under the same rules, the files where a commit since the sync
+or only in the comments and strings of C-like code, such as .c, .rs, .java, .go or .ts files, is MISSING. Each name also adds, under the same rules, the files where a commit since the sync
 added or removed it as a whole word, which git log -S finds, renames included. A path that held
 the code only under another name, such as code renamed as it moved, is not found, nor is one
 whose commits all kept the number of times the name appears. Exits 1 outside a git
@@ -56,6 +56,23 @@ KANI_CFG = re.compile(
 )
 # The fallback reads at most this many commits of the model files, since each costs a parse of the file twice.
 FALLBACK_COMMITS = 100
+
+
+# Languages whose comments and strings read as C's do, closely enough to tell whether a name is code.
+C_LIKE = {".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx", ".rs", ".go", ".java", ".kt", ".kts", ".scala",
+          ".swift", ".m", ".mm", ".cs", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".dart"}
+
+
+def in_code(root, file, name):
+    """Whether name occurs as a whole word outside the comments and strings of a C-like file; True for another file."""
+    if Path(file).suffix.lower() not in C_LIKE:
+        return True
+    try:
+        text = (root / file).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    code = baseline.rust_masks(text).without_comments_or_strings
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", code) is not None
 
 
 def role(file, paths, suffixes):
@@ -256,7 +273,7 @@ def main():
         if found.returncode > 1:
             raise RuntimeError(f"git grep for {name} failed: {found.stderr.strip()}")
         roles = {file: role(file, paths, suffixes) for file in found.stdout.split("\0") if file}
-        if "defines" not in roles.values():
+        if not any(kind == "defines" and in_code(root, file, name) for file, kind in roles.items()):
             missing.append(name)
         files = [*roles, *held(root, sync, name, [".", *excluded])]
         paths.update(file for file in files if role(file, paths, suffixes))
