@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+Added `scripts/sync.py`, which lists what changed in the code an existing model covers since the model was last synced. It prints the sync commit from the header's `Source read at` line or the model files' last commit, every path the covered code has had since then through renames and moves, each covered name that no longer exists with the commits that removed it, and the `git log -p` command that shows every commit to read. Step 1 of the skill now runs it, where it listed the `git` commands to run by hand.
+
 The TLC matrix runner now handles `SIGINT`, `SIGTERM` and `SIGHUP` while it checks that TLC is ready, as it does during a run, and ends by the signal. Before this change, a Ctrl-C during that check printed a Python traceback.
 
 
