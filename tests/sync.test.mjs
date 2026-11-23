@@ -223,28 +223,31 @@ test("sync reports a name as missing when only extensionless documents and data 
   assert.ok(lines(script.stdout, "PATH").includes("PATH bin/tool"), script.stdout);
 });
 
-test("sync reports a name as missing when C-like code mentions it only in comments and strings, and still reads those files", () => {
+test("sync reports a name as missing when Rust code mentions it only in comments and strings, and still reads those files", () => {
   const dir = fixture();
   git(dir, "init", "-b", "main");
-  const mentions = {
-    "src/log.c": "/* drain empties the queue */\nint log(void);\n",
-    "src/trace.rs": "// drain\nfn trace() { println!(\"drain {}\", r#\"drain\"#); }\n",
-    "web/app.ts": "const message = \"drain\"; /* drain */\n",
-  };
-  const read = commit(dir, { "src/queue.c": "int claim(void);\nint drain(void);\n", ...mentions }, "queue");
+  const trace = [
+    "// drain",
+    "/* outer /* drain */ still a comment */",
+    "fn trace() { println!(\"drain {}\", r#\"drain \"quoted\"\"#); let c = 'd'; }",
+    "",
+  ].join("\n");
+  const read = commit(dir, { "src/queue.rs": "pub fn claim() {}\npub fn drain() {}\n", "src/trace.rs": trace }, "queue");
   commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
-  commit(dir, { "src/queue.c": "int claim(void);\n// one entry point left\n" }, "remove drain");
+  commit(dir, { "src/queue.rs": "pub fn claim() {}\n// one entry point left\n" }, "remove drain");
   const removed = git(dir, "rev-parse", "--short", "HEAD");
 
-  const result = sync(dir, ["tla/Queue.tla", "--source", "src/queue.c", "--name", "claim", "--name", "drain"]);
+  const result = sync(dir, ["tla/Queue.tla", "--source", "src/queue.rs", "--name", "claim", "--name", "drain"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(lines(result.stdout, "MISSING"), [`MISSING drain: ${removed}`]);
-  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH src/log.c", "PATH src/queue.c", "PATH src/trace.rs", "PATH web/app.ts"]);
+  assert.deepEqual(lines(result.stdout, "PATH"), ["PATH src/queue.rs", "PATH src/trace.rs"]);
 
-  // A caller in code, or a use in a language whose comments the helper does not read, still finds it.
-  for (const [path, text] of [["src/use.c", "void use(void) { drain(); }\n"], ["tools/drain.py", "# drain\n"]]) {
+  // Rust code that calls it, or a comment in another language, whose comments the helper does not read, still finds it.
+  // A C comment with a glob would open a nested comment in Rust's reading and hide the definition after it.
+  for (const [path, text] of [["src/use.rs", "fn use_it() { drain(); }\n"], ["tools/drain.py", "# drain\n"],
+    ["src/glob.c", "/* matches src/*/drain.c */\nint drain(void);\n"], ["web/app.js", "var a = '/*'; function drain() {}\n"]]) {
     commit(dir, { [path]: text }, `add ${path}`);
-    const found = sync(dir, ["tla/Queue.tla", "--source", "src/queue.c", "--name", "drain"]);
+    const found = sync(dir, ["tla/Queue.tla", "--source", "src/queue.rs", "--name", "drain"]);
     assert.deepEqual(lines(found.stdout, "MISSING"), [], path);
     git(dir, "rm", "-q", path);
     git(dir, "commit", "-qm", `remove ${path}`);
