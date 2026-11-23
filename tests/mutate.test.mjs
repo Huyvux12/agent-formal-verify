@@ -208,7 +208,7 @@ const leanError = (line, extra = {}) => ({ pos: { line, column: 2 }, data: "unso
 
 const leanAnalysis = (declarations, errors = [], commands = []) => ({ declarations, errors, commands });
 
-function leanMutations(model, frozen, baseline, mutations, outcomes) {
+function leanMutations(model, frozen, baseline, mutations, outcomes, env = {}) {
   const { dir, project } = leanProject();
   writeFileSync(join(project, "Model/Step.lean"), model);
   const audit = freezeRecord(join(project, "Model/Step.statements"), frozen);
@@ -224,11 +224,13 @@ function leanMutations(model, frozen, baseline, mutations, outcomes) {
     '[ "$6" = env ] && [ "$7" != lean ] && { shift 6; exec "$@"; }',
     'echo analyse >> "$TASK_TRACE"',
     '[[ "$9" == */lean-analysis.lean && "${10}" == analyze ]] || { echo "unexpected elan call: $*" >&2; exit 9; }',
+    '[ -z "${TASK_LEAN_NOTE-}" ] || echo "$TASK_LEAN_NOTE"',
+    '[ -z "${TASK_LEAN_FAIL-}" ] || exit 1',
     'python3 "$TASK_LEAN_DRIVER" "$TASK_LEAN_CONFIG" "${11}"',
   ].join("\n"));
   const result = run(dir, "mutate.py", [join(project, "Model/Step.mutations")], {
     TASK_PROJECT: project, TASK_AUDIT: audit, LEAN_PATH: join(project, ".lake/build/lib/lean"),
-    TASK_LEAN_DRIVER: join(logs, "lean-analysis.py"), TASK_LEAN_CONFIG: config,
+    TASK_LEAN_DRIVER: join(logs, "lean-analysis.py"), TASK_LEAN_CONFIG: config, ...env,
   });
   assert.equal(readFileSync(join(project, "Model/Step.lean"), "utf8"), model);
   return {
@@ -245,6 +247,22 @@ test("the Lean mutation runner checks the toolchain once for the whole run", () 
   const { calls } = leanMutations("def step (n : Nat) : Nat := n + 1\n", ["Step.property"], leanAnalysis(decls),
     noStep + "\nmutation same step\n- n + 1\n+ 1 + n\n", [{ text: ":= n\n", analysis: leanAnalysis(decls, [leanError(2)]) }]);
   assert.deepEqual(calls, ["version", "analyse", "analyse", "analyse"]);
+});
+
+test("the Lean mutation runner reads Lean's output as UTF-8 whatever the locale's encoding", () => {
+  const decls = [leanDecl("Step.property", 2)];
+  const mutate = (env) => leanMutations("def step (n : Nat) : Nat := n + 1\n", ["Step.property"], leanAnalysis(decls), noStep,
+    [{ text: ":= n\n", analysis: leanAnalysis(decls, [leanError(2)]) }], { TASK_LEAN_NOTE: "ℹ [info] ∀ n, n ≤ n", ...env });
+  const ascii = { PYTHONUTF8: "0", PYTHONCOERCECLOCALE: "0", LC_ALL: "C" };
+  for (const [env, expected] of [
+    [{}, "DETECTED no step: proof/check fails: theorem Step.property\n" + leanNote + "SUMMARY 1 of 1 mutations detected\n"],
+    [{ TASK_LEAN_FAIL: "1" }, "FAIL Lean declaration analysis did not complete:\nℹ [info] ∀ n, n ≤ n\n"],
+  ]) {
+    const utf8 = mutate(env);
+    assert.equal(utf8.stdout, expected);
+    const result = mutate({ ...env, ...ascii });
+    assert.deepEqual([result.status, result.stdout, result.stderr], [utf8.status, utf8.stdout, utf8.stderr]);
+  }
 });
 
 test("Lean mutation coverage preserves fully qualified identities and private exemptions", () => {

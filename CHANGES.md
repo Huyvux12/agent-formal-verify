@@ -37,6 +37,8 @@ The mutation runner now checks a TLA+ model's unmutated spec on every run that i
 The TLC matrix runner now handles `SIGINT`, `SIGTERM` and `SIGHUP` while it checks that TLC is ready, as it does during a run, and ends by the signal. Before this change, a Ctrl-C during that check printed a Python traceback.
 
 
+The Lean mutation runner now reads the output of its Lean analysis as UTF-8, and `mutate.py` writes its output as UTF-8, as the Lean checker does, so a run under a locale whose encoding is not UTF-8 prints the same verdicts and messages. Before this change, under `LC_ALL=C` with Python's UTF-8 mode off, every Lean mutation run stopped with an `'ascii' codec can't decode` error.
+
 The Lean mutation runner now compares a theorem's, example's or `#guard`'s statement in the form the frozen record uses: match helpers by their content, together with the helper at each place in the statement, hygienic names and universe levels without their numbers, and no binder names. Before this change, it compared Lean's raw types, so a mutation that changed which match helper an unchanged statement shared, such as one that changed the shape of an earlier definition's `match`, read as a changed statement and gave the mutation no verdict, while the frozen record showed the statement unchanged. The Lean checker's audit and the mutation runner's analysis are now one program, `scripts/lean-analysis.lean`, instead of a Lean file that `lean-check.sh` wrote out on each run and a separate `lean-mutations.lean`. Frozen records and the output of a passing `lean-check.sh` run are unchanged. A failed import is now reported against `<audit>` instead of a temporary file's path.
 
 
