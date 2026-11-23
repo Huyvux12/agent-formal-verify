@@ -45,6 +45,14 @@ before it runs any tool, so a malformed mutation stops the run first.
 Usage: mutate.py <Name.mutations>
   The environment settings of tlc-matrix.sh apply to TLA+ mutations.
 """
+import signal
+
+if __name__ == "__main__":
+    # Python's SIGINT handler raises KeyboardInterrupt, which prints a traceback when it arrives during the imports.
+    # Until runner.run installs its own handlers, the default action ends the process by the signal instead.
+    if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
 import sys
 import tempfile
 from collections.abc import Callable
