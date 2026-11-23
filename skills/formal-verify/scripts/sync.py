@@ -154,15 +154,23 @@ def renamed(root, sync, paths):
 
 def held(root, sync, name, pathspec):
     """Return the files where a commit since sync added or removed name as a whole word."""
-    files = set()
-    # Without --no-renames, a rename that keeps the name's count pairs the old path with the new one and -S skips both.
-    for commit in git(root, "log", "--no-renames", "-S", name, "--format=%H", f"{sync}..HEAD", "--", *pathspec).stdout.split():
-        changed = git(root, "diff-tree", "-r", "--no-commit-id", "--name-only", "-z", "-S", name, commit, "--", *pathspec).stdout.split("\0")
-        changed = [f":(literal){file}" for file in changed if file]
-        for revision in (commit, f"{commit}^") if changed else ():
-            found = git(root, "grep", "-l", "-z", "-w", "-F", "-e", name, revision, "--", *changed, check=False)
-            files.update(file.removeprefix(f"{revision}:") for file in found.stdout.split("\0") if file)
-    return files
+    # One log lists each such commit, its parents and the files where the count of name changed, and one grep reads
+    # those files at each commit and its first parent. Without --no-renames, a rename that keeps the name's count
+    # pairs the old path with the new one and -S skips both.
+    log = git(root, "log", "--no-renames", "-S", name, "--format=%x01%H %P", "--name-only", "-z", f"{sync}..HEAD", "--", *pathspec).stdout
+    changed = {}
+    for entry in log.split("\x01")[1:]:
+        header, _, names = entry.partition("\0")
+        commit, *parents = header.split()
+        files = {file.lstrip("\n") for file in names.split("\0") if file.strip("\n")}
+        for revision in (commit, *parents[:1]):
+            changed.setdefault(revision, set()).update(files)
+    if not changed:
+        return set()
+    paths = sorted(set().union(*changed.values()))
+    found = git(root, "grep", "-l", "-z", "-w", "-F", "-e", name, *changed, "--", *(f":(literal){path}" for path in paths), check=False)
+    hits = (hit.partition(":") for hit in found.stdout.split("\0") if hit)
+    return {file for revision, _, file in hits if file in changed.get(revision, ())}
 
 
 def main():

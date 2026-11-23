@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { fixture, removeFixtures, scripts } from "./helpers.mjs";
+import { command, fixture, removeFixtures, scripts } from "./helpers.mjs";
 
 afterEach(removeFixtures);
 
@@ -64,6 +64,26 @@ test("sync follows renames, finds where covered names live now, and names the co
   assert.deepEqual(lines(result.stdout, "MISSING"), [`MISSING drain: ${removed}`]);
   const root = git(dir, "rev-parse", "--show-toplevel");
   assert.deepEqual(lines(result.stdout, "READ"), [`READ git -C ${root} log -p ${read}..HEAD -- src/consume.c src/core.c src/queue.c`]);
+});
+
+test("sync's search for files that held a name runs as many git commands for many commits as for a few", () => {
+  // Count the git commands sync runs for a history in which a few or many commits move claim between files.
+  const calls = (moves) => {
+    const dir = fixture();
+    git(dir, "init", "-b", "main");
+    const read = commit(dir, { "src/queue.c": "int claim(void);\n" }, "queue");
+    commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+    for (let move = 0; move < moves; move++) commit(dir, { [`src/step${move}.c`]: "int claim(void);\n" }, `step ${move}`);
+    const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8", env: gitEnv }).stdout.trim();
+    const log = join(dir, "git-calls");
+    command(dir, "git", `echo "$*" >> "${log}"\nexec "${real}" "$@"`);
+    const result = spawnSync("python3", [join(scripts, "sync.py"), "tla/Queue.tla", "--source", "src/queue.c", "--name", "claim"],
+      { cwd: dir, encoding: "utf8", env: { ...gitEnv, PATH: `${join(dir, "bin")}:${gitEnv.PATH}` } });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(lines(result.stdout, "PATH").length, moves + 1);
+    return readFileSync(log, "utf8").split("\n").filter(Boolean).length;
+  };
+  assert.equal(calls(12), calls(2));
 });
 
 test("sync reads a file that held a covered name only between the sync and now", () => {
