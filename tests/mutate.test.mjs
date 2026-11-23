@@ -194,11 +194,12 @@ function leanMutations(model, frozen, baseline, mutations, outcomes) {
   command(dir, "elan", [
     '[ "$4" = "--version" ] && { echo version >> "$TASK_TRACE"; exit 0; }',
     '[ "$6" = query ] && { echo "$TASK_PROJECT/.lake/build/lib/lean/Model/Step.olean"; exit 0; }',
-    '[[ "$8" == */Audit.lean ]] && { echo "$TASK_AUDIT"; echo "AUDITED 1 declarations"; exit 0; }',
+    '[[ "$9" == */lean-analysis.lean && "${10}" == audit ]] && { echo "$TASK_AUDIT"; echo "AUDITED 1 declarations"; exit 0; }',
     '[ "$4" = --print-prefix ] && { echo "$TASK_PROJECT"; exit 0; }',
     '[ "$6" = env ] && [ "$7" != lean ] && { shift 6; exec "$@"; }',
     'echo analyse >> "$TASK_TRACE"',
-    'python3 "$TASK_LEAN_DRIVER" "$TASK_LEAN_CONFIG" "${@: -1}"',
+    '[[ "$9" == */lean-analysis.lean && "${10}" == analyze ]] || { echo "unexpected elan call: $*" >&2; exit 9; }',
+    'python3 "$TASK_LEAN_DRIVER" "$TASK_LEAN_CONFIG" "${11}"',
   ].join("\n"));
   const result = run(dir, "mutate.py", [join(project, "Model/Step.mutations")], {
     TASK_PROJECT: project, TASK_AUDIT: audit, LEAN_PATH: join(project, ".lake/build/lib/lean"),
