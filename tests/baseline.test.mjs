@@ -406,6 +406,10 @@ test("a cfg that can switch a recorded Kani harness off is changed, and cfg(kani
   const removed = recordedThenEdited(nested, "rust", rust("#[cfg(b)] ", ""));
   assertChanged(removed, "rust", "changed harness m::outer::inner");
   assert.ok(removed.out.includes("    old: cfg(b) cfg(c) cfg(d)"), JSON.stringify(removed.out));
+  const attribute = recordedThenEdited(setup, "rust", rust("#[kani::proof]", "#[cfg_attr(kani, cfg(not(miri)))] #[kani::proof]"));
+  assertChanged(attribute, "rust", 'new: cfg(feature = "a") cfg_attr(kani, cfg(not(miri)))');
+  const marked = recordedThenEdited(setup, "rust", ({ rust: path }) => writeFileSync(path, `\ufeff#![cfg(unix)]\n${readFileSync(path, "utf8")}`));
+  assertChanged(marked, "rust", 'new: cfg(unix) cfg(feature = "a")');
   const kani = recordedThenEdited(null, "rust", rust("    #[kani::proof]\n    #[kani::unwind(2)]\n    fn consume_keeps_invariant", "    #[cfg( kani )]\n    #[kani::proof]\n    #[kani::unwind(2)]\n    fn consume_keeps_invariant"));
   assertUnchanged(kani, "rust");
 });

@@ -14,9 +14,9 @@ change, and so is an added item whose kind narrows what is checked.
                of each operator a check or reach line names, and of the operators those
                reference through local EXTENDS. Local INSTANCE substitutions retain their whole module tree.
   .rs          Kani. Each qualified harness name with the #[cfg(...)] attributes other
-               than cfg(kani) on it, its enclosing items and the file, and each kani::assume,
-               kani::any_where, kani::cover! and #[kani::stub] with its owning free function,
-               under inline modules. Unsupported owners fail. Added covers and harnesses are allowed.
+               than cfg(kani), and the #[cfg_attr(..., cfg(...))] ones, on it, its enclosing
+               items and the file, and each kani::assume, kani::any_where, kani::cover! and
+               #[kani::stub] with its owning free function, under inline modules. Unsupported owners fail. Added covers and harnesses are allowed.
                Added assumes and stubs are changes.
 
 Usage:
@@ -422,13 +422,14 @@ MACROS = (
 )
 PROOF = re.compile(KANI_ATTRIBUTE + r"proof(?:_for_contract\s*\([^)]*\))?\s*\)?\s*\]")
 KANI_TOKEN = re.compile(r"\bkani\s*::\s*(?:assume|any_where|cover|stub|proof)\w*\b")
-OUTER_CFG, INNER_CFG = (re.compile(rf"#\s*{bang}\[\s*cfg\s*\(") for bang in ("", r"!\s*"))
-INNER_ATTRIBUTE = re.compile(r"\s*#\s*!\s*\[")
+OUTER_CFG, INNER_CFG = (re.compile(rf"#\s*{bang}\[\s*cfg(?:_attr)?\s*\(") for bang in ("", r"!\s*"))
+INNER_ATTRIBUTE = re.compile(r"[\s\ufeff]*#\s*!\s*\[")
 RENAMING_IMPORT = re.compile(r"\buse\s+[^;]*?(?<![\w:])(?:::\s*)?kani\b[^;]*?(?:\bas\b|\*|\b(?:assume|any_where|cover|stub|proof)\w*\b)|\bextern\s+crate\s+kani\s+as\b")
 
 
 def cfg_guards(source, items):
-    """Return the cfg attributes other than cfg(kani) on each (start, body) item and at the start of its body.
+    """Return the cfg attributes other than cfg(kani), and the cfg_attr ones that apply a cfg, on each (start, body)
+    item and at the start of its body.
 
     A body of -1 stands for the file, which has only inner attributes.
     """
@@ -440,7 +441,8 @@ def cfg_guards(source, items):
             opener = mask.index("[", match.start())
             attribute = rust_masks(text[opener + 1:after_closing(mask, opener) - 1])
             guard = collapse(attribute.uncommented, attribute.literals)
-            if re.sub(r"\s+", "", guard) != "cfg(kani)":
+            compact = re.sub(r"\s+", "", guard)
+            if compact.startswith("cfg(") and compact != "cfg(kani)" or re.search(r"[(,]cfg\(", compact.removeprefix("cfg_attr(")):
                 guards.append(guard)
 
     for start, body in items:
