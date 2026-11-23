@@ -122,6 +122,30 @@ test("a mutation filter cannot move a target check onto an earlier run", () => {
   assert.equal(existsSync(join(dir, "calls")), false);
 });
 
+test("the mutation runner checks the unmutated TLA+ spec on every selected run before the first mutation", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "One.tla"), "---- MODULE One ----\nStep == x' = x + 1\n====\n");
+  writeFileSync(join(dir, "One.matrix"), "spec One.tla\ncheck INVARIANTS Small\nrun n=4 | N=4\ncheck INVARIANTS Broken\nrun n=5 | N=5\n");
+  writeFileSync(join(dir, "One.mutations"), [
+    "mutation skip", "detects Small", "- x + 1", "+ x \\* BUG",
+    "mutation stall", "detects Broken", "- x + 1", "+ x \\* BUG",
+  ].join("\n") + "\n");
+  writeFileSync(join(dir, "tools.jar"), "user supplied");
+  // TLC records whether each run holds a mutation, and fails Broken on the unmutated spec too.
+  // Small applies to both runs, so the unmutated spec runs three times before Broken fails.
+  const java = fakeTlc(dir, [
+    'for last; do :; done',
+    'if grep -q BUG "$last"; then echo mutated; else echo unmutated; fi >> "$TASK_TRACE"',
+    'if grep -q Broken "$(dirname "$last")/MC.cfg"; then echo "Error: Invariant Broken is violated."; exit 12; fi',
+    'echo "Model checking completed. No error has been found."',
+  ].join("\n"));
+  const result = run(dir, "mutate.py", [join(dir, "One.mutations")], { JAVA: java, TLC_JAR: join(dir, "tools.jar") });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^FAIL unmutated model did not pass Broken: FAIL One n=5: Error: Invariant Broken is violated\./);
+  excludes(result.stdout, "skip");
+  assert.equal(readFileSync(join(dir, "calls"), "utf8"), "unmutated\n".repeat(3));
+});
+
 test("the mutation runner rejects text that is absent or repeated, and a property the matrix does not check", () => {
   const cases = [
     [["mutation gone", "detects Small", "- y + 1", "+ y"], "its - text occurs 0 times"],
@@ -602,10 +626,9 @@ test("timed-out reach and ordinary mutations never count as detected, and timed-
       TLC_TIMEOUT: "1s",
     });
     assert.equal(result.status, 1);
-    includes(result.stdout, "did not reach a verdict");
+    includes(result.stdout, hangOriginal ? "FAIL unmutated model did not pass Small" : "did not reach a verdict");
     includes(result.stdout, "TLC timed out after 1s");
     excludes(result.stdout, "DETECTED hang");
-    if (hangOriginal) includes(result.stdout, "unmutated model did not pass Small");
   }
 });
 
