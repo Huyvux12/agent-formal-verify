@@ -77,7 +77,8 @@ function leanFixture(log, { status = 0, audit = audited, files = [] } = {}) {
   command(dir, "elan", [
     '[ "$4" = "--version" ] && exit 0',
     `[ "$3" = "lean" ] && { echo "${dir}"; exit 0; }`,
-    '[ "$7" = printenv ] && { echo "$LEAN_PATH"; exit 0; }',
+    // Lake writes notices, such as one for a project with both lakefiles, to stderr.
+    '[ "$7" = printenv ] && { echo "info: [root]: lakefile.lean and lakefile.toml are both present; using lakefile.lean" >&2; echo "$LEAN_PATH"; exit 0; }',
     'if [[ "$8" == */lean-replay.lean ]]; then echo replay >> "$TASK_TRACE"; sed "s/^/replaying /" "$AFV_REPLAY_MODULES"; [ -z "$TASK_REPLAY" ] || { echo "$TASK_REPLAY"; exit 1; }; exit 0; fi',
     'if [[ "$9" == */lean-analysis.lean && "${10}" == audit ]]; then echo audit >> "$TASK_TRACE"; sed "s/^/module /" "${@: -1}"; printf "%s\\n" "$TASK_AUDIT"; exit 0; fi',
     'shift 6; printf "%s\\n" "$@" > "$TASK_BUILT"',

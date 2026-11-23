@@ -297,7 +297,8 @@ def checked(project, toolchain, files, freeze, out, work):
     audit_status, audit, modules, libraries = 0, [], [], []
     if status == 0:
         # The module of each source, in source order, for the audit's imports and the frozen records.
-        found, search_path, errors = step([*lake, "env", "printenv", "LEAN_PATH"])
+        # Lake writes notices to stderr, such as one for a project with both lakefiles, so only stdout is the path.
+        found, search_path, errors = step([*lake, "env", "printenv", "LEAN_PATH"], merge=False)
         try:
             if found:
                 raise ValueError(f"{search_path}{errors}lake env exit {found}")
@@ -423,8 +424,10 @@ def ready(project):
 
 
 def main():
-    # Lean's output is UTF-8 whatever the locale; pass it through unchanged, as the shell checker did.
-    sys.stdout.reconfigure(encoding="utf-8")
+    # Lean's output is UTF-8 whatever the locale; pass it through unchanged, as the shell checker did. Each line goes
+    # out as it is written, so a killed or piped run keeps what it printed, and a path that the locale could not
+    # decode goes out as its original bytes.
+    sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape", line_buffering=True)
     command, *arguments = sys.argv[1:] or [""]
     if command == "ready" and len(arguments) == 1:
         return ready(arguments[0])
