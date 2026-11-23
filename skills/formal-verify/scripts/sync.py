@@ -168,8 +168,7 @@ def held(root, sync, name, pathspec):
         for revision in (commit, parents[0]) if parents else ():
             changed.setdefault(revision, set()).update(file for file in names.removeprefix("\n").split("\0") if file)
     files = set()
-    for revisions in batches(changed):
-        paths = sorted(set().union(*(changed[revision] for revision in revisions)))
+    for revisions, paths in batches(changed):
         found = git(root, "grep", "-l", "-z", "-w", "-F", "-e", name, *revisions, "--", *(f":(literal){path}" for path in paths), check=False)
         if found.returncode > 1:
             raise RuntimeError(f"git grep for {name} failed: {found.stderr.strip()}")
@@ -179,19 +178,24 @@ def held(root, sync, name, pathspec):
 
 
 def batches(changed, limit=100_000):
-    """Split the revisions of changed into groups whose revisions and paths stay within limit bytes of arguments."""
-    group, paths, size = [], set(), 0
+    """Yield revisions and paths to grep together, each group within limit bytes of arguments.
+
+    A revision's paths are split across groups when they do not fit in one, as at a commit that is the parent of
+    several listed commits.
+    """
+    revisions, paths, size = set(), set(), 0
     for revision, files in changed.items():
-        grown = sum(len(path.encode()) + 12 for path in files - paths) + len(revision) + 1
-        if group and size + grown > limit:
-            yield group
-            group, paths, size = [], set(), 0
-            grown = sum(len(path.encode()) + 12 for path in files) + len(revision) + 1
-        group.append(revision)
-        paths |= files
-        size += grown
-    if group:
-        yield group
+        for path in sorted(files):
+            grown = (revision not in revisions) * (len(revision) + 1) + (path not in paths) * (len(path.encode()) + 12)
+            if paths and size + grown > limit:
+                yield sorted(revisions), sorted(paths)
+                revisions, paths, size = set(), set(), 0
+                grown = len(revision) + 1 + len(path.encode()) + 12
+            revisions.add(revision)
+            paths.add(path)
+            size += grown
+    if paths:
+        yield sorted(revisions), sorted(paths)
 
 
 def main():

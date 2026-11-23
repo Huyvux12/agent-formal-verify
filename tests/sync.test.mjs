@@ -90,6 +90,22 @@ test("sync's search for files that held a name runs as many git commands for man
   assert.equal(calls(12), calls(2));
 });
 
+test("sync's search for files that held a name finds every file when one commit's paths need several git grep calls", () => {
+  const dir = fixture();
+  git(dir, "init", "-b", "main");
+  const read = commit(dir, { "src/queue.c": "int claim(void);\n" }, "queue");
+  commit(dir, { "tla/Queue.tla": `(* Source read at ${read} *)\n` }, "model");
+  // 600 paths of about 200 bytes are more than one grep call takes, and none holds claim at HEAD.
+  const deep = `src/${"d".repeat(190)}`;
+  const paths = Array.from({ length: 600 }, (_, file) => `${deep}/${String(file).padStart(4, "0")}.c`);
+  commit(dir, Object.fromEntries(paths.map((path) => [path, "int claim(void);\n"])), "add");
+  commit(dir, Object.fromEntries(paths.map((path) => [path, "int other(void);\n"])), "rewrite");
+
+  const result = sync(dir, ["tla/Queue.tla", "--source", "src/queue.c", "--name", "claim"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result.stdout, "PATH"), [...paths, "src/queue.c"].map((path) => `PATH ${path}`));
+});
+
 test("sync's search for files that held a name reads any path, skips a merged history's root and ignores textconv", () => {
   const dir = fixture();
   git(dir, "init", "-b", "main");
