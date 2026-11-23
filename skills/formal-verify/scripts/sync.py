@@ -11,7 +11,10 @@
 
 The sync commit is the header's `Source read at <commit>` when that commit is in HEAD's
 history, and otherwise the last commit that changed the model files; the SYNC line then says
-why the header's commit was not used. Each source path is followed through every rename since
+why the header's commit was not used. When a model file is also a --source, such as a Rust file
+with its Kani harness, that fallback counts only a commit that changed the code of its
+#[cfg(kani)] items, or another model file, and none of its other code; SYNC none follows when
+none of the last 100 commits of the model files since the source's last rename qualifies. Each source path is followed through every rename since
 the sync commit in both directions. Each name adds the files where git grep finds it as a whole
 word now, outside the model files that are not also a --source, such as a Kani harness kept
 apart from the production code. Exits 1 outside a git repository, for a source path that no
@@ -20,6 +23,7 @@ commit has, or when git grep fails.
 Usage: sync.py <model file>... [--source <path>]... [--name <name>]...
 """
 import argparse
+import functools
 import re
 import shlex
 import subprocess
@@ -27,8 +31,16 @@ import sys
 from pathlib import Path
 
 sys.dont_write_bytecode = True
+import baseline
 
 HEADER = re.compile(r"Source read at ([0-9a-fA-F]{7,40})\b")
+# #[cfg(kani)] on an item, past any other attributes and its visibility; on a field or a variant it is production code.
+KANI_CFG = re.compile(
+    r"#\s*\[\s*cfg\s*\(\s*kani\s*\)\s*\](?=(?:\s*#\s*\[[^\]]*\])*\s*(?:pub\s*(?:\([^)]*\))?\s*)?"
+    r"(?:mod|fn|impl|use|const|static|struct|enum|union|trait|type|unsafe|extern|async|macro_rules)\b)"
+)
+# The fallback reads at most this many commits of the model files, since each costs a parse of the file twice.
+FALLBACK_COMMITS = 100
 
 
 def git(root, *arguments, check=True):
@@ -38,8 +50,52 @@ def git(root, *arguments, check=True):
     return done
 
 
-def sync_commit(root, models):
-    """Return the sync commit and where it came from, or (None, reason)."""
+@functools.cache
+def split_harness(text):
+    """Return the code of the #[cfg(kani)] items in Rust text and the code outside them, without comments or blank lines."""
+    source = baseline.rust_masks(text)
+    mask, spans = source.without_comments_or_strings, []
+    for found in KANI_CFG.finditer(mask):
+        if spans and found.start() < spans[-1][1]:
+            continue
+        at = found.end()
+        while at < len(mask) and mask[at] not in "{;":
+            at = baseline.after_closing(mask, at) if mask[at] in "([" else at + 1
+        end = baseline.after_closing(mask, at) if at < len(mask) and mask[at] == "{" else at + 1
+        spans.append((found.start(), end))
+    starts = [0] + [end for _, end in spans]
+    ends = [start for start, _ in spans] + [len(mask)]
+
+    def code(parts):
+        return [line.rstrip() for part in parts for line in part.splitlines() if line.strip()]
+
+    return code(source.uncommented[a:b] for a, b in spans), code(source.uncommented[a:b] for a, b in zip(starts, ends))
+
+
+def changed_only_harness(root, commit, models, sources):
+    """Whether commit changed the model files and, in those that are also a source, no code outside the #[cfg(kani)] items.
+
+    Returns the path instead when commit renamed a source to it, since git log does not follow the rename.
+    """
+    touched = set(git(root, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", commit, "--", *models).stdout.split("\0")) - {""}
+    changed = bool(touched - set(sources))
+    for path in touched & set(sources):
+        before, after = (git(root, "show", f"{revision}:{path}", check=False) for revision in (f"{commit}^", commit))
+        if before.returncode or after.returncode:
+            renames = git(root, "diff-tree", "-M", "-r", "--no-commit-id", "--name-only", "--diff-filter=R", "-z", commit).stdout.split("\0")
+            return path if path in renames else False
+        try:
+            (old_harness, old_code), (new_harness, new_code) = split_harness(before.stdout), split_harness(after.stdout)
+        except ValueError:
+            return False
+        if old_code != new_code:
+            return False
+        changed = changed or old_harness != new_harness
+    return changed
+
+
+def sync_commit(root, models, shared):
+    """Return the sync commit and where it came from, or (None, reason); shared are the models also given as --source."""
     unused = []
     for model in models:
         text = model.read_text(encoding="utf-8", errors="replace")
@@ -50,7 +106,24 @@ def sync_commit(root, models):
             unused.append(f"the Source read at commit {found[1]} in {model.name} is not in HEAD's history")
         elif "Source read at" in text:
             unused.append(f"the Source read at line in {model.name} names no commit hash")
-    last = git(root, "log", "-1", "--format=%H", "--", *map(str, models)).stdout.strip()
+    relative = [str(model.relative_to(root)) for model in models]
+    if shared:
+        names = ", ".join(model.name for model in shared)
+        sources = [str(model.relative_to(root)) for model in shared]
+        commits = git(root, "log", f"-{FALLBACK_COMMITS + 1}", "--format=%H", "--", *relative).stdout.split()
+        read = "the model files"
+        if len(commits) > FALLBACK_COMMITS:
+            commits, read = commits[:FALLBACK_COMMITS], f"the last {FALLBACK_COMMITS} commits of the model files"
+        since = ""
+        for commit in commits:
+            found = changed_only_harness(root, commit, relative, sources)
+            if isinstance(found, str):
+                since = f" since the rename to {Path(found).name} in {commit}, which git log does not follow"
+                break
+            if found:
+                return commit, "; ".join([f"from the last commit of the model files that changed no production code in {names}", *unused])
+        return None, "; ".join([f"no commit of {read} changed only the #[cfg(kani)] items of {names}{since}", *unused])
+    last = git(root, "log", "-1", "--format=%H", "--", *relative).stdout.strip()
     if last:
         return last, "; ".join(["from the last commit of the model files", *unused])
     return None, "; ".join(["the model files have no commit and no Source read at line in HEAD's history", *unused])
@@ -89,7 +162,8 @@ def main():
         return 1
     root = Path(found.stdout.strip())
     relative = [str(model.relative_to(root)) for model in models]
-    sync, reason = sync_commit(root, models)
+    given = {(Path.cwd() / source).resolve() for source in arguments.source}
+    sync, reason = sync_commit(root, models, [model for model in models if model in given])
     if sync is None:
         print(f"SYNC none: {reason}; compare the model with the code in full")
         return 0
