@@ -10,12 +10,18 @@ implementation. Edit an existing harness in place, and start a new one from
 Work in the target repository. `<skill-dir>` means the absolute path to this
 plugin's `skills/formal-verify` directory, not a directory in the target crate.
 Write the harnesses in a `#[cfg(kani)] mod proofs` at the end of the production
-file `<Name>.rs` that defines the function, as the template does, and write
-`<Name>.mutations` beside that file. The mutation runner applies a mutation only
-to the file beside the mutations file, so only this layout lets a mutation
-change the production code. `#[cfg(kani)]` leaves the module out of every other
-build. Own only that module and the mutations file, and change no other line of
-the production file unless the user has authorized a production fix.
+file that defines the function, with the header comment directly above it, as
+the template does. Write `<Name>.mutations` beside that file, where `<Name>` is
+the file's stem, such as `lib`. The mutation runner applies a mutation only to
+the file beside the mutations file and checks the harnesses of that file's
+crate, so a harness in another crate cannot detect a mutation of the production
+code. `#[cfg(kani)]` leaves the module out of every other build, and the main
+thread declares `cfg(kani)` in the crate's `Cargo.toml`; if a check warns about
+an unexpected `cfg` condition named `kani`, report it and leave `Cargo.toml`
+alone. Own only that module and the mutations file, and change no other line of
+the production file unless the user has authorized a production fix. A harness
+that an earlier run wrote in a crate of its own keeps its layout: edit it and
+its mutations file where they are.
 
 Cite the production source paths and line numbers that each property models in
 the harness header, the functions it calls, and the commit they were read at as
