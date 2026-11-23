@@ -13,9 +13,10 @@ change, and so is an added item whose kind narrows what is checked.
                and the normalized definitions of Spec,
                of each operator a check or reach line names, and of the operators those
                reference through local EXTENDS. Local INSTANCE substitutions retain their whole module tree.
-  .rs          Kani. Each qualified harness name, and each kani::assume, kani::any_where,
-               kani::cover! and #[kani::stub] with its owning free function, under inline
-               modules. Unsupported owners fail. Added covers and harnesses are allowed.
+  .rs          Kani. Each qualified harness name with the #[cfg(...)] attributes other
+               than cfg(kani) on it, its enclosing items and the file, and each kani::assume,
+               kani::any_where, kani::cover! and #[kani::stub] with its owning free function,
+               under inline modules. Unsupported owners fail. Added covers and harnesses are allowed.
                Added assumes and stubs are changes.
 
 Usage:
@@ -368,8 +369,8 @@ RUST_ITEM = re.compile(r"\b(fn|mod)\s+((?:r#)?\w+)\b")
 
 
 def rust_functions(mask):
-    """Locate free functions under inline modules; leave macro and other item bodies opaque."""
-    functions, opaque, counts = [], [], {}
+    """Locate free functions and inline modules; leave macro and other item bodies opaque."""
+    functions, modules, opaque, counts = [], [], [], {}
 
     def walk(start, end, namespace=(), in_function=False):
         i, boundary, item = start, start, None
@@ -394,6 +395,8 @@ def rust_functions(mask):
                         counts[owner] = counts.get(owner, 0) + 1
                         suffix = f"[{counts[owner]}]" if counts[owner] > 1 else ""
                         functions.append(RustFunction(owner + suffix, boundary, i, stop))
+                    else:
+                        modules.append(RustFunction("::".join(qualified), boundary, i, stop))
                     walk(i + 1, stop - 1, qualified, kind == "fn")
                 elif in_function and not macro and not re.search(r"\b(?:impl|trait|struct|enum|union|extern|macro)\b", header):
                     walk(i + 1, stop - 1, namespace, True)
@@ -407,7 +410,7 @@ def rust_functions(mask):
                 i += 1
 
     walk(0, len(mask))
-    return functions, opaque
+    return functions, modules, opaque
 
 
 KANI_ATTRIBUTE = r"#\s*\[\s*(?:cfg_attr\s*\(\s*kani\s*,\s*)?kani\s*::\s*"
@@ -419,7 +422,35 @@ MACROS = (
 )
 PROOF = re.compile(KANI_ATTRIBUTE + r"proof(?:_for_contract\s*\([^)]*\))?\s*\)?\s*\]")
 KANI_TOKEN = re.compile(r"\bkani\s*::\s*(?:assume|any_where|cover|stub|proof)\w*\b")
+OUTER_CFG, INNER_CFG = (re.compile(rf"#\s*{bang}\[\s*cfg\s*\(") for bang in ("", r"!\s*"))
+INNER_ATTRIBUTE = re.compile(r"\s*#\s*!\s*\[")
 RENAMING_IMPORT = re.compile(r"\buse\s+[^;]*?(?<![\w:])(?:::\s*)?kani\b[^;]*?(?:\bas\b|\*|\b(?:assume|any_where|cover|stub|proof)\w*\b)|\bextern\s+crate\s+kani\s+as\b")
+
+
+def cfg_guards(source, items):
+    """Return the cfg attributes other than cfg(kani) on each (start, body) item and at the start of its body.
+
+    A body of -1 stands for the file, which has only inner attributes.
+    """
+    text, mask = source.uncommented, source.without_comments_or_strings
+    guards = []
+
+    def read(pattern, start, stop):
+        for match in pattern.finditer(mask, start, stop):
+            opener = mask.index("[", match.start())
+            attribute = rust_masks(text[opener + 1:after_closing(mask, opener) - 1])
+            guard = collapse(attribute.uncommented, attribute.literals)
+            if re.sub(r"\s+", "", guard) != "cfg(kani)":
+                guards.append(guard)
+
+    for start, body in items:
+        if body >= 0:
+            read(OUTER_CFG, start, RUST_ITEM.search(mask, start, body).start())
+        first = inner = body + 1
+        while attribute := INNER_ATTRIBUTE.match(mask, inner):
+            inner = after_closing(mask, attribute.end() - 1)
+        read(INNER_CFG, first, inner)
+    return " ".join(guards)
 
 
 def kani_surface(path):
@@ -427,13 +458,13 @@ def kani_surface(path):
     text, mask = source.uncommented, source.without_comments_or_strings
     if renaming := RENAMING_IMPORT.search(mask):
         raise ValueError(f"{path}: '{collapse(renaming[0])}' brings a Kani assumption, cover, stub or harness attribute in under another name; write each as kani::<name> so the record can read it")
-    functions, opaque = rust_functions(mask)
+    functions, modules, opaque = rust_functions(mask)
 
     def owner_at(position, *, attribute=False):
         if not any(start <= position < end for start, end in opaque):
             for function in reversed(functions):
                 if function.start <= position < function.end and (position < function.body if attribute else position > function.body):
-                    return function.name
+                    return function
         line = mask.count("\n", 0, position) + 1
         raise ValueError(f"{path}:{line}: cannot identify a function owner; write Kani forms in free functions under inline modules, outside macro definitions and impl or trait bodies")
 
@@ -444,17 +475,20 @@ def kani_surface(path):
             end = after_closing(mask, match.end() - 1)
             read.append((match.start(), end))
             argument = rust_masks(text[match.end():end - 1])
-            owner = owner_at(match.start(), attribute=kind == "stub")
-            spans.append((match.start(), f"{kind} {collapse(argument.uncommented, argument.literals)} in {owner}"))
+            owner = owner_at(match.start(), attribute=kind == "stub").name
+            spans.append((match.start(), f"{kind} {collapse(argument.uncommented, argument.literals)} in {owner}", ""))
     for match in PROOF.finditer(mask):
         read.append(match.span())
-        spans.append((match.start(), f"harness {owner_at(match.start(), attribute=True)}"))
+        harness = owner_at(match.start(), attribute=True)
+        enclosing = sorted((item for item in functions + modules if item.start <= harness.start and harness.end <= item.end), key=lambda item: item.start)
+        guards = cfg_guards(source, [(0, -1)] + [(item.start, item.body) for item in enclosing])
+        spans.append((match.start(), f"harness {harness.name}", guards))
     for token in KANI_TOKEN.finditer(mask):
         if not any(start <= token.start() < end for start, end in read):
             line = mask.count("\n", 0, token.start()) + 1
             raise ValueError(f"{path}:{line}: '{collapse(token[0])}' is in a form the record cannot read; write kani::assume(...), kani::any_where(...), kani::cover!(...), #[kani::stub(...)] or #[kani::proof], alone or under #[cfg_attr(kani, ...)]")
-    for _, item in sorted(spans):
-        surface.add(item)
+    for _, item, guards in sorted(spans):
+        surface.add(item, guards)
     return surface
 
 

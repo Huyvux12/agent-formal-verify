@@ -393,6 +393,23 @@ test("an added Kani assume is changed", () => {
   assertChanged(outcome, "rust", "added assume state.next == 0");
 });
 
+test("a cfg that can switch a recorded Kani harness off is changed, and cfg(kani) is not", () => {
+  const guarded = recordedThenEdited(null, "rust", rust("    #[kani::proof]\n    #[kani::unwind(2)]\n    fn consume_keeps_invariant", "    #[cfg(feature = \"slow-proofs\")]\n    #[kani::proof]\n    #[kani::unwind(2)]\n    fn consume_keeps_invariant"));
+  assertChanged(guarded, "rust", "changed harness proofs::consume_keeps_invariant", 'new: cfg(feature = "slow-proofs")');
+  const module = recordedThenEdited(null, "rust", rust("#[cfg(kani)]\nmod proofs {", "#[cfg(kani)]\n#[cfg(not(miri))]\nmod proofs {\n    #![cfg(target_os = \"linux\")]"));
+  assertChanged(module, "rust", "changed harness proofs::claim_keeps_invariant", 'new: cfg(not(miri)) cfg(target_os = "linux")');
+  const file = recordedThenEdited(null, "rust", ({ rust: path }) => writeFileSync(path, `#![cfg(unix)]\n${readFileSync(path, "utf8")}`));
+  assertChanged(file, "rust", "new: cfg(unix)");
+  const setup = ({ rust: path }) => writeFileSync(path, "#[cfg(feature = \"a\")] #[kani::proof] fn first() {}");
+  assertChanged(recordedThenEdited(setup, "rust", rust("#[cfg(feature = \"a\")] ", "")), "rust", 'old: cfg(feature = "a")');
+  const nested = ({ rust: path }) => writeFileSync(path, "#[cfg(b)] mod m { #![cfg(c)] fn outer() { #[cfg(d)] #[kani::proof] fn inner() {} } }");
+  const removed = recordedThenEdited(nested, "rust", rust("#[cfg(b)] ", ""));
+  assertChanged(removed, "rust", "changed harness m::outer::inner");
+  assert.ok(removed.out.includes("    old: cfg(b) cfg(c) cfg(d)"), JSON.stringify(removed.out));
+  const kani = recordedThenEdited(null, "rust", rust("    #[kani::proof]\n    #[kani::unwind(2)]\n    fn consume_keeps_invariant", "    #[cfg( kani )]\n    #[kani::proof]\n    #[kani::unwind(2)]\n    fn consume_keeps_invariant"));
+  assertUnchanged(kani, "rust");
+});
+
 test("moving a Kani assumption from a helper into a harness changes its owner", () => {
   const outcome = recordedThenEdited(null, "rust", ({ rust: path }) => {
     edit(path, "        kani::assume(window > 0 && window <= 2);\n", "");
