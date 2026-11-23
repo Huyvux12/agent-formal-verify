@@ -72,7 +72,10 @@ def pin(project):
         raise CheckError(f"FAIL {project} has no lean-toolchain pin")
     if shutil.which("elan") is None:
         raise runner.Unavailable("UNAVAILABLE elan is not on PATH; install elan from https://github.com/leanprover/elan")
-    return path.read_text(encoding="utf-8").replace("\r", "").replace("\n", "")
+    try:
+        return path.read_text(encoding="utf-8").replace("\r", "").replace("\n", "")
+    except (OSError, UnicodeDecodeError) as error:
+        raise CheckError(f"FAIL cannot read {path}: {error}") from error
 
 
 def pin_ready(toolchain):

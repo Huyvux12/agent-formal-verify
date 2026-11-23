@@ -37,6 +37,19 @@ test("the Lean checker and Lean setup report a missing elan as unavailable with 
   }
 });
 
+test("the Lean checker and Lean setup report a lean-toolchain pin they cannot read as a failure without a traceback", () => {
+  const dir = fixture();
+  writeLeanProject(dir);
+  writeFileSync(join(dir, "lean-toolchain"), Buffer.from([0xff, 0xfe, 0x0a]));
+  command(dir, "elan", "exit 0");
+  for (const [script, args] of [["lean-check.sh", [dir]], ["setup.sh", ["lean", dir]]]) {
+    const result = run(dir, script, args);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.ok(result.stdout.startsWith(`FAIL cannot read ${join(dir, "lean-toolchain")}: `), result.stdout);
+    excludes(result.stderr, "Traceback");
+  }
+});
+
 test("helpers report a python3 older than 3.9 as unavailable before running it", () => {
   const dir = fixture();
   writeFileSync(join(dir, "One.matrix"), "");
