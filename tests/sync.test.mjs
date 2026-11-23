@@ -308,10 +308,17 @@ test("sync's fallback counts #[cfg(kani)] on an item only, follows a rename, and
   const moved = sync(dir, ["src/slots.rs", "--source", "src/slots.rs"]);
   assert.equal(moved.status, 0, moved.stdout + moved.stderr);
   assert.deepEqual(lines(moved.stdout, "SYNC"), [`SYNC ${edited} from the last commit of the model files that changed no production code in slots.rs`]);
-  git(dir, "mv", "src/slots.rs", "src/core.rs");
+  // A path may begin with a newline.
+  git(dir, "mv", "src/slots.rs", "\nlead.rs");
+  git(dir, "commit", "-m", "rename to a path that begins with a newline");
+  commit(dir, { "\nlead.rs": event + "pub fn claim() -> u8 { 4 }\n" + proofs.replace("== 1", "== 3") }, "production edit");
+  git(dir, "mv", "\nlead.rs", "src/core.rs");
   git(dir, "commit", "-m", "rename back");
+  const lead = sync(dir, ["src/core.rs", "--source", "src/core.rs"]);
+  assert.equal(lead.status, 0, lead.stdout + lead.stderr);
+  assert.deepEqual(lines(lead.stdout, "SYNC"), [`SYNC ${edited} from the last commit of the model files that changed no production code in core.rs`]);
 
-  for (let edit = 4; edit < 105; edit++) {
+  for (let edit = 5; edit < 106; edit++) {
     writeFileSync(join(dir, "src/core.rs"), event + `pub fn claim() -> u8 { ${edit} }\n` + proofs.replace("== 1", "== 3"));
     git(dir, "commit", "-am", `edit ${edit}`);
   }

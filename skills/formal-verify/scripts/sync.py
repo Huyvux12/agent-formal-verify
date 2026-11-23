@@ -14,8 +14,8 @@ history, and otherwise the last commit that changed the model files; the SYNC li
 why the header's commit was not used. When a model file is also a --source, such as a Rust file
 with its Kani harness, that fallback counts only a commit that changed the code of its
 #[cfg(kani)] items, or another model file, and none of its other code, following each source
-back through its renames; SYNC none follows when none of the last 100 commits of the model files
-qualifies. Each source path is followed through every rename since
+back through its renames along the renaming commit's parent, so not into a branch merged after the
+rename; SYNC none follows when none of the last 100 commits of the model files it reads qualifies. Each source path is followed through every rename since
 the sync commit in both directions. Each name adds the files where git grep finds it as a whole
 word now, outside the model files that are not also a --source, such as a Kani harness kept
 apart from the production code, and outside documents and TLA+ and Lean files, which cannot
@@ -86,16 +86,16 @@ def changed_only_harness(root, commit, models, sources):
     Also returns each source that commit renamed, mapped to its path before, so the caller can follow it.
     """
     touched = set(git(root, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", commit, "--", *models).stdout.split("\0")) - {""}
-    previous = {path: path for path in touched & set(sources)}
-    if any(git(root, "cat-file", "-e", f"{commit}^:{path}", check=False).returncode for path in previous):
-        fields = [field.lstrip("\n") for field in git(root, "diff-tree", "-M", "-r", "--no-commit-id", "--name-status",
-                                                      "--diff-filter=R", "-z", commit).stdout.split("\0")]
-        previous.update({fields[at + 2]: fields[at + 1] for at in range(len(fields) - 2)
-                         if re.fullmatch(r"R[0-9]*", fields[at]) and fields[at + 2] in previous})
-    renames = {path: old for path, old in previous.items() if old != path}
+    befores = {path: git(root, "show", f"{commit}^:{path}", check=False) for path in touched & set(sources)}
+    renames = {}
+    if any(before.returncode for before in befores.values()):
+        fields = git(root, "diff-tree", "-M", "-r", "--no-commit-id", "--name-status", "--diff-filter=R", "-z", commit).stdout.split("\0")
+        renames = {fields[at + 2]: fields[at + 1] for at in range(len(fields) - 2)
+                   if re.fullmatch(r"R[0-9]*", fields[at]) and fields[at + 2] in befores}
+        befores.update({path: git(root, "show", f"{commit}^:{old}", check=False) for path, old in renames.items()})
     changed = bool(touched - set(sources))
-    for path, old in previous.items():
-        before, after = git(root, "show", f"{commit}^:{old}", check=False), git(root, "show", f"{commit}:{path}", check=False)
+    for path, before in befores.items():
+        after = git(root, "show", f"{commit}:{path}", check=False)
         if before.returncode or after.returncode:
             return False, renames
         try:
@@ -125,6 +125,7 @@ def sync_commit(root, models, shared):
         names = ", ".join(model.name for model in shared)
         sources = [str(model.relative_to(root)) for model in shared]
         # git log does not follow a rename, so the walk starts again at the renaming commit's parent under the old path.
+        # A branch merged after the rename is not followed back past it.
         paths, start, left, more = relative, "HEAD", FALLBACK_COMMITS, False
         while left:
             commits = git(root, "log", f"-{left + 1}", "--format=%H", start, "--", *paths).stdout.split()
