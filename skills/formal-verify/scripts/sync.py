@@ -10,10 +10,12 @@
   READ <command>             the git log command that shows every commit to read
 
 The sync commit is the header's `Source read at <commit>` when that commit is in HEAD's
-history, and otherwise the last commit that changed the model files. Each source path is
-followed through every rename since the sync commit in both directions. Each name adds the
-files where git grep finds it as a whole word now, outside the model files; a Rust model
-file is production code, so it stays in the search. Exits 1 outside a git repository.
+history, and otherwise the last commit that changed the model files; the SYNC line then says
+why the header's commit was not used. Each source path is followed through every rename since
+the sync commit in both directions. Each name adds the files where git grep finds it as a whole
+word now, outside the model files that are not also a --source, such as a Kani harness kept
+apart from the production code. Exits 1 outside a git repository, for a source path that no
+commit has, or when git grep fails.
 
 Usage: sync.py <model file>... [--source <path>]... [--name <name>]...
 """
@@ -38,23 +40,27 @@ def git(root, *arguments, check=True):
 
 def sync_commit(root, models):
     """Return the sync commit and where it came from, or (None, reason)."""
+    unused = []
     for model in models:
-        found = HEADER.search(model.read_text(encoding="utf-8", errors="replace"))
+        text = model.read_text(encoding="utf-8", errors="replace")
+        found = HEADER.search(text)
         if found and git(root, "merge-base", "--is-ancestor", found[1], "HEAD", check=False).returncode == 0:
             return git(root, "rev-parse", found[1]).stdout.strip(), f"from the Source read at line in {model.name}"
+        if found:
+            unused.append(f"the Source read at commit {found[1]} in {model.name} is not in HEAD's history")
+        elif "Source read at" in text:
+            unused.append(f"the Source read at line in {model.name} names no commit hash")
     last = git(root, "log", "-1", "--format=%H", "--", *map(str, models)).stdout.strip()
     if last:
-        return last, "from the last commit of the model files"
-    return None, "the model files have no commit and no Source read at line in HEAD's history"
+        return last, "; ".join(["from the last commit of the model files", *unused])
+    return None, "; ".join(["the model files have no commit and no Source read at line in HEAD's history", *unused])
 
 
 def renamed(root, sync, paths):
     """Add every path that the renames since sync connect to one of paths."""
-    pairs = []
-    for line in git(root, "log", "-M", "--diff-filter=R", "--name-status", "--format=", f"{sync}..HEAD").stdout.splitlines():
-        fields = line.split("\t")
-        if len(fields) == 3 and fields[0].startswith("R"):
-            pairs.append((fields[1], fields[2]))
+    fields = git(root, "log", "-M", "--diff-filter=R", "--name-status", "--format=", "-z", f"{sync}..HEAD").stdout.split("\0")
+    fields = [field.lstrip("\n") for field in fields]
+    pairs = [(fields[at + 1], fields[at + 2]) for at in range(len(fields) - 2) if re.fullmatch(r"R[0-9]*", fields[at])]
     paths = set(paths)
     grown = True
     while grown:
@@ -88,11 +94,21 @@ def main():
         print(f"SYNC none: {reason}; compare the model with the code in full")
         return 0
     print(f"SYNC {sync} {reason}")
-    paths = renamed(root, sync, [str((Path.cwd() / source).resolve().relative_to(root)) for source in arguments.source])
-    excluded = [f":(exclude){path}" for path in relative if not path.endswith(".rs")]
+    sources = []
+    for source in arguments.source:
+        path = (Path.cwd() / source).resolve()
+        if root not in path.parents or not git(root, "log", "-1", "--format=%H", "--", str(path.relative_to(root))).stdout:
+            print(f"FAIL --source {source} is {path}, which no commit in {root} has")
+            return 1
+        sources.append(str(path.relative_to(root)))
+    paths = renamed(root, sync, sources)
+    excluded = [f":(exclude){path}" for path in relative if path not in sources]
     missing = []
     for name in arguments.name:
-        files = git(root, "grep", "-l", "-w", "-e", name, "--", ".", *excluded, check=False).stdout.splitlines()
+        found = git(root, "grep", "-l", "-z", "-w", "-F", "-e", name, "--", ".", *excluded, check=False)
+        if found.returncode > 1:
+            raise RuntimeError(f"git grep for {name} failed: {found.stderr.strip()}")
+        files = [file for file in found.stdout.split("\0") if file]
         paths.update(files)
         if not files:
             missing.append(name)
