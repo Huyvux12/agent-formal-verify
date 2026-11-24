@@ -22,6 +22,13 @@ lychee --offline --no-progress --include-fragments \
 zizmor --offline --persona pedantic --min-severity low .github/workflows/
 ```
 
+The security workflow also uses Atheris to generate TLC traces and check that the reducer reports every changed variable exactly once per step. Run the same check in a Python 3.12 virtual environment on x86-64 Linux.
+
+```shell
+python -m pip install --only-binary=:all: --require-hashes -r .github/requirements-fuzz.txt
+python tests/fuzz_tlc_trace.py -runs=10000 -max_len=64
+```
+
 Test the plugin in Claude Code with `claude --plugin-dir /absolute/path/to/agent-formal-verify`, in Antigravity with `agy plugin install /absolute/path/to/agent-formal-verify`, in Pi with `pi -e /absolute/path/to/agent-formal-verify`, and in OpenCode by adding the checkout's absolute path to `plugins` in a project's `opencode.json`. To test model runners, prepare their tools using [tool setup](skills/formal-verify/references/setup.md). Runner changes should demonstrate a valid model passing and a broken property failing: `bash tests/models.sh` runs the checkers and the mutation runner on the bundled examples and on broken copies of them that they must reject, and CI runs it as the `models` job. It uses only the template's Lean pin, so after changing how `lean-check.sh` handles `sorry`, axioms, witnesses or kernel replay, run the checker once by hand on a project pinned to Lean 4.20.0, the oldest supported version. Verification runners must report missing tools without downloading them; preparation belongs in `setup.sh`.
 
 For skill changes, check a realistic request against the instructions. Confirm that the agent chooses suitable targets, preserves the source behaviour, and reports assumptions and proof gaps. Keep prose direct and remove slogans and unsupported claims.
