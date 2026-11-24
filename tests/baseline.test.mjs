@@ -645,6 +645,12 @@ test("a route to a Kani harness file through include! is followed, and one that 
   const named = '#[path = "proofs.rs"] mod readable;\nmacro_rules! declare {\n    ($m:ident) => { mod $m; };\n}\ndeclare!(proofs);\n';
   assert.match(failure({ "lib.rs": named }, "proofs.rs"), /lib\.rs:5: a macro invocation may build a module declaration that loads/);
   assert.equal(guards({ "lib.rs": "mod proofs;\nmacro_rules! declare {\n    ($m:ident) => { mod $m; };\n}\ndeclare!(other);\n", "other.rs": "" }, "proofs.rs"), "");
+  const unread = /lib\.rs:2: an invocation of a macro that the record cannot read may build a module declaration that loads .*proofs\.rs/;
+  assert.match(failure({ "lib.rs": '#[path = "proofs.rs"] mod readable;\nbuilders::declare!(proofs);\n' }, "proofs.rs"), unread);
+  assert.match(failure({ "lib.rs": '#[path = "proofs.rs"] mod readable;\nuse builders::declare; declare! { proofs }\n' }, "proofs.rs"), unread);
+  assert.match(failure({ "lib.rs": '#[path = "proofs.rs"] mod readable;\nbuilders::declare!(proofs);\nmacro_rules! declare { ($m:ident) => { struct $m; } }\n' }, "proofs.rs"), unread);
+  assert.equal(guards({ "lib.rs": "mod proofs;\nbuilders::declare!(other);\nfn f() { builders::declare!(proofs); }\n" }, "proofs.rs"), "");
+  assert.equal(guards({ "lib.rs": "mod proofs;\nmacro_rules! mark { ($m:ident) => { const _: () = (); } }\nmark!(proofs);\ncrate::mark!(proofs);\n" }, "proofs.rs"), "");
   const nested = '#[path = "m/proofs.rs"] mod readable;\ncfg_if::cfg_if! {\n    if #[cfg(x)] {\n        mod m {\n            mod proofs;\n        }\n    }\n}\n';
   assert.match(failure({ "lib.rs": nested }, "m/proofs.rs"), /lib\.rs:5: a module declaration inside a macro or function body may load/);
   assert.equal(guards({ "lib.rs": nested.replace("mod m {", "mod n {"), "n/proofs.rs": "" }, "m/proofs.rs"), "");

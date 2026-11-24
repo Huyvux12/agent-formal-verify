@@ -685,11 +685,13 @@ def module_tree(roots):
 HIDDEN_DECLARATION = re.compile(r"\bmod\s+(?:r#)?(\w+)\s*;")
 HIDDEN_PATH = re.compile(r"[\[,]\s*path\s*=\s*")
 HIDDEN_MODULE = re.compile(r"\bmod\s+((?:r#)?\w+)\s*\{")
-INVOKED = re.compile(r"(\w+)\s*!\s*$")
+INVOKED = re.compile(r"(?P<path>(?:::\s*)?(?:\$?\w+\s*::\s*)*)(?P<name>\w+)\s*!\s*$")
+LOCAL_PATH = re.compile(r"(?:(?:crate|self|super|\$crate)\s*::\s*(?:\w+\s*::\s*)*)?")
 DEFINED = re.compile(r"\bmacro_rules\s*!\s*(\w+)\s*$")
 INCLUDE_CALL = re.compile(r"\binclude\s*!\s*[(\[{]")
 HIDDEN = "a module declaration inside a macro or function body may load"
 BUILT = "a macro invocation may build a module declaration that loads"
+UNREAD = "an invocation of a macro that the record cannot read may build a module declaration that loads"
 INCLUDED = "an include! inside a macro or function body reads a file that may load"
 
 
@@ -699,14 +701,22 @@ def module_builders(parsed):
     return {defined[1] for start, end in parsed.opaque if (defined := DEFINED.search(mask, max(0, start - 100), start)) and re.search(r"\bmod\s+\$\w+\s*;", mask[start:end])}
 
 
-def hidden_declaration(file, parsed, path, builders, package):
+def defined_macros(parsed):
+    """Return the names of the `macro_rules!` macros defined in a parsed file."""
+    mask = parsed.source.without_comments_or_strings
+    return {defined[1] for start, _ in parsed.opaque if (defined := DEFINED.search(mask, max(0, start - 100), start))}
+
+
+def hidden_declaration(file, parsed, path, builders, defined, package):
     """Return the offset and kind of what may load path in file where the record cannot read the cfg around it.
 
     That is a `mod name;` inside a macro or function body, with the inline modules around it in a macro body, a
     `path = "..."` attribute setting there that names path's file name, an `include!("...")` there of a file that
     is path or names path's module or file name, or whose `env!("CARGO_MANIFEST_DIR")` path has no package to
     stand for, a macro invocation outside function bodies that holds a string
-    naming path's file name, and an invocation of one of the builders macros that names path's module.
+    naming path's file name, and an invocation of one of the builders macros that names path's module. So is an
+    invocation outside function bodies of a macro that is not one of the defined macros, or that a path outside the
+    crate names, when it names path's module other than in a `mod` item, which the record reads in the macro body.
     """
     module = path.parent.name if path.name == "mod.rs" else path.stem
     names = re.compile(rf"\b{re.escape(module)}\b|{re.escape(path.name)}")
@@ -741,12 +751,15 @@ def hidden_declaration(file, parsed, path, builders, package):
     starts = [begin for begin, _ in parsed.source.literals]
     for start, end in parsed.opaque:
         invoked = INVOKED.search(mask, max(0, start - 100), start)
-        if not invoked or invoked[1] in ("include", "include_str", "include_bytes"):
+        if not invoked or invoked["name"] in ("include", "include_str", "include_bytes"):
             continue
-        if invoked[1] in builders and re.search(rf"\b{re.escape(module)}\b", mask[start:end]):
+        if invoked["name"] in builders and re.search(rf"\b{re.escape(module)}\b", mask[start:end]):
             return start, BUILT
         if any(body <= start < body_end for body, body_end in bodies):
             continue
+        readable = invoked["name"] in defined and LOCAL_PATH.fullmatch(invoked["path"])
+        if not readable and re.search(rf"\b{re.escape(module)}\b", re.sub(rf"\bmod\s+(?:r#)?{re.escape(module)}\b", "", mask[start:end])):
+            return start, UNREAD
         for begin, stop in parsed.source.literals[bisect.bisect_left(starts, start):bisect.bisect_left(starts, end)]:
             if Path(string_value(text[begin:stop]) or "").name == path.name:
                 return start, BUILT
@@ -763,7 +776,7 @@ def declaration_guards(path):
     It follows each declaration from the crate roots by rustc's rules, including `#[path = "..."]` and each path
     that a cfg_attr may set, and each `include!("...")` item. It fails for a file that no root reaches, for a module
     declaration inside a macro or a function body of a reached file that may load path, and for a macro invocation
-    there that may build one.
+    there that may build one, such as an invocation of a macro from another crate that names path's module.
     """
     if (crates := crate_roots(path)) is None:
         return ""
@@ -782,8 +795,9 @@ def declaration_guards(path):
         except ValueError:
             continue
     builders = set().union(*(module_builders(parsed) for _, parsed in parsed_files))
+    defined = set().union(*(defined_macros(parsed) for _, parsed in parsed_files))
     for file, parsed in parsed_files:
-        if hidden := hidden_declaration(file, parsed, path, builders, packages.get(file)):
+        if hidden := hidden_declaration(file, parsed, path, builders, defined, packages.get(file)):
             offset, kind = hidden
             line = parsed.source.without_comments_or_strings.count("\n", 0, offset) + 1
             raise ValueError(f"{file}:{line}: {kind} {path}, and the record cannot read the cfg around it; declare the module outside macros and function bodies")
