@@ -448,6 +448,16 @@ test("a cfg on the out-of-line mod declarations that lead to a recorded Kani har
     "SUMMARY 0 unchanged, 2 changed",
   ]);
 
+  const guards = (files, target) => {
+    const dir = crate(files);
+    const recordPath = join(dir, "record.json");
+    assert.equal(baseline(dir, "record", recordPath, join(dir, target)).status, 0);
+    return JSON.parse(readFileSync(recordPath, "utf8")).models[join(dir, target)].surface["harness a"];
+  };
+  assert.equal(guards({ "main.rs": "#[cfg(e)] mod outer {\n    #![cfg(f)]\n    mod proofs;\n}\n", "outer/proofs.rs": harness }, "outer/proofs.rs"), "cfg(e) cfg(f)");
+  assert.equal(guards({ "stray.rs": "#[cfg(g)] mod proofs;\n", "stray/Cargo.toml": "", "stray/lib.rs": "mod proofs;\n", "stray/proofs.rs": harness }, "stray/proofs.rs"), "");
+  assert.equal(guards({ "mod.rs": "fn open() {\n", "loose/proofs.rs": harness }, "loose/proofs.rs"), "");
+
   const broken = crate({ "lib.rs": "mod proofs;\nfn open() {\n", "proofs.rs": harness });
   const failed = baseline(broken, "record", join(broken, "record.json"), join(broken, "proofs.rs"));
   assert.equal(failed.status, 1);

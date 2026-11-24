@@ -469,15 +469,22 @@ def declaration_guards(path):
 
     The search follows Rust's default module layout: a lib.rs, main.rs or mod.rs declares the files in its own
     directory, and any other x.rs those in x/, each under the directories of the inline modules around the
-    declaration. It climbs to the first directory that holds a lib.rs, main.rs or Cargo.toml.
+    declaration. It stays in the crate, the nearest directory above path that holds a lib.rs, main.rs or
+    Cargo.toml, and stops at the first directory with a declaration of path.
     """
     if path.name in ("lib.rs", "main.rs"):
         return ""
     names = [path.parent.name] if path.name == "mod.rs" else [path.stem]
     directory = path.parent.parent if path.name == "mod.rs" else path.parent
+    crate = next((folder for folder in path.parents if any((folder / name).exists() for name in ("lib.rs", "main.rs", "Cargo.toml"))), None)
+    if crate is None or crate not in (directory, *directory.parents):
+        return ""
     guards = []
     while True:
-        for parent in (directory / "lib.rs", directory / "main.rs", directory / "mod.rs", directory.parent / f"{directory.name}.rs"):
+        candidates = [directory / "lib.rs", directory / "main.rs", directory / "mod.rs"]
+        if directory != crate:
+            candidates.append(directory.parent / f"{directory.name}.rs")
+        for parent in candidates:
             if parent == path or not parent.is_file():
                 continue
             try:
@@ -490,7 +497,7 @@ def declaration_guards(path):
                     enclosing = sorted((module for module in modules if module.start <= declaration.start < module.end), key=lambda module: module.start)
                     items = [(0, -1)] + [(module.start, module.body) for module in enclosing] + [(declaration.start, declaration.body)]
                     guards += [declaration_guards(parent), cfg_guards(source, items)]
-        if directory.parent == directory or any((directory / name).exists() for name in ("lib.rs", "main.rs", "Cargo.toml")):
+        if guards or directory == crate:
             return " ".join(filter(None, guards))
         names.insert(0, directory.name)
         directory = directory.parent
