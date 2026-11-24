@@ -484,6 +484,23 @@ test("a cfg after an attribute that holds fn or mod is read up to the item's own
   assert.equal(JSON.parse(readFileSync(files.record, "utf8")).models[outer].surface["harness a"], "cfg(o) cfg(c)");
 });
 
+test("only a cfg_attr whose own attribute list applies cfg guards a Kani harness", () => {
+  const docs = ({ rust: path }) => writeFileSync(path, '#[cfg_attr(docsrs, doc(cfg(feature = "x")))]\nmod proofs {\n    #[kani::proof]\n    fn a() { kani::cover!(true); }\n}\n');
+  assertUnchanged(recordedThenEdited(docs, "rust", rust('feature = "x"', 'feature = "y"')), "rust");
+  const guards = (attributes) => {
+    const files = models();
+    writeFileSync(files.rust, `${attributes}\n#[kani::proof]\nfn a() {}\n`);
+    assert.equal(baseline(files.dir, "record", files.record, files.rust).status, 0);
+    return JSON.parse(readFileSync(files.record, "utf8")).models[files.rust].surface["harness a"];
+  };
+  assert.equal(guards('#[cfg_attr(docsrs, doc(cfg(feature = "x")))]'), "");
+  assert.equal(guards('#[cfg_attr(feature = "a,cfg(b)", doc(hidden))]'), "");
+  assert.equal(guards("#[my(#[cfg(z)] q)]"), "");
+  assert.equal(guards("#[cfg_attr(a, doc(hidden), cfg(b))]"), "cfg_attr(a, doc(hidden), cfg(b))");
+  assert.equal(guards("#[cfg_attr(a, cfg_attr(b, cfg(c)))]"), "cfg_attr(a, cfg_attr(b, cfg(c)))");
+  assert.equal(guards("#[cfg_attr(a, cfg_attr(b, doc(cfg(c))))]"), "");
+});
+
 test("moving a Kani assumption from a helper into a harness changes its owner", () => {
   const outcome = recordedThenEdited(null, "rust", ({ rust: path }) => {
     edit(path, "        kani::assume(window > 0 && window <= 2);\n", "");
