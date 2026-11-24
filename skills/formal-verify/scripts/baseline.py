@@ -589,6 +589,45 @@ def crate_roots(path):
     return tuple(dict.fromkeys(root.resolve() for root in markers + named if root.is_file())), {root.resolve() for root in named}
 
 
+CONCAT = re.compile(r"(?:\w+\s*::\s*)*concat\s*!\s*[(\[{]")
+MANIFEST_DIR = re.compile(r'(?:\w+\s*::\s*)*env\s*!\s*[(\[{]\s*"CARGO_MANIFEST_DIR"\s*,?\s*[)\]}]')
+
+
+def include_path(argument, file):
+    """Return the file that the argument of an `include!` in file names, or None when the argument is neither a
+    string without escapes nor a `concat!` of such strings and `env!("CARGO_MANIFEST_DIR")`, which is the
+    directory of the nearest Cargo.toml above file.
+
+    Raises:
+        ValueError: The argument uses `env!("CARGO_MANIFEST_DIR")` and no Cargo.toml is above file.
+    """
+    argument = argument.strip()
+    if (value := string_value(argument)) is not None:
+        return file.parent / value
+    mask = rust_masks(argument).without_comments_or_strings
+    if not (concat := CONCAT.match(mask)) or after_closing(mask, concat.end() - 1) != len(mask):
+        return None
+    parts, start, depth = [], concat.end(), 0
+    for i in range(start, len(mask) - 1):
+        depth += (mask[i] in "([{") - (mask[i] in ")]}")
+        if mask[i] == "," and not depth:
+            parts.append(argument[start:i].strip())
+            start = i + 1
+    parts.append(argument[start:-1].strip())
+    package = next((folder for folder in file.parents if (folder / "Cargo.toml").is_file()), None)
+    pieces = []
+    for part in filter(None, parts):
+        if (value := string_value(part)) is not None:
+            pieces.append(value)
+        elif MANIFEST_DIR.fullmatch(part):
+            if package is None:
+                raise ValueError('no Cargo.toml above the file sets env!("CARGO_MANIFEST_DIR"), so the record cannot tell which file it reads')
+            pieces.append(str(package))
+        else:
+            return None
+    return file.parent / "".join(pieces)
+
+
 TREES = {}
 
 
@@ -624,14 +663,21 @@ def module_tree(roots):
                         work.append((target, owns))
             for include in parsed.includes:
                 invocation = rust_masks(parsed.source.uncommented[include.keyword:include.end])
-                value = string_value(invocation.uncommented[invocation.without_comments_or_strings.index("!") + 1:].strip()[1:-1].strip())
-                if value is None:
-                    line = parsed.source.without_comments_or_strings.count("\n", 0, include.keyword) + 1
-                    broken.append((f"{file}:{line}: cannot read the path in '{collapse(invocation.uncommented, invocation.literals)}'; write it as a string without escapes", invocation.uncommented))
-                elif (target := file.parent / value).is_file():
+                line = parsed.source.without_comments_or_strings.count("\n", 0, include.keyword) + 1
+                shown = collapse(invocation.uncommented, invocation.literals)
+                try:
+                    target = include_path(invocation.uncommented[invocation.without_comments_or_strings.index("!") + 1:].strip()[1:-1], file)
+                except ValueError as error:
+                    broken.append((f"{file}:{line}: cannot read the path in '{shown}': {error}", None))
+                    continue
+                if target is None:
+                    broken.append((f"{file}:{line}: cannot read the path in '{shown}'; write it as a string without escapes, or as concat! of such strings and env!(\"CARGO_MANIFEST_DIR\")", invocation.uncommented))
+                elif target.is_file():
                     target = target.resolve()
                     edges.setdefault(target, set()).add((file, include))
                     work.append((target, True))
+                else:
+                    broken.append((f"{file}:{line}: '{shown}' reads {target}, which is not a file", invocation.uncommented))
         TREES[roots] = edges, broken
     return TREES[roots]
 
@@ -684,8 +730,11 @@ def hidden_declaration(file, parsed, path, builders):
                 return setting.start(), HIDDEN
         for call in INCLUDE_CALL.finditer(mask, start, end):
             close = after_closing(mask, call.end() - 1)
-            value = string_value(text[call.end():close - 1].strip())
-            if value is not None and (included := file.parent / value).is_file() and (
+            try:
+                included = include_path(text[call.end():close - 1], file)
+            except ValueError:
+                continue
+            if included is not None and included.is_file() and (
                     included.resolve() == path or names.search(included.read_text(encoding="utf-8", errors="replace"))):
                 return call.start(), INCLUDED
     starts = [begin for begin, _ in parsed.source.literals]
@@ -723,7 +772,7 @@ def declaration_guards(path):
         return ""
     module = path.parent.name if path.name == "mod.rs" else path.stem
     for message, text in broken:
-        if re.search(rf"\b{re.escape(module)}\b|{re.escape(path.name)}", text):
+        if text is None or re.search(rf"\b{re.escape(module)}\b|{re.escape(path.name)}", text):
             raise ValueError(message)
     parsed_files = []
     for file in sorted(set(roots) | edges.keys()):
