@@ -13,7 +13,7 @@ prek run --all-files
 
 prek prepares the pinned lint tools in its own cache. The hooks check plugin metadata, skill references, helper tests, shell scripts, Python, Markdown, JSON, YAML and GitHub Actions workflows. CI runs the same checks and also copies the skills into an isolated installation to check that their files match. It runs the helper and metadata tests again with GNU Bash 3.2, the version a Mac runs for the helpers' `#!/bin/bash`, so keep the shell helpers to Bash 3.2 features. Keep every skill reference, helper and template within `skills/` so copied installations work.
 
-CI also checks local documentation links and heading anchors with lychee in offline mode and audits workflow security with zizmor. A separate workflow scans the lockfiles for known vulnerabilities with OSV-Scanner on every pull request, on every push to `main` and once a week. To run the link and workflow checks locally, install lychee 0.24.2 and zizmor 1.29.0, then run:
+CI also checks local documentation links and heading anchors with lychee in offline mode and audits workflow security with zizmor. A separate workflow scans the lockfiles for known vulnerabilities with OSV-Scanner on every pull request, on every push to `main` and once a week. Dependency review fails a pull request that adds a dependency with a known vulnerability. OpenSSF Scorecard scores the repository on every push to `main`, once a week and when branch protection changes, and publishes the score to api.scorecard.dev. To run the link and workflow checks locally, install lychee 0.24.2 and zizmor 1.29.0, then run:
 
 ```shell
 lychee --offline --no-progress --include-fragments \
