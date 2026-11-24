@@ -593,13 +593,13 @@ CONCAT = re.compile(r"(?:\w+\s*::\s*)*concat\s*!\s*[(\[{]")
 MANIFEST_DIR = re.compile(r'(?:\w+\s*::\s*)*env\s*!\s*[(\[{]\s*"CARGO_MANIFEST_DIR"\s*,?\s*[)\]}]')
 
 
-def include_path(argument, file):
+def include_path(argument, file, package):
     """Return the file that the argument of an `include!` in file names, or None when the argument is neither a
-    string without escapes nor a `concat!` of such strings and `env!("CARGO_MANIFEST_DIR")`, which is the
-    directory of the nearest Cargo.toml above file.
+    string without escapes nor a `concat!` of such strings and `env!("CARGO_MANIFEST_DIR")`, which is package,
+    the directory of the Cargo.toml of the crate being compiled.
 
     Raises:
-        ValueError: The argument uses `env!("CARGO_MANIFEST_DIR")` and no Cargo.toml is above file.
+        ValueError: The argument uses `env!("CARGO_MANIFEST_DIR")` and package is None.
     """
     argument = argument.strip()
     if (value := string_value(argument)) is not None:
@@ -614,14 +614,13 @@ def include_path(argument, file):
             parts.append(argument[start:i].strip())
             start = i + 1
     parts.append(argument[start:-1].strip())
-    package = next((folder for folder in file.parents if (folder / "Cargo.toml").is_file()), None)
     pieces = []
     for part in filter(None, parts):
         if (value := string_value(part)) is not None:
             pieces.append(value)
         elif MANIFEST_DIR.fullmatch(part):
             if package is None:
-                raise ValueError('no Cargo.toml above the file sets env!("CARGO_MANIFEST_DIR"), so the record cannot tell which file it reads')
+                raise ValueError('no Cargo.toml above the crate root sets env!("CARGO_MANIFEST_DIR"), so the record cannot tell which file it reads')
             pieces.append(str(package))
         else:
             return None
@@ -633,18 +632,21 @@ TREES = {}
 
 def module_tree(roots):
     """Return the module declarations that lead to each file the crate roots reach, as {file: {(declarer,
-    declaration)}}, and the (message, text) of each reached file or declaration that could not be read.
+    declaration)}}, the (message, text) of each reached file or declaration that could not be read, and the
+    package directory of the first crate root that reaches each file, or None outside a Cargo package.
 
     An `include!("...")` item outside function bodies leads to the file it names, relative to the including file,
     which declares modules as a file that owns its directory does, whatever inline modules hold the include.
     """
     if roots not in TREES:
-        edges, broken, seen, work = {}, [], set(), [(root, True) for root in roots]
+        edges, broken, seen, packages = {}, [], set(), {}
+        work = [(root, True, next((folder for folder in root.parents if (folder / "Cargo.toml").is_file()), None)) for root in roots]
         while work:
-            file, owner = work.pop()
-            if (file, owner) in seen:
+            file, owner, package = work.pop()
+            if (file, owner, package) in seen:
                 continue
-            seen.add((file, owner))
+            seen.add((file, owner, package))
+            packages.setdefault(file, package)
             try:
                 parsed = parse_rust(file)
             except ValueError as error:
@@ -660,13 +662,13 @@ def module_tree(roots):
                     if target.is_file():
                         target = target.resolve()
                         edges.setdefault(target, set()).add((file, declaration))
-                        work.append((target, owns))
+                        work.append((target, owns, package))
             for include in parsed.includes:
                 invocation = rust_masks(parsed.source.uncommented[include.keyword:include.end])
                 line = parsed.source.without_comments_or_strings.count("\n", 0, include.keyword) + 1
                 shown = collapse(invocation.uncommented, invocation.literals)
                 try:
-                    target = include_path(invocation.uncommented[invocation.without_comments_or_strings.index("!") + 1:].strip()[1:-1], file)
+                    target = include_path(invocation.uncommented[invocation.without_comments_or_strings.index("!") + 1:].strip()[1:-1], file, package)
                 except ValueError as error:
                     broken.append((f"{file}:{line}: cannot read the path in '{shown}': {error}", None))
                     continue
@@ -675,10 +677,8 @@ def module_tree(roots):
                 elif target.is_file():
                     target = target.resolve()
                     edges.setdefault(target, set()).add((file, include))
-                    work.append((target, True))
-                else:
-                    broken.append((f"{file}:{line}: '{shown}' reads {target}, which is not a file", invocation.uncommented))
-        TREES[roots] = edges, broken
+                    work.append((target, True, package))
+        TREES[roots] = edges, broken, packages
     return TREES[roots]
 
 
@@ -699,12 +699,13 @@ def module_builders(parsed):
     return {defined[1] for start, end in parsed.opaque if (defined := DEFINED.search(mask, max(0, start - 100), start)) and re.search(r"\bmod\s+\$\w+\s*;", mask[start:end])}
 
 
-def hidden_declaration(file, parsed, path, builders):
+def hidden_declaration(file, parsed, path, builders, package):
     """Return the offset and kind of what may load path in file where the record cannot read the cfg around it.
 
     That is a `mod name;` inside a macro or function body, with the inline modules around it in a macro body, a
     `path = "..."` attribute setting there that names path's file name, an `include!("...")` there of a file that
-    is path or names path's module or file name, a macro invocation outside function bodies that holds a string
+    is path or names path's module or file name, or whose `env!("CARGO_MANIFEST_DIR")` path has no package to
+    stand for, a macro invocation outside function bodies that holds a string
     naming path's file name, and an invocation of one of the builders macros that names path's module.
     """
     module = path.parent.name if path.name == "mod.rs" else path.stem
@@ -731,9 +732,9 @@ def hidden_declaration(file, parsed, path, builders):
         for call in INCLUDE_CALL.finditer(mask, start, end):
             close = after_closing(mask, call.end() - 1)
             try:
-                included = include_path(text[call.end():close - 1], file)
+                included = include_path(text[call.end():close - 1], file, package)
             except ValueError:
-                continue
+                return call.start(), INCLUDED
             if included is not None and included.is_file() and (
                     included.resolve() == path or names.search(included.read_text(encoding="utf-8", errors="replace"))):
                 return call.start(), INCLUDED
@@ -767,7 +768,7 @@ def declaration_guards(path):
     if (crates := crate_roots(path)) is None:
         return ""
     roots, named = crates
-    edges, broken = module_tree(roots)
+    edges, broken, packages = module_tree(roots)
     if path in roots and path not in edges:
         return ""
     module = path.parent.name if path.name == "mod.rs" else path.stem
@@ -782,7 +783,7 @@ def declaration_guards(path):
             continue
     builders = set().union(*(module_builders(parsed) for _, parsed in parsed_files))
     for file, parsed in parsed_files:
-        if hidden := hidden_declaration(file, parsed, path, builders):
+        if hidden := hidden_declaration(file, parsed, path, builders, packages.get(file)):
             offset, kind = hidden
             line = parsed.source.without_comments_or_strings.count("\n", 0, offset) + 1
             raise ValueError(f"{file}:{line}: {kind} {path}, and the record cannot read the cfg around it; declare the module outside macros and function bodies")

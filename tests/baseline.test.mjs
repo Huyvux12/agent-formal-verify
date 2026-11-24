@@ -669,8 +669,19 @@ test("a route to a Kani harness file through include! is followed, and one that 
   assert.deepEqual(lines(guardedComputed).slice(2, 4), ["    old: routes(../lib.rs: unguarded; ../lib.rs: unguarded)", '    new: routes(../lib.rs: unguarded; ../lib.rs: cfg(feature = "slow"))']);
   assert.equal(guards({ "lib.rs": '#[path = "sub/proofs.rs"] mod proofs;\n#[cfg(c)] include!(std::concat!("sub/", "items.rs",));\n', ...items }, "sub/proofs.rs"), "routes(../lib.rs: unguarded; ../lib.rs: cfg(c))");
   assert.match(failure({ ...cargo, "lib.rs": `#[path = "sub/proofs.rs"] mod proofs;\nfn f() { ${manifest.trim()} }\n` }, "sub/proofs.rs"), /lib\.rs:2: an include! inside a macro or function body reads a file that may load/);
-  assert.match(failure({ ...items, "lib.rs": `#[path = "sub/proofs.rs"] mod proofs;\n${manifest}` }, "sub/proofs.rs"), /lib\.rs:2: cannot read the path in 'include!\(concat!.*\)': no Cargo\.toml above the file sets env!\("CARGO_MANIFEST_DIR"\)/);
-  assert.match(failure({ "Cargo.toml": cargo["Cargo.toml"], "lib.rs": 'mod proofs;\ninclude!(concat!(env!("CARGO_MANIFEST_DIR"), "/gen/proofs.rs"));\n' }, "proofs.rs"), /lib\.rs:2: 'include!\(concat!.*\)' reads .*gen\/proofs\.rs, which is not a file/);
+  assert.match(failure({ ...items, "lib.rs": `#[path = "sub/proofs.rs"] mod proofs;\n${manifest}` }, "sub/proofs.rs"), /lib\.rs:2: cannot read the path in 'include!\(concat!.*\)': no Cargo\.toml above the crate root sets env!\("CARGO_MANIFEST_DIR"\)/);
+  const macroManifest = `#[path = "sub/proofs.rs"] mod proofs;\nmacro_rules! items { ($($i:item)*) => { $($i)* } }\nitems! { ${manifest.trim()} }\n`;
+  assert.match(failure({ ...items, "lib.rs": macroManifest }, "sub/proofs.rs"), /lib\.rs:3: an include! inside a macro or function body reads a file that may load/);
+  const workspace = {
+    "Cargo.toml": '[package]\nname = "p"\nversion = "0.1.0"\n\n[workspace]\nmembers = ["sub"]\n',
+    "sub/Cargo.toml": '[package]\nname = "q"\nversion = "0.1.0"\n',
+    "sub/src/lib.rs": "",
+    "src/lib.rs": 'mod proofs;\ninclude!("../sub/shared.rs");\n',
+    "sub/shared.rs": 'include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/items.rs"));\n',
+    "src/items.rs": '#[path = "proofs.rs"] mod again;\n',
+  };
+  assert.equal(guards(workspace, "src/proofs.rs"), "routes(lib.rs: unguarded; lib.rs: unguarded)");
+  assert.equal(guards({ "Cargo.toml": cargo["Cargo.toml"], "src/lib.rs": '#[cfg(kani)] mod tests;\n#[cfg(feature = "codegen")]\ninclude!("../tests/generated.rs");\n' }, "src/tests.rs"), "");
 });
 
 test("only a cfg_attr whose own attribute list applies cfg guards a Kani harness", () => {
