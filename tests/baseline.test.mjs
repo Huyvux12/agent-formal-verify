@@ -484,6 +484,70 @@ test("a cfg after an attribute that holds fn or mod is read up to the item's own
   assert.equal(JSON.parse(readFileSync(files.record, "utf8")).models[outer].surface["harness a"], "cfg(o) cfg(c)");
 });
 
+test("a cfg on a #[path] declaration or in another crate root that leads to a Kani harness file is changed", () => {
+  const crate = (files) => {
+    const dir = realpathSync(fixture());
+    for (const [name, text] of Object.entries(files)) {
+      mkdirSync(join(dir, name, ".."), { recursive: true });
+      writeFileSync(join(dir, name), text);
+    }
+    return dir;
+  };
+  const harness = "#[kani::proof]\nfn a() { kani::cover!(true); }\n";
+  const recorded = (files, target) => {
+    const dir = crate(files);
+    const result = baseline(dir, "record", join(dir, "record.json"), join(dir, target));
+    return { dir, result, record: join(dir, "record.json") };
+  };
+  const guards = (files, target) => {
+    const { dir, result, record } = recorded(files, target);
+    assert.equal(result.status, 0, result.stdout);
+    return JSON.parse(readFileSync(record, "utf8")).models[join(dir, target)].surface["harness a"];
+  };
+
+  const repro = recorded({ "lib.rs": '#[path = "checks.rs"]\nmod proofs;\n', "checks.rs": harness }, "checks.rs");
+  assert.equal(repro.result.status, 0, repro.result.stdout);
+  edit(join(repro.dir, "lib.rs"), "mod proofs;", '#[cfg(feature = "slow")]\nmod proofs;');
+  const added = baseline(repro.dir, "compare", repro.record);
+  assert.equal(added.status, 1);
+  assert.deepEqual(lines(added), [`CHANGED ${join(repro.dir, "checks.rs")}`, "  changed harness a", "    old: ", '    new: cfg(feature = "slow")', "SUMMARY 0 unchanged, 1 changed"]);
+
+  assert.equal(guards({ "lib.rs": '#[path = "x.rs"] mod y;\n', "x.rs": "#[cfg(c)] mod z;\n", "z.rs": harness }, "z.rs"), "cfg(c)");
+  assert.equal(guards({ "lib.rs": "mod a;\n", "a.rs": '#[cfg(b)] #[path = "d"] mod m {\n    mod q;\n}\n', "d/q.rs": harness }, "d/q.rs"), "cfg(b)");
+  assert.equal(guards({ "lib.rs": "mod a;\n", "a.rs": 'mod m {\n    #[cfg(e)] #[path = "p.rs"] mod p;\n}\n', "a/m/p.rs": harness }, "a/m/p.rs"), "cfg(e)");
+  assert.equal(guards({ "lib.rs": '#[cfg_attr(feature = "x", path = "other.rs")]\nmod proofs;\n', "proofs.rs": harness, "other.rs": "" }, "proofs.rs"), 'cfg_attr(feature = "x", path = "other.rs")');
+  assert.equal(guards({ "lib.rs": '#[path = "lib.rs"]\nmod again;\n#[cfg(w)] mod proofs;\n', "proofs.rs": harness }, "proofs.rs"), "cfg(w)");
+  assert.equal(guards({ "lib.rs": "mod other;\nmod proofs;\n", "other.rs": "fn open() {\n", "proofs.rs": harness }, "proofs.rs"), "");
+
+  const cargo = { "Cargo.toml": '[package]\nname = "p"\nversion = "0.1.0"\n', "src/lib.rs": "" };
+  assert.equal(guards({ ...cargo, "tests/kani/main.rs": "#[cfg(t)] mod proofs;\n", "tests/kani/proofs.rs": harness }, "tests/kani/proofs.rs"), "cfg(t)");
+  assert.equal(guards({ ...cargo, "src/bin/tool/main.rs": "#[cfg(u)] mod proofs;\n", "src/bin/tool/proofs.rs": harness }, "src/bin/tool/proofs.rs"), "cfg(u)");
+  const library = { "Cargo.toml": "[package]\nname = \"p\"\nversion = \"0.1.0\"\n\n[lib]\npath = 'code/root.rs'\n", "code/root.rs": "#[cfg(v)] mod proofs;\n", "code/proofs.rs": harness };
+  assert.equal(guards(library, "code/proofs.rs"), "cfg(v)");
+  assert.equal(guards({ "Cargo.toml": "[workspace]\nmembers = []\n", "crates/foo/lib.rs": "#[cfg(w)] mod proofs;\n", "crates/foo/proofs.rs": harness }, "crates/foo/proofs.rs"), "cfg(w)");
+  assert.equal(guards({ ...cargo, "src/main.rs": `#[cfg(z)] #[path = "lib.rs"] mod lib;\nfn main() { let path = "lib.rs"; }\n`, "src/lib.rs": harness }, "src/lib.rs"), "");
+  assert.equal(guards({ "lib.rs": "mod a;\ncfg_if::cfg_if! { if #[cfg(unix)] { mod sys; } }\n", "sys.rs": "", "a.rs": "#[cfg(s)] mod sys;\n", "a/sys.rs": harness }, "a/sys.rs"), "cfg(s)");
+  assert.equal(guards({ "lib.rs": "#[cfg(m)] mod r#match;\n", "match/mod.rs": harness }, "match/mod.rs"), "cfg(m)");
+  assert.equal(guards({ "lib.rs": 'mod proofs;\n#[path = "sys\\\\win.rs"] mod sys;\n', "proofs.rs": harness }, "proofs.rs"), "");
+
+  const hidden = recorded({ "lib.rs": "cfg_if::cfg_if! {\n    if #[cfg(kani)] {\n        mod proofs;\n    }\n}\n", "proofs.rs": harness }, "proofs.rs");
+  assert.equal(hidden.result.status, 1);
+  assert.match(hidden.result.stdout, new RegExp(`^FAIL baseline: ${join(hidden.dir, "lib.rs")}:3: a module declaration inside a macro or function body may load ${join(hidden.dir, "proofs.rs")}`));
+  const wrapped = recorded({ "lib.rs": "mod proofs;\n", "proofs.rs": harness }, "proofs.rs");
+  writeFileSync(join(wrapped.dir, "lib.rs"), "cfg_if::cfg_if! { if #[cfg(feature = \"slow\")] { mod proofs; } }\n");
+  const failed = baseline(wrapped.dir, "compare", wrapped.record);
+  assert.equal(failed.status, 1);
+  assert.equal(lines(failed)[0], `CHANGED ${join(wrapped.dir, "proofs.rs")}`);
+  assert.match(lines(failed)[1], /^ {2}FAIL .*lib\.rs:1: a module declaration inside a macro/);
+  const pathed = recorded({ "lib.rs": 'fn f() {\n    #[path = "checks.rs"] mod proofs;\n}\n', "checks.rs": harness }, "checks.rs");
+  assert.match(pathed.result.stdout, /lib\.rs:2: a module declaration inside a macro or function body/);
+  const quiet = recorded({ "lib.rs": 'mod a;\n#[path = "a/proofs.rs"] mod p2;\n', "a.rs": "cfg_if::cfg_if! { if #[cfg(x)] { mod proofs; } }\n", "a/proofs.rs": harness }, "a/proofs.rs");
+  assert.match(quiet.result.stdout, /a\.rs:1: a module declaration inside a macro or function body/);
+  const stray = recorded({ "lib.rs": "", "stray.rs": harness }, "stray.rs");
+  assert.equal(stray.result.status, 1);
+  assert.match(stray.result.stdout, new RegExp(`^FAIL baseline: ${join(stray.dir, "stray.rs")}: no module declaration that the record can read leads to this file from a crate root`));
+});
+
 test("only a cfg_attr whose own attribute list applies cfg guards a Kani harness", () => {
   const docs = ({ rust: path }) => writeFileSync(path, '#[cfg_attr(docsrs, doc(cfg(feature = "x")))]\nmod proofs {\n    #[kani::proof]\n    fn a() { kani::cover!(true); }\n}\n');
   assertUnchanged(recordedThenEdited(docs, "rust", rust('feature = "x"', 'feature = "y"')), "rust");
@@ -706,7 +770,8 @@ const production = "pub fn target(n: u8) -> u8 { n }\n";
 
 function moved(change = (body) => body, module = ["--module", "crate", "proofs"]) {
   const files = models();
-  const old = join(files.dir, "kani/verify.rs");
+  const old = join(files.dir, "verify/lib.rs");
+  mkdirSync(join(files.dir, "verify"));
   writeFileSync(old, `use prod::*;\n${harnessBody}\n`);
   assert.equal(baseline(files.dir, "record", files.record, old).status, 0);
   writeFileSync(files.rust, `${production}#[cfg(kani)]\nmod proofs {\n    use super::*;\n${change(harnessBody)}\n}\n`);
@@ -736,7 +801,8 @@ test("a moved Kani harness that gains an assumption or loses a harness is change
 
 test("a move without --module keeps each recorded qualified name", () => {
   const files = models();
-  const old = join(files.dir, "kani/verify.rs");
+  const old = join(files.dir, "verify/lib.rs");
+  mkdirSync(join(files.dir, "verify"));
   copyFileSync(files.rust, old);
   assert.equal(baseline(files.dir, "record", files.record, old).status, 0);
   rmSync(old);
@@ -746,7 +812,8 @@ test("a move without --module keeps each recorded qualified name", () => {
 
 test("a move into a recorded production file compares both harness modules", () => {
   const files = models();
-  const old = join(files.dir, "kani/verify.rs");
+  const old = join(files.dir, "verify/lib.rs");
+  mkdirSync(join(files.dir, "verify"));
   writeFileSync(old, `use prod::*;\n${harnessBody}\n`);
   const existing = "#[cfg(kani)]\nmod existing {\n    #[kani::proof] #[kani::unwind(2)] fn third() { kani::assume(true); kani::cover!(true); }\n}\n";
   writeFileSync(files.rust, production + existing);
