@@ -464,6 +464,20 @@ test("a cfg on the out-of-line mod declarations that lead to a recorded Kani har
   assert.match(failed.stdout, new RegExp(`^FAIL baseline: ${join(broken, "lib.rs")}: unbalanced \\{`));
 });
 
+test("a cfg after an attribute that holds fn or mod is read up to the item's own keyword", () => {
+  const harness = ({ rust: path }) => writeFileSync(path, "#[cfg_attr(any(), doc(fn x))]\n#[kani::proof]\nfn first() {}\n");
+  const added = recordedThenEdited(harness, "rust", rust("#[kani::proof]", '#[cfg(feature = "slow-proofs")]\n#[kani::proof]'));
+  assertChanged(added, "rust", "changed harness first", 'new: cfg(feature = "slow-proofs")');
+  const module = ({ rust: path }) => writeFileSync(path, "#[cfg_attr(any(), doc(mod y))]\n#[cfg(b)]\nmod m {\n    #[kani::proof]\n    fn a() {}\n}\n");
+  assertChanged(recordedThenEdited(module, "rust", rust("#[cfg(b)]\n", "")), "rust", "changed harness m::a", "old: cfg(b)");
+  const files = models();
+  const proofs = join(files.dir, "kani/proofs.rs");
+  writeFileSync(files.rust, "#[cfg_attr(any(), doc(mod proofs))]\n#[cfg(c)]\nmod proofs;\n");
+  writeFileSync(proofs, "#[kani::proof]\nfn a() {}\n");
+  assert.equal(baseline(files.dir, "record", files.record, proofs).status, 0);
+  assert.equal(JSON.parse(readFileSync(files.record, "utf8")).models[proofs].surface["harness a"], "cfg(c)");
+});
+
 test("moving a Kani assumption from a helper into a harness changes its owner", () => {
   const outcome = recordedThenEdited(null, "rust", ({ rust: path }) => {
     edit(path, "        kani::assume(window > 0 && window <= 2);\n", "");

@@ -361,6 +361,7 @@ def after_closing(mask, opener):
 class RustFunction(NamedTuple):
     name: str
     start: int
+    keyword: int
     body: int
     end: int
 
@@ -380,7 +381,7 @@ def rust_functions(mask):
         i, boundary, item = start, start, None
         while i < end:
             if match := RUST_ITEM.match(mask, i):
-                item = (match[1], match[2])
+                item = (match[1], match[2], match.start())
                 i = match.end()
             elif mask[i] in "([":
                 stop = after_closing(mask, i)
@@ -392,15 +393,15 @@ def rust_functions(mask):
                 header = mask[boundary:i].rstrip()
                 macro = header.endswith("!") or bool(re.search(r"\bmacro_rules\s*!\s*\w+\s*$", header))
                 if item and not macro:
-                    kind, name = item
+                    kind, name, keyword = item
                     qualified = (*namespace, name)
                     if kind == "fn":
                         owner = "::".join(qualified)
                         counts[owner] = counts.get(owner, 0) + 1
                         suffix = f"[{counts[owner]}]" if counts[owner] > 1 else ""
-                        functions.append(RustFunction(owner + suffix, boundary, i, stop))
+                        functions.append(RustFunction(owner + suffix, boundary, keyword, i, stop))
                     else:
-                        modules.append(RustFunction("::".join(qualified), boundary, i, stop))
+                        modules.append(RustFunction("::".join(qualified), boundary, keyword, i, stop))
                     walk(i + 1, stop - 1, qualified, kind == "fn")
                 elif in_function and not macro and not re.search(r"\b(?:impl|trait|struct|enum|union|extern|macro)\b", header):
                     walk(i + 1, stop - 1, namespace, True)
@@ -411,7 +412,7 @@ def rust_functions(mask):
             else:
                 if mask[i] == ";":
                     if item and item[0] == "mod" and not in_function:
-                        declarations.append(RustFunction("::".join((*namespace, item[1])), boundary, i, i + 1))
+                        declarations.append(RustFunction("::".join((*namespace, item[1])), boundary, item[2], i, i + 1))
                     boundary, item = i + 1, None
                 i += 1
 
@@ -434,8 +435,8 @@ RENAMING_IMPORT = re.compile(r"\buse\s+[^;]*?(?<![\w:])(?:::\s*)?kani\b[^;]*?(?:
 
 
 def cfg_guards(source, items):
-    """Return the cfg attributes other than cfg(kani), and the cfg_attr ones that apply a cfg, on each (start, body)
-    item and at the start of its body.
+    """Return the cfg attributes other than cfg(kani), and the cfg_attr ones that apply a cfg, on each
+    (start, keyword, body) item, between its start and its fn or mod keyword, and at the start of its body.
 
     A body of -1 stands for the file, which has only inner attributes, and a body at a `;` for an out-of-line `mod`
     declaration, which has none.
@@ -452,9 +453,9 @@ def cfg_guards(source, items):
             if compact.startswith("cfg(") and compact != "cfg(kani)" or re.search(r"[(,]cfg\(", compact.removeprefix("cfg_attr(")):
                 guards.append(guard)
 
-    for start, body in items:
+    for start, keyword, body in items:
         if body >= 0:
-            read(OUTER_CFG, start, RUST_ITEM.search(mask, start, body).start())
+            read(OUTER_CFG, start, keyword)
         if body >= 0 and mask[body] == ";":
             continue
         first = inner = body + 1
@@ -495,7 +496,7 @@ def declaration_guards(path):
             for declaration in declarations:
                 if declaration.name.replace("r#", "") == "::".join(names):
                     enclosing = sorted((module for module in modules if module.start <= declaration.start < module.end), key=lambda module: module.start)
-                    items = [(0, -1)] + [(module.start, module.body) for module in enclosing] + [(declaration.start, declaration.body)]
+                    items = [(0, 0, -1)] + [(module.start, module.keyword, module.body) for module in enclosing] + [(declaration.start, declaration.keyword, declaration.body)]
                     guards += [declaration_guards(parent), cfg_guards(source, items)]
         if guards or directory == crate:
             return " ".join(filter(None, guards))
@@ -532,7 +533,7 @@ def kani_surface(path):
         read.append(match.span())
         harness = owner_at(match.start(), attribute=True)
         enclosing = sorted((item for item in functions + modules if item.start <= harness.start and harness.end <= item.end), key=lambda item: item.start)
-        guards = " ".join(filter(None, (declared, cfg_guards(source, [(0, -1)] + [(item.start, item.body) for item in enclosing]))))
+        guards = " ".join(filter(None, (declared, cfg_guards(source, [(0, 0, -1)] + [(item.start, item.keyword, item.body) for item in enclosing]))))
         spans.append((match.start(), f"harness {harness.name}", guards))
     for token in KANI_TOKEN.finditer(mask):
         if not any(start <= token.start() < end for start, end in read):
