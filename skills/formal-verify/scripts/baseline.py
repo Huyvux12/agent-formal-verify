@@ -15,7 +15,7 @@ change, and so is an added item whose kind narrows what is checked.
                reference through local EXTENDS. Local INSTANCE substitutions retain their whole module tree.
   .rs          Kani. Each qualified harness name with the #[cfg(...)] attributes other
                than cfg(kani), and the #[cfg_attr(..., cfg(...))] ones, on it, its enclosing
-               items and the file, and each kani::assume, kani::any_where, kani::cover! and
+               items, the file and each out-of-line mod declaration that leads to the file, and each kani::assume, kani::any_where, kani::cover! and
                #[kani::stub] with its owning free function, under inline modules. Unsupported owners fail. Added covers and harnesses are allowed.
                Added assumes and stubs are changes.
 
@@ -369,8 +369,12 @@ RUST_ITEM = re.compile(r"\b(fn|mod)\s+((?:r#)?\w+)\b")
 
 
 def rust_functions(mask):
-    """Locate free functions and inline modules; leave macro and other item bodies opaque."""
-    functions, modules, opaque, counts = [], [], [], {}
+    """Locate free functions, inline modules and out-of-line `mod name;` declarations; leave macro and other item
+    bodies opaque.
+
+    A declaration's body is its `;`.
+    """
+    functions, modules, opaque, declarations, counts = [], [], [], [], {}
 
     def walk(start, end, namespace=(), in_function=False):
         i, boundary, item = start, start, None
@@ -406,11 +410,13 @@ def rust_functions(mask):
                 item = None
             else:
                 if mask[i] == ";":
+                    if item and item[0] == "mod" and not in_function:
+                        declarations.append(RustFunction("::".join((*namespace, item[1])), boundary, i, i + 1))
                     boundary, item = i + 1, None
                 i += 1
 
     walk(0, len(mask))
-    return functions, modules, opaque
+    return functions, modules, opaque, declarations
 
 
 KANI_ATTRIBUTE = r"#\s*\[\s*(?:cfg_attr\s*\(\s*kani\s*,\s*)?kani\s*::\s*"
@@ -431,7 +437,8 @@ def cfg_guards(source, items):
     """Return the cfg attributes other than cfg(kani), and the cfg_attr ones that apply a cfg, on each (start, body)
     item and at the start of its body.
 
-    A body of -1 stands for the file, which has only inner attributes.
+    A body of -1 stands for the file, which has only inner attributes, and a body at a `;` for an out-of-line `mod`
+    declaration, which has none.
     """
     text, mask = source.uncommented, source.without_comments_or_strings
     guards = []
@@ -448,6 +455,8 @@ def cfg_guards(source, items):
     for start, body in items:
         if body >= 0:
             read(OUTER_CFG, start, RUST_ITEM.search(mask, start, body).start())
+        if body >= 0 and mask[body] == ";":
+            continue
         first = inner = body + 1
         while attribute := INNER_ATTRIBUTE.match(mask, inner):
             inner = after_closing(mask, attribute.end() - 1)
@@ -455,12 +464,45 @@ def cfg_guards(source, items):
     return " ".join(guards)
 
 
+def declaration_guards(path):
+    """Return the guards on the out-of-line `mod` declarations that lead to path, outermost first.
+
+    The search follows Rust's default module layout: a lib.rs, main.rs or mod.rs declares the files in its own
+    directory, and any other x.rs those in x/, each under the directories of the inline modules around the
+    declaration. It climbs to the first directory that holds a lib.rs, main.rs or Cargo.toml.
+    """
+    if path.name in ("lib.rs", "main.rs"):
+        return ""
+    names = [path.parent.name] if path.name == "mod.rs" else [path.stem]
+    directory = path.parent.parent if path.name == "mod.rs" else path.parent
+    guards = []
+    while True:
+        for parent in (directory / "lib.rs", directory / "main.rs", directory / "mod.rs", directory.parent / f"{directory.name}.rs"):
+            if parent == path or not parent.is_file():
+                continue
+            try:
+                source = rust_masks(parent.read_text(encoding="utf-8"))
+                _, modules, _, declarations = rust_functions(source.without_comments_or_strings)
+            except ValueError as error:
+                raise ValueError(f"{parent}: {error}") from None
+            for declaration in declarations:
+                if declaration.name.replace("r#", "") == "::".join(names):
+                    enclosing = sorted((module for module in modules if module.start <= declaration.start < module.end), key=lambda module: module.start)
+                    items = [(0, -1)] + [(module.start, module.body) for module in enclosing] + [(declaration.start, declaration.body)]
+                    guards += [declaration_guards(parent), cfg_guards(source, items)]
+        if directory.parent == directory or any((directory / name).exists() for name in ("lib.rs", "main.rs", "Cargo.toml")):
+            return " ".join(filter(None, guards))
+        names.insert(0, directory.name)
+        directory = directory.parent
+
+
 def kani_surface(path):
     source = rust_masks(path.read_text(encoding="utf-8"))
     text, mask = source.uncommented, source.without_comments_or_strings
     if renaming := RENAMING_IMPORT.search(mask):
         raise ValueError(f"{path}: '{collapse(renaming[0])}' brings a Kani assumption, cover, stub or harness attribute in under another name; write each as kani::<name> so the record can read it")
-    functions, modules, opaque = rust_functions(mask)
+    functions, modules, opaque, _ = rust_functions(mask)
+    declared = declaration_guards(path)
 
     def owner_at(position, *, attribute=False):
         if not any(start <= position < end for start, end in opaque):
@@ -483,7 +525,7 @@ def kani_surface(path):
         read.append(match.span())
         harness = owner_at(match.start(), attribute=True)
         enclosing = sorted((item for item in functions + modules if item.start <= harness.start and harness.end <= item.end), key=lambda item: item.start)
-        guards = cfg_guards(source, [(0, -1)] + [(item.start, item.body) for item in enclosing])
+        guards = " ".join(filter(None, (declared, cfg_guards(source, [(0, -1)] + [(item.start, item.body) for item in enclosing]))))
         spans.append((match.start(), f"harness {harness.name}", guards))
     for token in KANI_TOKEN.finditer(mask):
         if not any(start <= token.start() < end for start, end in read):

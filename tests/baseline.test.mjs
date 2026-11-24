@@ -414,6 +414,46 @@ test("a cfg that can switch a recorded Kani harness off is changed, and cfg(kani
   assertUnchanged(kani, "rust");
 });
 
+test("a cfg on the out-of-line mod declarations that lead to a recorded Kani harness file is changed", () => {
+  const crate = (files) => {
+    const dir = realpathSync(fixture());
+    for (const [name, text] of Object.entries(files)) {
+      mkdirSync(join(dir, name, ".."), { recursive: true });
+      writeFileSync(join(dir, name), text);
+    }
+    return dir;
+  };
+  const harness = "#[kani::proof]\nfn a() { kani::cover!(true); }\n";
+  const both = crate({ "lib.rs": "#[cfg(kani)]\nmod proofs;\n", "proofs.rs": harness });
+  const [lib, proofs, record] = ["lib.rs", "proofs.rs", "record.json"].map((name) => join(both, name));
+  assert.equal(baseline(both, "record", record, lib, proofs).status, 0);
+  edit(lib, "mod proofs;", '#[cfg(feature = "slow-proofs")]\nmod proofs;');
+  const added = baseline(both, "compare", record);
+  assert.equal(added.status, 1);
+  assert.deepEqual(lines(added), [`UNCHANGED ${lib}`, `CHANGED ${proofs}`, "  changed harness a", "    old: ", '    new: cfg(feature = "slow-proofs")', "SUMMARY 1 unchanged, 1 changed"]);
+
+  const nested = crate({
+    "src/lib.rs": "#![cfg(unix)]\n#[cfg(a)]\nmod verify;\n#[cfg(d)] pub mod checks;\n",
+    "src/verify.rs": "mod inner {\n    #[cfg(b)]\n    mod proofs;\n}\n",
+    "src/verify/inner/proofs.rs": harness,
+    "src/checks/mod.rs": harness,
+  });
+  const [inner, checks, nestedRecord] = ["src/verify/inner/proofs.rs", "src/checks/mod.rs", "record.json"].map((name) => join(nested, name));
+  assert.equal(baseline(nested, "record", nestedRecord, inner, checks).status, 0);
+  edit(join(nested, "src/lib.rs"), "#[cfg(a)]\n", "");
+  edit(join(nested, "src/lib.rs"), "#[cfg(d)] ", "");
+  assert.deepEqual(lines(baseline(nested, "compare", nestedRecord)), [
+    `CHANGED ${checks}`, "  changed harness a", "    old: cfg(unix) cfg(d)", "    new: cfg(unix)",
+    `CHANGED ${inner}`, "  changed harness a", "    old: cfg(unix) cfg(a) cfg(b)", "    new: cfg(unix) cfg(b)",
+    "SUMMARY 0 unchanged, 2 changed",
+  ]);
+
+  const broken = crate({ "lib.rs": "mod proofs;\nfn open() {\n", "proofs.rs": harness });
+  const failed = baseline(broken, "record", join(broken, "record.json"), join(broken, "proofs.rs"));
+  assert.equal(failed.status, 1);
+  assert.match(failed.stdout, new RegExp(`^FAIL baseline: ${join(broken, "lib.rs")}: unbalanced \\{`));
+});
+
 test("moving a Kani assumption from a helper into a harness changes its owner", () => {
   const outcome = recordedThenEdited(null, "rust", ({ rust: path }) => {
     edit(path, "        kani::assume(window > 0 && window <= 2);\n", "");
