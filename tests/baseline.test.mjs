@@ -525,7 +525,8 @@ test("a cfg on a #[path] declaration or in another crate root that leads to a Ka
   const library = { "Cargo.toml": "[package]\nname = \"p\"\nversion = \"0.1.0\"\n\n[lib]\npath = 'code/root.rs'\n", "code/root.rs": "#[cfg(v)] mod proofs;\n", "code/proofs.rs": harness };
   assert.equal(guards(library, "code/proofs.rs"), "cfg(v)");
   assert.equal(guards({ "Cargo.toml": "[workspace]\nmembers = []\n", "crates/foo/lib.rs": "#[cfg(w)] mod proofs;\n", "crates/foo/proofs.rs": harness }, "crates/foo/proofs.rs"), "cfg(w)");
-  assert.equal(guards({ ...cargo, "src/main.rs": `#[cfg(z)] #[path = "lib.rs"] mod lib;\nfn main() { let path = "lib.rs"; }\n`, "src/lib.rs": harness }, "src/lib.rs"), "");
+  assert.equal(guards({ ...cargo, "src/main.rs": `#[cfg(z)] #[path = "lib.rs"] mod lib;\nfn main() { let path = "lib.rs"; }\n`, "src/lib.rs": harness }, "src/lib.rs"), "routes(unguarded; cfg(z))");
+  assert.equal(guards({ ...cargo, "src/main.rs": `fn main() { let path = "lib.rs"; }\n`, "src/lib.rs": harness }, "src/lib.rs"), "");
   assert.equal(guards({ "lib.rs": "mod a;\ncfg_if::cfg_if! { if #[cfg(unix)] { mod sys; } }\n", "sys.rs": "", "a.rs": "#[cfg(s)] mod sys;\n", "a/sys.rs": harness }, "a/sys.rs"), "cfg(s)");
   assert.equal(guards({ "lib.rs": "#[cfg(m)] mod r#match;\n", "match/mod.rs": harness }, "match/mod.rs"), "cfg(m)");
   assert.equal(guards({ "lib.rs": 'mod proofs;\n#[path = "sys\\\\win.rs"] mod sys;\n', "proofs.rs": harness }, "proofs.rs"), "");
@@ -546,6 +547,44 @@ test("a cfg on a #[path] declaration or in another crate root that leads to a Ka
   const stray = recorded({ "lib.rs": "", "stray.rs": harness }, "stray.rs");
   assert.equal(stray.result.status, 1);
   assert.match(stray.result.stdout, new RegExp(`^FAIL baseline: ${join(stray.dir, "stray.rs")}: no module declaration that the record can read leads to this file from a crate root`));
+});
+
+test("removing or guarding one of several routes to a Kani harness file is changed", () => {
+  const harness = "#[kani::proof]\nfn a() { kani::cover!(true); }\n";
+  const recorded = (files) => {
+    const dir = realpathSync(fixture());
+    for (const [name, text] of Object.entries({ "Cargo.toml": '[package]\nname = "p"\nversion = "0.1.0"\n', "src/proofs.rs": harness, ...files })) {
+      mkdirSync(join(dir, name, ".."), { recursive: true });
+      writeFileSync(join(dir, name), text);
+    }
+    const record = join(dir, "record.json");
+    const proofs = join(dir, "src/proofs.rs");
+    assert.equal(baseline(dir, "record", record, proofs).status, 0);
+    return { dir, record, proofs, guards: JSON.parse(readFileSync(record, "utf8")).models[proofs].surface["harness a"] };
+  };
+  const compared = ({ dir, record }) => {
+    const result = baseline(dir, "compare", record);
+    assert.equal(result.status, 1, result.stdout);
+    return lines(result);
+  };
+
+  const both = { "src/lib.rs": "mod proofs;\n", "src/main.rs": '#[cfg(feature = "slow")]\nmod proofs;\nfn main() {}\n' };
+  const removed = recorded(both);
+  assert.equal(removed.guards, 'routes(unguarded; cfg(feature = "slow"))');
+  writeFileSync(join(removed.dir, "src/lib.rs"), "");
+  assert.deepEqual(compared(removed), [`CHANGED ${removed.proofs}`, "  changed harness a", '    old: routes(unguarded; cfg(feature = "slow"))', '    new: cfg(feature = "slow")', "SUMMARY 0 unchanged, 1 changed"]);
+
+  const guarded = recorded(both);
+  edit(join(guarded.dir, "src/lib.rs"), "mod proofs;", "#[cfg(x)] mod proofs;");
+  assert.deepEqual(compared(guarded).slice(2, 4), ['    old: routes(unguarded; cfg(feature = "slow"))', '    new: routes(cfg(feature = "slow"); cfg(x))']);
+
+  const twice = recorded({ "src/lib.rs": "mod proofs;\n", "src/main.rs": "mod proofs;\nfn main() {}\n" });
+  assert.equal(twice.guards, "routes(unguarded; unguarded)");
+  writeFileSync(join(twice.dir, "src/main.rs"), "fn main() {}\n");
+  assert.deepEqual(compared(twice).slice(2, 4), ["    old: routes(unguarded; unguarded)", "    new: "]);
+
+  const root = recorded({ "src/lib.rs": "mod proofs;\n", "src/main.rs": '#[cfg(z)] #[path = "lib.rs"] mod lib;\nfn main() {}\n' });
+  assert.equal(root.guards, "routes(unguarded; cfg(z))");
 });
 
 test("only a cfg_attr whose own attribute list applies cfg guards a Kani harness", () => {

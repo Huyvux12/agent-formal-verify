@@ -632,16 +632,20 @@ def hidden_declaration(file, parsed, path):
 
 def declaration_guards(path):
     """Return the guards on the out-of-line `mod` declarations that lead to path from its crate roots, outermost
-    first, or nothing for a crate root, which its own crate always compiles.
+    first. A crate root is one route without guards, since its own crate always compiles it. For more than one
+    route, return `routes(...)` with each route's guards, sorted and separated by `; `, and `unguarded` for a
+    route without any.
 
     It follows each declaration from the crate roots by rustc's rules, including `#[path = "..."]` and each path
     that a cfg_attr may set. It fails for a file that no root reaches, and for a module declaration inside a macro
     or a function body of a reached file that may load path.
     """
     roots = crate_roots(path)
-    if roots is None or path in roots:
+    if roots is None:
         return ""
     edges, broken = module_tree(roots)
+    if path in roots and path not in edges:
+        return ""
     module = path.parent.name if path.name == "mod.rs" else path.stem
     for message, text in broken:
         if re.search(rf"\b{re.escape(module)}\b|{re.escape(path.name)}", text):
@@ -658,17 +662,19 @@ def declaration_guards(path):
         unread = "".join(f"; {message}" for message, _ in broken)
         raise ValueError(f"{path}: no module declaration that the record can read leads to this file from a crate root; declare it with `mod <name>;` or `#[path = \"...\"]` outside macros and function bodies, in a file that a crate root reaches{unread}")
 
-    def chain(file, visiting):
-        guards = []
-        for declarer, declaration in sorted(edges.get(file, ()), key=lambda edge: (str(edge[0]), edge[1].start)):
+    def routes(file, visiting):
+        found = [""] if file in roots else []
+        for declarer, declaration in edges.get(file, ()):
             if declarer in visiting:
                 continue
             parsed = parse_rust(declarer)
             items = [(0, 0, -1)] + [(module.start, module.keyword, module.body) for module in enclosing_modules(parsed, declaration)] + [(declaration.start, declaration.keyword, declaration.body)]
-            guards += [chain(declarer, visiting | {declarer}), cfg_guards(parsed.source, items)]
-        return " ".join(filter(None, guards))
+            guards = cfg_guards(parsed.source, items)
+            found += [" ".join(filter(None, (route, guards))) for route in routes(declarer, visiting | {declarer})]
+        return found
 
-    return chain(path, {path})
+    found = sorted(routes(path, {path}))
+    return found[0] if len(found) == 1 else f"routes({'; '.join(route or 'unguarded' for route in found)})"
 
 
 def kani_surface(path):
