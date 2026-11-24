@@ -648,6 +648,15 @@ test("a route to a Kani harness file through include! is followed, and one that 
   const nested = '#[path = "m/proofs.rs"] mod readable;\ncfg_if::cfg_if! {\n    if #[cfg(x)] {\n        mod m {\n            mod proofs;\n        }\n    }\n}\n';
   assert.match(failure({ "lib.rs": nested }, "m/proofs.rs"), /lib\.rs:5: a module declaration inside a macro or function body may load/);
   assert.equal(guards({ "lib.rs": nested.replace("mod m {", "mod n {"), "n/proofs.rs": "" }, "m/proofs.rs"), "");
+
+  const suite = { "Cargo.toml": '[package]\nname = "p"\nversion = "0.1.0"\n', "src/lib.rs": "mod queue;\n", "tests/suite.rs": "macro_rules! suite {\n    ($m:ident) => { mod $m { #[test] fn works() {} } };\n}\nsuite!(queue);\n" };
+  assert.equal(guards(suite, "src/queue.rs"), "");
+  assert.equal(guards({ "lib.rs": 'mod proofs;\npub fn harness_path() -> String { format!("{}/proofs.rs", env!("CARGO_MANIFEST_DIR")) }\n' }, "proofs.rs"), "");
+  const items = { "sub/items.rs": '#[path = "proofs.rs"] mod again;\n' };
+  const wrapped = '#[path = "sub/proofs.rs"] mod proofs;\nmacro_rules! wrap { ($($t:tt)*) => { $($t)* } }\nwrap! { include!("sub/items.rs"); }\n';
+  assert.match(failure({ "lib.rs": wrapped, ...items }, "sub/proofs.rs"), /lib\.rs:3: an include! inside a macro or function body reads a file that may load/);
+  assert.equal(guards({ "lib.rs": wrapped, "sub/items.rs": "mod other;\n", "sub/other.rs": "" }, "sub/proofs.rs"), "");
+  assert.equal(guards({ "lib.rs": '#[path = "sub/proofs.rs"] mod proofs;\n#[cfg(b)] include! { "sub/items.rs" }\n', ...items }, "sub/proofs.rs"), "routes(../lib.rs: unguarded; ../lib.rs: cfg(b))");
 });
 
 test("only a cfg_attr whose own attribute list applies cfg guards a Kani harness", () => {

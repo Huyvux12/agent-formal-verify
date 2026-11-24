@@ -33,6 +33,7 @@ OLD to sit under NEW. Exit codes: 0 unchanged, 1 changed or a record or model
 file that fails to parse, 2 usage error.
 """
 import argparse
+import bisect
 import hashlib
 import json
 import os
@@ -380,6 +381,11 @@ def rust_functions(mask):
     """
     functions, modules, opaque, declarations, includes, counts = [], [], [], [], [], {}
 
+    def add_include(boundary, header, stop, in_function):
+        if not in_function and (include := INCLUDE.search(header)):
+            semicolon = re.compile(r"\s*;").match(mask, stop)
+            includes.append(RustFunction("include", boundary, boundary + include.start(), semicolon.end() - 1 if semicolon else stop - 1, stop))
+
     def walk(start, end, namespace=(), in_function=False):
         i, boundary, item = start, start, None
         while i < end:
@@ -391,9 +397,7 @@ def rust_functions(mask):
                 header = mask[boundary:i].rstrip()
                 if header.endswith("!"):
                     opaque.append((i, stop))
-                    if not in_function and (include := INCLUDE.search(header)):
-                        semicolon = re.compile(r"\s*;").match(mask, stop)
-                        includes.append(RustFunction("include", boundary, boundary + include.start(), semicolon.end() - 1 if semicolon else stop - 1, stop))
+                    add_include(boundary, header, stop, in_function)
                 i = stop
             elif mask[i] == "{":
                 stop = after_closing(mask, i)
@@ -414,6 +418,7 @@ def rust_functions(mask):
                     walk(i + 1, stop - 1, namespace, True)
                 else:
                     opaque.append((i, stop))
+                    add_include(boundary, header, stop, in_function)
                 i = boundary = stop
                 item = None
             else:
@@ -636,27 +641,32 @@ HIDDEN_PATH = re.compile(r"[\[,]\s*path\s*=\s*")
 HIDDEN_MODULE = re.compile(r"\bmod\s+((?:r#)?\w+)\s*\{")
 INVOKED = re.compile(r"(\w+)\s*!\s*$")
 DEFINED = re.compile(r"\bmacro_rules\s*!\s*(\w+)\s*$")
+INCLUDE_CALL = re.compile(r"\binclude\s*!\s*[(\[{]")
 HIDDEN = "a module declaration inside a macro or function body may load"
 BUILT = "a macro invocation may build a module declaration that loads"
+INCLUDED = "an include! inside a macro or function body reads a file that may load"
 
 
 def module_builders(parsed):
-    """Return the names of the `macro_rules!` macros in a parsed file whose bodies declare `mod $name`."""
+    """Return the names of the `macro_rules!` macros in a parsed file whose bodies declare `mod $name;`."""
     mask = parsed.source.without_comments_or_strings
-    return {defined[1] for start, end in parsed.opaque if (defined := DEFINED.search(mask, max(0, start - 100), start)) and re.search(r"\bmod\s+\$", mask[start:end])}
+    return {defined[1] for start, end in parsed.opaque if (defined := DEFINED.search(mask, max(0, start - 100), start)) and re.search(r"\bmod\s+\$\w+\s*;", mask[start:end])}
 
 
 def hidden_declaration(file, parsed, path, builders):
     """Return the offset and kind of what may load path in file where the record cannot read the cfg around it.
 
     That is a `mod name;` inside a macro or function body, with the inline modules around it in a macro body, a
-    `path = "..."` attribute setting there that names path's file name, a macro invocation that holds a string
+    `path = "..."` attribute setting there that names path's file name, an `include!("...")` there of a file that
+    is path or names path's module or file name, a macro invocation outside function bodies that holds a string
     naming path's file name, and an invocation of one of the builders macros that names path's module.
     """
     module = path.parent.name if path.name == "mod.rs" else path.stem
+    names = re.compile(rf"\b{re.escape(module)}\b|{re.escape(path.name)}")
     mask, text = parsed.source.without_comments_or_strings, parsed.source.uncommented
     literals = dict(parsed.source.literals)
-    for start, end in parsed.opaque + [(function.body, function.end) for function in parsed.functions]:
+    bodies = [(function.body, function.end) for function in parsed.functions]
+    for start, end in parsed.opaque + bodies:
         for match in HIDDEN_DECLARATION.finditer(mask, start, end):
             declaration = RustFunction(match[1], match.start(), match.start(), match.end() - 1, match.end())
             inner = []
@@ -672,13 +682,24 @@ def hidden_declaration(file, parsed, path, builders):
             value = string_value(text[setting.end():literals.get(setting.end(), setting.end())])
             if value is not None and Path(value).name == path.name:
                 return setting.start(), HIDDEN
+        for call in INCLUDE_CALL.finditer(mask, start, end):
+            close = after_closing(mask, call.end() - 1)
+            value = string_value(text[call.end():close - 1].strip())
+            if value is not None and (included := file.parent / value).is_file() and (
+                    included.resolve() == path or names.search(included.read_text(encoding="utf-8", errors="replace"))):
+                return call.start(), INCLUDED
+    starts = [begin for begin, _ in parsed.source.literals]
     for start, end in parsed.opaque:
         invoked = INVOKED.search(mask, max(0, start - 100), start)
         if not invoked or invoked[1] in ("include", "include_str", "include_bytes"):
             continue
-        if (invoked[1] in builders and re.search(rf"\b{re.escape(module)}\b", mask[start:end])) or any(
-                start <= begin < end and Path(string_value(text[begin:stop]) or "").name == path.name for begin, stop in parsed.source.literals):
+        if invoked[1] in builders and re.search(rf"\b{re.escape(module)}\b", mask[start:end]):
             return start, BUILT
+        if any(body <= start < body_end for body, body_end in bodies):
+            continue
+        for begin, stop in parsed.source.literals[bisect.bisect_left(starts, start):bisect.bisect_left(starts, end)]:
+            if Path(string_value(text[begin:stop]) or "").name == path.name:
+                return start, BUILT
     return None
 
 
