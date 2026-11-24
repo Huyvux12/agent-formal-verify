@@ -33,6 +33,7 @@ OLD to sit under NEW. Exit codes: 0 unchanged, 1 changed or a record or model
 file that fails to parse, 2 usage error.
 """
 import argparse
+import bisect
 import hashlib
 import json
 import os
@@ -369,15 +370,21 @@ class RustFunction(NamedTuple):
 
 
 RUST_ITEM = re.compile(r"\b(fn|mod)\s+((?:r#)?\w+)\b")
+INCLUDE = re.compile(r"\binclude\s*!$")
 
 
 def rust_functions(mask):
-    """Locate free functions, inline modules and out-of-line `mod name;` declarations; leave macro and other item
-    bodies opaque.
+    """Locate free functions, inline modules, out-of-line `mod name;` declarations and `include!(...)` items outside
+    function bodies; leave macro and other item bodies opaque.
 
-    A declaration's body is its `;`.
+    A declaration's or an include's body is its `;`.
     """
-    functions, modules, opaque, declarations, counts = [], [], [], [], {}
+    functions, modules, opaque, declarations, includes, counts = [], [], [], [], [], {}
+
+    def add_include(boundary, header, stop, in_function):
+        if not in_function and (include := INCLUDE.search(header)):
+            semicolon = re.compile(r"\s*;").match(mask, stop)
+            includes.append(RustFunction("include", boundary, boundary + include.start(), semicolon.end() - 1 if semicolon else stop - 1, stop))
 
     def walk(start, end, namespace=(), in_function=False):
         i, boundary, item = start, start, None
@@ -387,8 +394,10 @@ def rust_functions(mask):
                 i = match.end()
             elif mask[i] in "([":
                 stop = after_closing(mask, i)
-                if mask[boundary:i].rstrip().endswith("!"):
+                header = mask[boundary:i].rstrip()
+                if header.endswith("!"):
                     opaque.append((i, stop))
+                    add_include(boundary, header, stop, in_function)
                 i = stop
             elif mask[i] == "{":
                 stop = after_closing(mask, i)
@@ -409,6 +418,7 @@ def rust_functions(mask):
                     walk(i + 1, stop - 1, namespace, True)
                 else:
                     opaque.append((i, stop))
+                    add_include(boundary, header, stop, in_function)
                 i = boundary = stop
                 item = None
             else:
@@ -419,7 +429,7 @@ def rust_functions(mask):
                 i += 1
 
     walk(0, len(mask))
-    return functions, modules, opaque, declarations
+    return functions, modules, opaque, declarations, includes
 
 
 KANI_ATTRIBUTE = r"#\s*\[\s*(?:cfg_attr\s*\(\s*kani\s*,\s*)?kani\s*::\s*"
@@ -520,6 +530,7 @@ class RustFile(NamedTuple):
     modules: list
     opaque: list
     declarations: list
+    includes: list
 
 
 PARSED = {}
@@ -536,11 +547,12 @@ def enclosing_modules(parsed, item):
     return sorted((module for module in parsed.modules if module.start <= item.start < module.end), key=lambda module: module.start)
 
 
-def module_files(file, owner, parsed, declaration):
+def module_files(file, owner, parsed, declaration, inner=()):
     """Yield each file that an out-of-line `mod` declaration in file may load, by rustc's rules, and whether that
-    file owns its directory, as a crate root, a mod.rs or a `#[path]` file does."""
+    file owns its directory, as a crate root, a mod.rs or a `#[path]` file does. inner holds the inline modules
+    around the declaration inside a macro body, outermost first."""
     states = [(file.parent, file.parent if owner else file.parent / file.stem)]
-    for module in enclosing_modules(parsed, declaration):
+    for module in enclosing_modules(parsed, declaration) + list(inner):
         paths, conditional = module_paths(parsed.source, module, file)
         name = module.name.rsplit("::", 1)[-1].removeprefix("r#")
         states = [(child, child) for directory, prefix in states for child in ([] if paths else [prefix / name]) + [directory / path for path in paths + conditional]]
@@ -582,7 +594,11 @@ TREES = {}
 
 def module_tree(roots):
     """Return the module declarations that lead to each file the crate roots reach, as {file: {(declarer,
-    declaration)}}, and the (message, text) of each reached file or declaration that could not be read."""
+    declaration)}}, and the (message, text) of each reached file or declaration that could not be read.
+
+    An `include!("...")` item outside function bodies leads to the file it names, relative to the including file,
+    which declares modules as a file that owns its directory does, whatever inline modules hold the include.
+    """
     if roots not in TREES:
         edges, broken, seen, work = {}, [], set(), [(root, True) for root in roots]
         while work:
@@ -606,30 +622,84 @@ def module_tree(roots):
                         target = target.resolve()
                         edges.setdefault(target, set()).add((file, declaration))
                         work.append((target, owns))
+            for include in parsed.includes:
+                invocation = rust_masks(parsed.source.uncommented[include.keyword:include.end])
+                value = string_value(invocation.uncommented[invocation.without_comments_or_strings.index("!") + 1:].strip()[1:-1].strip())
+                if value is None:
+                    line = parsed.source.without_comments_or_strings.count("\n", 0, include.keyword) + 1
+                    broken.append((f"{file}:{line}: cannot read the path in '{collapse(invocation.uncommented, invocation.literals)}'; write it as a string without escapes", invocation.uncommented))
+                elif (target := file.parent / value).is_file():
+                    target = target.resolve()
+                    edges.setdefault(target, set()).add((file, include))
+                    work.append((target, True))
         TREES[roots] = edges, broken
     return TREES[roots]
 
 
 HIDDEN_DECLARATION = re.compile(r"\bmod\s+(?:r#)?(\w+)\s*;")
 HIDDEN_PATH = re.compile(r"[\[,]\s*path\s*=\s*")
+HIDDEN_MODULE = re.compile(r"\bmod\s+((?:r#)?\w+)\s*\{")
+INVOKED = re.compile(r"(\w+)\s*!\s*$")
+DEFINED = re.compile(r"\bmacro_rules\s*!\s*(\w+)\s*$")
+INCLUDE_CALL = re.compile(r"\binclude\s*!\s*[(\[{]")
+HIDDEN = "a module declaration inside a macro or function body may load"
+BUILT = "a macro invocation may build a module declaration that loads"
+INCLUDED = "an include! inside a macro or function body reads a file that may load"
 
 
-def hidden_declaration(file, parsed, path):
-    """Return the offset of a `mod name;` inside a macro or function body in file that may load path where it
-    stands, or of a `path = "..."` attribute setting there that names path's file name."""
+def module_builders(parsed):
+    """Return the names of the `macro_rules!` macros in a parsed file whose bodies declare `mod $name;`."""
+    mask = parsed.source.without_comments_or_strings
+    return {defined[1] for start, end in parsed.opaque if (defined := DEFINED.search(mask, max(0, start - 100), start)) and re.search(r"\bmod\s+\$\w+\s*;", mask[start:end])}
+
+
+def hidden_declaration(file, parsed, path, builders):
+    """Return the offset and kind of what may load path in file where the record cannot read the cfg around it.
+
+    That is a `mod name;` inside a macro or function body, with the inline modules around it in a macro body, a
+    `path = "..."` attribute setting there that names path's file name, an `include!("...")` there of a file that
+    is path or names path's module or file name, a macro invocation outside function bodies that holds a string
+    naming path's file name, and an invocation of one of the builders macros that names path's module.
+    """
     module = path.parent.name if path.name == "mod.rs" else path.stem
+    names = re.compile(rf"\b{re.escape(module)}\b|{re.escape(path.name)}")
     mask, text = parsed.source.without_comments_or_strings, parsed.source.uncommented
     literals = dict(parsed.source.literals)
-    for start, end in parsed.opaque + [(function.body, function.end) for function in parsed.functions]:
+    bodies = [(function.body, function.end) for function in parsed.functions]
+    for start, end in parsed.opaque + bodies:
         for match in HIDDEN_DECLARATION.finditer(mask, start, end):
             declaration = RustFunction(match[1], match.start(), match.start(), match.end() - 1, match.end())
+            inner = []
+            if (start, end) in parsed.opaque:
+                for opening in HIDDEN_MODULE.finditer(mask, start, match.start()):
+                    if match.start() < (close := after_closing(mask, opening.end() - 1)):
+                        boundary = max([start] + [mask.rfind(c, start, opening.start()) for c in ";{}"]) + 1
+                        inner.append(RustFunction(opening[1], boundary, opening.start(), opening.end() - 1, close))
             if match[1] == module and any(target.is_file() and target.resolve() == path for owner in (True, False)
-                                          for target, _ in module_files(file, owner, parsed, declaration)):
-                return match.start()
+                                          for target, _ in module_files(file, owner, parsed, declaration, inner)):
+                return match.start(), HIDDEN
         for setting in HIDDEN_PATH.finditer(mask, start, end):
             value = string_value(text[setting.end():literals.get(setting.end(), setting.end())])
             if value is not None and Path(value).name == path.name:
-                return setting.start()
+                return setting.start(), HIDDEN
+        for call in INCLUDE_CALL.finditer(mask, start, end):
+            close = after_closing(mask, call.end() - 1)
+            value = string_value(text[call.end():close - 1].strip())
+            if value is not None and (included := file.parent / value).is_file() and (
+                    included.resolve() == path or names.search(included.read_text(encoding="utf-8", errors="replace"))):
+                return call.start(), INCLUDED
+    starts = [begin for begin, _ in parsed.source.literals]
+    for start, end in parsed.opaque:
+        invoked = INVOKED.search(mask, max(0, start - 100), start)
+        if not invoked or invoked[1] in ("include", "include_str", "include_bytes"):
+            continue
+        if invoked[1] in builders and re.search(rf"\b{re.escape(module)}\b", mask[start:end]):
+            return start, BUILT
+        if any(body <= start < body_end for body, body_end in bodies):
+            continue
+        for begin, stop in parsed.source.literals[bisect.bisect_left(starts, start):bisect.bisect_left(starts, end)]:
+            if Path(string_value(text[begin:stop]) or "").name == path.name:
+                return start, BUILT
     return None
 
 
@@ -641,8 +711,9 @@ def declaration_guards(path):
     its guards, or `unguarded` for a route without any, sorted and separated by `; `.
 
     It follows each declaration from the crate roots by rustc's rules, including `#[path = "..."]` and each path
-    that a cfg_attr may set. It fails for a file that no root reaches, and for a module declaration inside a macro
-    or a function body of a reached file that may load path.
+    that a cfg_attr may set, and each `include!("...")` item. It fails for a file that no root reaches, for a module
+    declaration inside a macro or a function body of a reached file that may load path, and for a macro invocation
+    there that may build one.
     """
     if (crates := crate_roots(path)) is None:
         return ""
@@ -654,14 +725,18 @@ def declaration_guards(path):
     for message, text in broken:
         if re.search(rf"\b{re.escape(module)}\b|{re.escape(path.name)}", text):
             raise ValueError(message)
+    parsed_files = []
     for file in sorted(set(roots) | edges.keys()):
         try:
-            parsed = parse_rust(file)
+            parsed_files.append((file, parse_rust(file)))
         except ValueError:
             continue
-        if (offset := hidden_declaration(file, parsed, path)) is not None:
+    builders = set().union(*(module_builders(parsed) for _, parsed in parsed_files))
+    for file, parsed in parsed_files:
+        if hidden := hidden_declaration(file, parsed, path, builders):
+            offset, kind = hidden
             line = parsed.source.without_comments_or_strings.count("\n", 0, offset) + 1
-            raise ValueError(f"{file}:{line}: a module declaration inside a macro or function body may load {path}, and the record cannot read the cfg around it; declare the module outside macros and function bodies")
+            raise ValueError(f"{file}:{line}: {kind} {path}, and the record cannot read the cfg around it; declare the module outside macros and function bodies")
     if path not in edges:
         unread = "".join(f"; {message}" for message, _ in broken)
         raise ValueError(f"{path}: no module declaration that the record can read leads to this file from a crate root; declare it with `mod <name>;` or `#[path = \"...\"]` outside macros and function bodies, in a file that a crate root reaches{unread}")
@@ -690,7 +765,7 @@ def kani_surface(path):
     text, mask = source.uncommented, source.without_comments_or_strings
     if renaming := RENAMING_IMPORT.search(mask):
         raise ValueError(f"{path}: '{collapse(renaming[0])}' brings a Kani assumption, cover, stub or harness attribute in under another name; write each as kani::<name> so the record can read it")
-    functions, modules, opaque, _ = rust_functions(mask)
+    functions, modules, opaque, _, _ = rust_functions(mask)
     declared = declaration_guards(path)
 
     def owner_at(position, *, attribute=False):

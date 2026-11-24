@@ -601,6 +601,64 @@ test("removing or guarding one of several routes to a Kani harness file is chang
   assert.equal(module.guards, 'cfg(feature = "x")');
 });
 
+test("a route to a Kani harness file through include! is followed, and one that a macro may build fails the record", () => {
+  const harness = "#[kani::proof]\nfn a() { kani::cover!(true); }\n";
+  const recorded = (files, target) => {
+    const dir = realpathSync(fixture());
+    for (const [name, text] of Object.entries({ ...files, [target]: harness })) {
+      mkdirSync(join(dir, name, ".."), { recursive: true });
+      writeFileSync(join(dir, name), text);
+    }
+    const record = join(dir, "record.json");
+    const result = baseline(dir, "record", record, join(dir, target));
+    const guards = () => JSON.parse(readFileSync(record, "utf8")).models[join(dir, target)].surface["harness a"];
+    return { dir, record, result, guards };
+  };
+  const guards = (files, target) => {
+    const { result, guards: read } = recorded(files, target);
+    assert.equal(result.status, 0, result.stdout);
+    return read();
+  };
+  const failure = (files, target) => {
+    const { result } = recorded(files, target);
+    assert.equal(result.status, 1, result.stdout);
+    return result.stdout;
+  };
+
+  const included = recorded({ "lib.rs": '#[path = "sub/proofs.rs"] mod proofs;\ninclude!("sub/items.rs");\n', "sub/items.rs": '#[path = "proofs.rs"] mod again;\n' }, "sub/proofs.rs");
+  assert.equal(included.result.status, 0, included.result.stdout);
+  assert.equal(included.guards(), "routes(../lib.rs: unguarded; ../lib.rs: unguarded)");
+  edit(join(included.dir, "lib.rs"), "include!", '#[cfg(feature = "slow")] include!');
+  const switched = baseline(included.dir, "compare", included.record);
+  assert.equal(switched.status, 1, switched.stdout);
+  assert.deepEqual(lines(switched).slice(2, 4), ["    old: routes(../lib.rs: unguarded; ../lib.rs: unguarded)", '    new: routes(../lib.rs: unguarded; ../lib.rs: cfg(feature = "slow"))']);
+
+  assert.equal(guards({ "lib.rs": '#![cfg(f)]\n#[cfg(x)] include!("sub/items.rs");\n', "sub/items.rs": "#[cfg(y)] mod q;\n" }, "sub/q.rs"), "cfg(f) cfg(x) cfg(y)");
+  assert.equal(guards({ "lib.rs": '#[cfg(m)] mod m {\n    include!("items.rs");\n}\n', "items.rs": "mod q;\n" }, "q.rs"), "cfg(m)");
+  assert.equal(guards({ "lib.rs": "mod a;\n", "a.rs": 'include!("sub/one.rs");\n', "sub/one.rs": 'include!("two.rs");\n', "sub/two.rs": "#[cfg(t)] mod q;\n" }, "sub/q.rs"), "cfg(t)");
+  assert.equal(guards({ "lib.rs": 'mod proofs;\nconst SOURCE: &str = include_str!("proofs.rs");\nfn f() { let _ = include_bytes!("proofs.rs"); }\n' }, "proofs.rs"), "");
+  assert.equal(guards({ "lib.rs": 'mod proofs;\ninclude!(concat!(env!("OUT_DIR"), "/bindings.rs"));\n' }, "proofs.rs"), "");
+  assert.match(failure({ "lib.rs": 'mod proofs;\ninclude!(concat!(env!("OUT_DIR"), "/proofs.rs"));\n' }, "proofs.rs"), /lib\.rs:2: cannot read the path in 'include!\(concat!/);
+
+  const macro = 'mod proofs;\nmacro_rules! load { ($m:ident, $p:literal) => { #[path = $p] mod $m; } }\nload!(again, "proofs.rs");\n';
+  assert.match(failure({ "lib.rs": macro }, "proofs.rs"), /^FAIL baseline: .*lib\.rs:3: a macro invocation may build a module declaration that loads .*proofs\.rs/);
+  const named = '#[path = "proofs.rs"] mod readable;\nmacro_rules! declare {\n    ($m:ident) => { mod $m; };\n}\ndeclare!(proofs);\n';
+  assert.match(failure({ "lib.rs": named }, "proofs.rs"), /lib\.rs:5: a macro invocation may build a module declaration that loads/);
+  assert.equal(guards({ "lib.rs": "mod proofs;\nmacro_rules! declare {\n    ($m:ident) => { mod $m; };\n}\ndeclare!(other);\n", "other.rs": "" }, "proofs.rs"), "");
+  const nested = '#[path = "m/proofs.rs"] mod readable;\ncfg_if::cfg_if! {\n    if #[cfg(x)] {\n        mod m {\n            mod proofs;\n        }\n    }\n}\n';
+  assert.match(failure({ "lib.rs": nested }, "m/proofs.rs"), /lib\.rs:5: a module declaration inside a macro or function body may load/);
+  assert.equal(guards({ "lib.rs": nested.replace("mod m {", "mod n {"), "n/proofs.rs": "" }, "m/proofs.rs"), "");
+
+  const suite = { "Cargo.toml": '[package]\nname = "p"\nversion = "0.1.0"\n', "src/lib.rs": "mod queue;\n", "tests/suite.rs": "macro_rules! suite {\n    ($m:ident) => { mod $m { #[test] fn works() {} } };\n}\nsuite!(queue);\n" };
+  assert.equal(guards(suite, "src/queue.rs"), "");
+  assert.equal(guards({ "lib.rs": 'mod proofs;\npub fn harness_path() -> String { format!("{}/proofs.rs", env!("CARGO_MANIFEST_DIR")) }\n' }, "proofs.rs"), "");
+  const items = { "sub/items.rs": '#[path = "proofs.rs"] mod again;\n' };
+  const wrapped = '#[path = "sub/proofs.rs"] mod proofs;\nmacro_rules! wrap { ($($t:tt)*) => { $($t)* } }\nwrap! { include!("sub/items.rs"); }\n';
+  assert.match(failure({ "lib.rs": wrapped, ...items }, "sub/proofs.rs"), /lib\.rs:3: an include! inside a macro or function body reads a file that may load/);
+  assert.equal(guards({ "lib.rs": wrapped, "sub/items.rs": "mod other;\n", "sub/other.rs": "" }, "sub/proofs.rs"), "");
+  assert.equal(guards({ "lib.rs": '#[path = "sub/proofs.rs"] mod proofs;\n#[cfg(b)] include! { "sub/items.rs" }\n', ...items }, "sub/proofs.rs"), "routes(../lib.rs: unguarded; ../lib.rs: cfg(b))");
+});
+
 test("only a cfg_attr whose own attribute list applies cfg guards a Kani harness", () => {
   const docs = ({ rust: path }) => writeFileSync(path, '#[cfg_attr(docsrs, doc(cfg(feature = "x")))]\nmod proofs {\n    #[kani::proof]\n    fn a() { kani::cover!(true); }\n}\n');
   assertUnchanged(recordedThenEdited(docs, "rust", rust('feature = "x"', 'feature = "y"')), "rust");
