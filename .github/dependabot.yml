@@ -23,7 +23,9 @@ updates:
     cooldown:
       default-days: 7
   - package-ecosystem: npm
-    directory: /.github/skills-cli
+    # Dependabot refuses npm pull requests that change files under .github/
+    # (dependabot/dependabot-core#15721).
+    directory: /tests/skills-cli
     schedule:
       interval: weekly
     cooldown:
