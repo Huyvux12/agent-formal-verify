@@ -16,6 +16,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  fuzz-tlc-trace:
+    name: Fuzz TLC trace reduction
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check generated traces with Atheris
+        run: |
+          python3.12 -m venv "$RUNNER_TEMP/fuzz"
+          "$RUNNER_TEMP/fuzz/bin/pip" install --only-binary=:all: --require-hashes -r .github/requirements-fuzz.txt
+          "$RUNNER_TEMP/fuzz/bin/python" tests/fuzz_tlc_trace.py -runs=10000 -max_len=64
+
   osv-scan:
     name: OSV vulnerability scan
     runs-on: ubuntu-latest
