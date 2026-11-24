@@ -35,6 +35,7 @@ file that fails to parse, 2 usage error.
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -554,7 +555,8 @@ def module_files(file, owner, parsed, declaration):
 
 
 def crate_roots(path):
-    """Return the crate roots whose module trees may hold path, or None for a file in no crate.
+    """Return the crate roots whose module trees may hold path, and those of them that Cargo names, or None for a
+    file in no crate.
 
     They are the lib.rs and main.rs in the nearest directory above path that holds either and, in the Cargo package
     of the nearest directory above path with a Cargo.toml, Cargo's target files and each `.rs` path that Cargo.toml
@@ -564,14 +566,15 @@ def crate_roots(path):
     package = next((folder for folder in path.parents if (folder / "Cargo.toml").is_file()), None)
     if marker is None and package is None:
         return None
-    roots = [marker / "lib.rs", marker / "main.rs"] if marker else []
+    markers = [marker / "lib.rs", marker / "main.rs"] if marker else []
+    named = []
     if package:
-        roots += [package / "src/lib.rs", package / "src/main.rs"]
+        named += [package / "src/lib.rs", package / "src/main.rs"]
         for folder in ("src/bin", "tests", "examples", "benches"):
-            roots += sorted((package / folder).glob("*.rs")) + sorted((package / folder).glob("*/main.rs"))
+            named += sorted((package / folder).glob("*.rs")) + sorted((package / folder).glob("*/main.rs"))
         manifest = (package / "Cargo.toml").read_text(encoding="utf-8")
-        roots += [package / named for named in re.findall(r"""\bpath\s*=\s*["']([^"']+\.rs)["']""", manifest)]
-    return tuple(dict.fromkeys(root.resolve() for root in roots if root.is_file()))
+        named += [package / file for file in re.findall(r"""\bpath\s*=\s*["']([^"']+\.rs)["']""", manifest)]
+    return tuple(dict.fromkeys(root.resolve() for root in markers + named if root.is_file())), {root.resolve() for root in named}
 
 
 TREES = {}
@@ -632,16 +635,21 @@ def hidden_declaration(file, parsed, path):
 
 def declaration_guards(path):
     """Return the guards on the out-of-line `mod` declarations that lead to path from its crate roots, outermost
-    first, or nothing for a crate root, which its own crate always compiles.
+    first. A crate root is one route without guards, since its own crate always compiles it, unless it is a lib.rs
+    or main.rs that Cargo does not name and another file declares, which makes it a module. For more than one
+    route, return `routes(...)` with each route as its crate root's path relative to path's directory, a colon and
+    its guards, or `unguarded` for a route without any, sorted and separated by `; `.
 
     It follows each declaration from the crate roots by rustc's rules, including `#[path = "..."]` and each path
     that a cfg_attr may set. It fails for a file that no root reaches, and for a module declaration inside a macro
     or a function body of a reached file that may load path.
     """
-    roots = crate_roots(path)
-    if roots is None or path in roots:
+    if (crates := crate_roots(path)) is None:
         return ""
+    roots, named = crates
     edges, broken = module_tree(roots)
+    if path in roots and path not in edges:
+        return ""
     module = path.parent.name if path.name == "mod.rs" else path.stem
     for message, text in broken:
         if re.search(rf"\b{re.escape(module)}\b|{re.escape(path.name)}", text):
@@ -658,17 +666,23 @@ def declaration_guards(path):
         unread = "".join(f"; {message}" for message, _ in broken)
         raise ValueError(f"{path}: no module declaration that the record can read leads to this file from a crate root; declare it with `mod <name>;` or `#[path = \"...\"]` outside macros and function bodies, in a file that a crate root reaches{unread}")
 
-    def chain(file, visiting):
-        guards = []
-        for declarer, declaration in sorted(edges.get(file, ()), key=lambda edge: (str(edge[0]), edge[1].start)):
+    def routes(file, visiting):
+        root = file in named or file in roots and all(declarer == file for declarer, _ in edges.get(file, ()))
+        found = [(file, "")] if root else []
+        for declarer, declaration in edges.get(file, ()):
             if declarer in visiting:
                 continue
             parsed = parse_rust(declarer)
             items = [(0, 0, -1)] + [(module.start, module.keyword, module.body) for module in enclosing_modules(parsed, declaration)] + [(declaration.start, declaration.keyword, declaration.body)]
-            guards += [chain(declarer, visiting | {declarer}), cfg_guards(parsed.source, items)]
-        return " ".join(filter(None, guards))
+            guards = cfg_guards(parsed.source, items)
+            found += [(start, " ".join(filter(None, (route, guards)))) for start, route in routes(declarer, visiting | {declarer})]
+        return found
 
-    return chain(path, {path})
+    found = sorted((os.path.relpath(root, path.parent), guards) for root, guards in routes(path, {path}))
+    if len(found) == 1:
+        return found[0][1]
+    labelled = "; ".join(f"{root}: {guards or 'unguarded'}" for root, guards in found)
+    return f"routes({labelled})"
 
 
 def kani_surface(path):
