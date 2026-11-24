@@ -476,6 +476,12 @@ test("a cfg after an attribute that holds fn or mod is read up to the item's own
   writeFileSync(proofs, "#[kani::proof]\nfn a() {}\n");
   assert.equal(baseline(files.dir, "record", files.record, proofs).status, 0);
   assert.equal(JSON.parse(readFileSync(files.record, "utf8")).models[proofs].surface["harness a"], "cfg(c)");
+  const outer = join(files.dir, "kani/outer/proofs.rs");
+  mkdirSync(join(files.dir, "kani/outer"));
+  writeFileSync(files.rust, "#[doc(mod q)]\n#[cfg(o)]\nmod outer {\n    #[cfg(c)]\n    mod proofs;\n}\n");
+  writeFileSync(outer, "#[kani::proof]\nfn a() {}\n");
+  assert.equal(baseline(files.dir, "record", files.record, outer).status, 0);
+  assert.equal(JSON.parse(readFileSync(files.record, "utf8")).models[outer].surface["harness a"], "cfg(o) cfg(c)");
 });
 
 test("moving a Kani assumption from a helper into a harness changes its owner", () => {
