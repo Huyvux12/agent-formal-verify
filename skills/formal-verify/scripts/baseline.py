@@ -685,8 +685,8 @@ def module_tree(roots):
 HIDDEN_DECLARATION = re.compile(r"\bmod\s+(?:r#)?(\w+)\s*;")
 HIDDEN_PATH = re.compile(r"[\[,]\s*path\s*=\s*")
 HIDDEN_MODULE = re.compile(r"\bmod\s+((?:r#)?\w+)\s*\{")
-INVOKED = re.compile(r"(?P<path>(?:::\s*)?(?:\$?\w+\s*::\s*)*)(?P<name>\w+)\s*!\s*$")
-LOCAL_PATH = re.compile(r"(?:(?:crate|self|super|\$crate)\s*::\s*(?:\w+\s*::\s*)*)?")
+INVOKED = re.compile(r"(?P<path>(?:::\s*)?(?:\w+\s*::\s*)*)(?P<name>\w+)\s*!\s*$")
+LOCAL_PATH = re.compile(r"(?:(?:crate|self|super)\s*::\s*(?:\w+\s*::\s*)*)?")
 DEFINED = re.compile(r"\bmacro_rules\s*!\s*(\w+)\s*$")
 INCLUDE_CALL = re.compile(r"\binclude\s*!\s*[(\[{]")
 HIDDEN = "a module declaration inside a macro or function body may load"
@@ -707,6 +707,20 @@ def defined_macros(parsed):
     return {defined[1] for start, _ in parsed.opaque if (defined := DEFINED.search(mask, max(0, start - 100), start))}
 
 
+def passes_name(tokens, module):
+    """Return whether the tokens inside a macro invocation's delimiters hold module as an identifier that the macro
+    may declare a module by: one outside attributes, the bodies of the functions they hold, paths, field accesses
+    and the `mod module;` and `mod module {` items that the record reads in macro bodies."""
+    skipped = [(function.body, function.end) for function in rust_functions(tokens)[0]]
+    skipped += [(attribute.start(), after_closing(tokens, attribute.end() - 1)) for attribute in ATTRIBUTE.finditer(tokens)]
+    for use in re.finditer(rf"\b{re.escape(module)}\b", tokens):
+        before, after = tokens[:use.start()].rstrip(), tokens[use.end():].lstrip()
+        if not (any(start <= use.start() < end for start, end in skipped) or before.endswith(("::", ".")) or after.startswith("::")
+                or re.search(r"\bmod$", before) and after.startswith((";", "{"))):
+            return True
+    return False
+
+
 def hidden_declaration(file, parsed, path, builders, defined, package):
     """Return the offset and kind of what may load path in file where the record cannot read the cfg around it.
 
@@ -716,7 +730,7 @@ def hidden_declaration(file, parsed, path, builders, defined, package):
     stand for, a macro invocation outside function bodies that holds a string
     naming path's file name, and an invocation of one of the builders macros that names path's module. So is an
     invocation outside function bodies of a macro that is not one of the defined macros, or that a path outside the
-    crate names, when it names path's module other than in a `mod` item, which the record reads in the macro body.
+    crate names, when it may pass path's module on as the name of a module it declares.
     """
     module = path.parent.name if path.name == "mod.rs" else path.stem
     names = re.compile(rf"\b{re.escape(module)}\b|{re.escape(path.name)}")
@@ -758,7 +772,7 @@ def hidden_declaration(file, parsed, path, builders, defined, package):
         if any(body <= start < body_end for body, body_end in bodies):
             continue
         readable = invoked["name"] in defined and LOCAL_PATH.fullmatch(invoked["path"])
-        if not readable and re.search(rf"\b{re.escape(module)}\b", re.sub(rf"\bmod\s+(?:r#)?{re.escape(module)}\b", "", mask[start:end])):
+        if not readable and passes_name(mask[start + 1:end - 1], module):
             return start, UNREAD
         for begin, stop in parsed.source.literals[bisect.bisect_left(starts, start):bisect.bisect_left(starts, end)]:
             if Path(string_value(text[begin:stop]) or "").name == path.name:
@@ -800,7 +814,8 @@ def declaration_guards(path):
         if hidden := hidden_declaration(file, parsed, path, builders, defined, packages.get(file)):
             offset, kind = hidden
             line = parsed.source.without_comments_or_strings.count("\n", 0, offset) + 1
-            raise ValueError(f"{file}:{line}: {kind} {path}, and the record cannot read the cfg around it; declare the module outside macros and function bodies")
+            remedy = "if the macro declares no module, keep the module's name out of the invocation or rename the module" if kind == UNREAD else "declare the module outside macros and function bodies"
+            raise ValueError(f"{file}:{line}: {kind} {path}, and the record cannot read the cfg around it; {remedy}")
     if path not in edges:
         unread = "".join(f"; {message}" for message, _ in broken)
         raise ValueError(f"{path}: no module declaration that the record can read leads to this file from a crate root; declare it with `mod <name>;` or `#[path = \"...\"]` outside macros and function bodies, in a file that a crate root reaches{unread}")
