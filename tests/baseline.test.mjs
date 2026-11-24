@@ -496,6 +496,7 @@ test("only a cfg_attr whose own attribute list applies cfg guards a Kani harness
   assert.equal(guards('#[cfg_attr(docsrs, doc(cfg(feature = "x")))]'), "");
   assert.equal(guards('#[cfg_attr(feature = "a,cfg(b)", doc(hidden))]'), "");
   assert.equal(guards("#[my(#[cfg(z)] q)]"), "");
+  assert.equal(guards("#![my(#[cfg(z)] q)]"), "");
   assert.equal(guards("#[cfg_attr(a, doc(hidden), cfg(b))]"), "cfg_attr(a, doc(hidden), cfg(b))");
   assert.equal(guards("#[cfg_attr(a, cfg_attr(b, cfg(c)))]"), "cfg_attr(a, cfg_attr(b, cfg(c)))");
   assert.equal(guards("#[cfg_attr(a, cfg_attr(b, doc(cfg(c))))]"), "");

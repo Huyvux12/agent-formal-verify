@@ -429,7 +429,7 @@ MACROS = (
 )
 PROOF = re.compile(KANI_ATTRIBUTE + r"proof(?:_for_contract\s*\([^)]*\))?\s*\)?\s*\]")
 KANI_TOKEN = re.compile(r"\bkani\s*::\s*(?:assume|any_where|cover|stub|proof)\w*\b")
-OUTER_ATTRIBUTE = re.compile(r"#\s*\[")
+ATTRIBUTE = re.compile(r"#\s*(!\s*)?\[")
 INNER_ATTRIBUTE = re.compile(r"[\s\ufeff]*#\s*!\s*\[")
 RENAMING_IMPORT = re.compile(r"\buse\s+[^;]*?(?<![\w:])(?:::\s*)?kani\b[^;]*?(?:\bas\b|\*|\b(?:assume|any_where|cover|stub|proof)\w*\b)|\bextern\s+crate\s+kani\s+as\b")
 
@@ -467,8 +467,9 @@ def cfg_guards(source, items):
     for start, keyword, body in items:
         if body >= 0:
             outer = start
-            while attribute := OUTER_ATTRIBUTE.search(mask, outer, keyword):
-                outer = read(attribute.end() - 1)
+            while attribute := ATTRIBUTE.search(mask, outer, keyword):
+                opener = attribute.end() - 1
+                outer = after_closing(mask, opener) if attribute[1] else read(opener)
         if body >= 0 and mask[body] == ";":
             continue
         inner = body + 1
