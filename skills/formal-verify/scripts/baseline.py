@@ -15,7 +15,8 @@ change, and so is an added item whose kind narrows what is checked.
                reference through local EXTENDS. Local INSTANCE substitutions retain their whole module tree.
   .rs          Kani. Each qualified harness name with the #[cfg(...)] attributes other
                than cfg(kani), and the #[cfg_attr(..., cfg(...))] ones, on it, its enclosing
-               items, the file and each out-of-line mod declaration that leads to the file, and each kani::assume, kani::any_where, kani::cover! and
+               items, the file and each out-of-line mod declaration that leads to the file from a crate root, through
+               #[path], and each kani::assume, kani::any_where, kani::cover! and
                #[kani::stub] with its owning free function, under inline modules. Unsupported owners fail. Added covers and harnesses are allowed.
                Added assumes and stubs are changes.
 
@@ -435,7 +436,8 @@ RENAMING_IMPORT = re.compile(r"\buse\s+[^;]*?(?<![\w:])(?:::\s*)?kani\b[^;]*?(?:
 
 
 def applies_cfg(attribute):
-    """Return whether a compact `cfg_attr(predicate, attribute, ...)` applies a cfg in its own attribute list."""
+    """Return whether a compact `cfg_attr(predicate, attribute, ...)` applies a cfg or a module path in its own
+    attribute list."""
     arguments, depth, start = [], 0, len("cfg_attr(")
     for i in range(start, len(attribute) - 1):
         depth += (attribute[i] in "([{") - (attribute[i] in ")]}")
@@ -443,12 +445,23 @@ def applies_cfg(attribute):
             arguments.append(attribute[start:i])
             start = i + 1
     arguments.append(attribute[start:-1])
-    return any(argument.startswith("cfg(") or argument.startswith("cfg_attr(") and applies_cfg(argument) for argument in arguments[1:])
+    return any(argument.startswith(("cfg(", "path=")) or argument.startswith("cfg_attr(") and applies_cfg(argument) for argument in arguments[1:])
+
+
+def outer_attributes(source, start, keyword):
+    """Yield the contents of each top-level outer attribute between start and keyword; skip inner attributes."""
+    mask = source.without_comments_or_strings
+    while attribute := ATTRIBUTE.search(mask, start, keyword):
+        opener = attribute.end() - 1
+        start = after_closing(mask, opener)
+        if not attribute[1]:
+            yield rust_masks(source.uncommented[opener + 1:start - 1])
 
 
 def cfg_guards(source, items):
-    """Return the cfg attributes other than cfg(kani), and the cfg_attr ones whose attribute list applies a cfg, on
-    each (start, keyword, body) item, between its start and its fn or mod keyword, and at the start of its body.
+    """Return the cfg attributes other than cfg(kani), and the cfg_attr ones whose attribute list applies a cfg or a
+    module path, on each (start, keyword, body) item, between its start and its fn or mod keyword, and at the start
+    of its body.
 
     A body of -1 stands for the file, which has only inner attributes, and a body at a `;` for an out-of-line `mod`
     declaration, which has none. An attribute nested inside another attribute's tokens is not read.
@@ -456,65 +469,206 @@ def cfg_guards(source, items):
     text, mask = source.uncommented, source.without_comments_or_strings
     guards = []
 
-    def read(opener):
-        close = after_closing(mask, opener)
-        attribute = rust_masks(text[opener + 1:close - 1])
+    def read(attribute):
         compact = re.sub(r"\s+", "", attribute.without_comments_or_strings)
         if compact.startswith("cfg(") and compact != "cfg(kani)" or compact.startswith("cfg_attr(") and applies_cfg(compact):
             guards.append(collapse(attribute.uncommented, attribute.literals))
-        return close
 
     for start, keyword, body in items:
         if body >= 0:
-            outer = start
-            while attribute := ATTRIBUTE.search(mask, outer, keyword):
-                opener = attribute.end() - 1
-                outer = after_closing(mask, opener) if attribute[1] else read(opener)
+            for attribute in outer_attributes(source, start, keyword):
+                read(attribute)
         if body >= 0 and mask[body] == ";":
             continue
         inner = body + 1
         while attribute := INNER_ATTRIBUTE.match(mask, inner):
-            inner = read(attribute.end() - 1)
+            opener = attribute.end() - 1
+            inner = after_closing(mask, opener)
+            read(rust_masks(text[opener + 1:inner - 1]))
     return " ".join(guards)
 
 
-def declaration_guards(path):
-    """Return the guards on the out-of-line `mod` declarations that lead to path, outermost first.
+PATH_ATTRIBUTE = re.compile(r"\bpath\s*=\s*")
 
-    The search follows Rust's default module layout: a lib.rs, main.rs or mod.rs declares the files in its own
-    directory, and any other x.rs those in x/, each under the directories of the inline modules around the
-    declaration. It stays in the crate, the nearest directory above path that holds a lib.rs, main.rs or
-    Cargo.toml, and stops at the first directory with a declaration of path.
+
+def module_paths(source, item, file):
+    """Return the paths that `#[path = "..."]` sets on a module item, and those that a cfg_attr may set."""
+    paths, conditional = [], []
+    for attribute in outer_attributes(source, item.start, item.keyword):
+        compact = re.sub(r"\s+", "", attribute.without_comments_or_strings)
+        if not compact.startswith(("path=", "cfg_attr(")):
+            continue
+        for setting in PATH_ATTRIBUTE.finditer(attribute.without_comments_or_strings):
+            value = string_value(next((attribute.uncommented[begin:end] for begin, end in attribute.literals if begin == setting.end()), ""))
+            if value is None:
+                line = source.without_comments_or_strings.count("\n", 0, item.start) + 1
+                raise ValueError(f"{file}:{line}: cannot read the path in '{collapse(attribute.uncommented, attribute.literals)}'; write it as a string without escapes")
+            (paths if compact.startswith("path=") else conditional).append(value)
+    return paths, conditional
+
+
+def string_value(literal):
+    """Return the value of a Rust string literal without escapes, or None."""
+    plain = re.fullmatch(r'r(#*)"(.*)"\1', literal, re.DOTALL) or re.fullmatch(r'"([^"\\]*)"', literal)
+    return plain[plain.lastindex] if plain else None
+
+
+class RustFile(NamedTuple):
+    source: RustSource
+    functions: list
+    modules: list
+    opaque: list
+    declarations: list
+
+
+PARSED = {}
+
+
+def parse_rust(path):
+    if path not in PARSED:
+        source = rust_masks(path.read_text(encoding="utf-8"))
+        PARSED[path] = RustFile(source, *rust_functions(source.without_comments_or_strings))
+    return PARSED[path]
+
+
+def enclosing_modules(parsed, item):
+    return sorted((module for module in parsed.modules if module.start <= item.start < module.end), key=lambda module: module.start)
+
+
+def module_files(file, owner, parsed, declaration):
+    """Yield each file that an out-of-line `mod` declaration in file may load, by rustc's rules, and whether that
+    file owns its directory, as a crate root, a mod.rs or a `#[path]` file does."""
+    states = [(file.parent, file.parent if owner else file.parent / file.stem)]
+    for module in enclosing_modules(parsed, declaration):
+        paths, conditional = module_paths(parsed.source, module, file)
+        name = module.name.rsplit("::", 1)[-1].removeprefix("r#")
+        states = [(child, child) for directory, prefix in states for child in ([] if paths else [prefix / name]) + [directory / path for path in paths + conditional]]
+    paths, conditional = module_paths(parsed.source, declaration, file)
+    name = declaration.name.rsplit("::", 1)[-1].removeprefix("r#")
+    for directory, prefix in states:
+        if not paths:
+            yield prefix / f"{name}.rs", False
+            yield prefix / name / "mod.rs", True
+        for path in paths + conditional:
+            yield directory / path, True
+
+
+def crate_roots(path):
+    """Return the crate roots whose module trees may hold path, or None for a file in no crate.
+
+    They are the lib.rs and main.rs in the nearest directory above path that holds either and, in the Cargo package
+    of the nearest directory above path with a Cargo.toml, Cargo's target files and each `.rs` path that Cargo.toml
+    names.
     """
-    if path.name in ("lib.rs", "main.rs"):
-        return ""
-    names = [path.parent.name] if path.name == "mod.rs" else [path.stem]
-    directory = path.parent.parent if path.name == "mod.rs" else path.parent
-    crate = next((folder for folder in path.parents if any((folder / name).exists() for name in ("lib.rs", "main.rs", "Cargo.toml"))), None)
-    if crate is None or crate not in (directory, *directory.parents):
-        return ""
-    guards = []
-    while True:
-        candidates = [directory / "lib.rs", directory / "main.rs", directory / "mod.rs"]
-        if directory != crate:
-            candidates.append(directory.parent / f"{directory.name}.rs")
-        for parent in candidates:
-            if parent == path or not parent.is_file():
+    marker = next((folder for folder in path.parents if (folder / "lib.rs").is_file() or (folder / "main.rs").is_file()), None)
+    package = next((folder for folder in path.parents if (folder / "Cargo.toml").is_file()), None)
+    if marker is None and package is None:
+        return None
+    roots = [marker / "lib.rs", marker / "main.rs"] if marker else []
+    if package:
+        roots += [package / "src/lib.rs", package / "src/main.rs"]
+        for folder in ("src/bin", "tests", "examples", "benches"):
+            roots += sorted((package / folder).glob("*.rs")) + sorted((package / folder).glob("*/main.rs"))
+        manifest = (package / "Cargo.toml").read_text(encoding="utf-8")
+        roots += [package / named for named in re.findall(r"""\bpath\s*=\s*["']([^"']+\.rs)["']""", manifest)]
+    return tuple(dict.fromkeys(root.resolve() for root in roots if root.is_file()))
+
+
+TREES = {}
+
+
+def module_tree(roots):
+    """Return the module declarations that lead to each file the crate roots reach, as {file: {(declarer,
+    declaration)}}, and the (message, text) of each reached file or declaration that could not be read."""
+    if roots not in TREES:
+        edges, broken, seen, work = {}, [], set(), [(root, True) for root in roots]
+        while work:
+            file, owner = work.pop()
+            if (file, owner) in seen:
                 continue
+            seen.add((file, owner))
             try:
-                source = rust_masks(parent.read_text(encoding="utf-8"))
-                _, modules, _, declarations = rust_functions(source.without_comments_or_strings)
+                parsed = parse_rust(file)
             except ValueError as error:
-                raise ValueError(f"{parent}: {error}") from None
-            for declaration in declarations:
-                if declaration.name.replace("r#", "") == "::".join(names):
-                    enclosing = sorted((module for module in modules if module.start <= declaration.start < module.end), key=lambda module: module.start)
-                    items = [(0, 0, -1)] + [(module.start, module.keyword, module.body) for module in enclosing] + [(declaration.start, declaration.keyword, declaration.body)]
-                    guards += [declaration_guards(parent), cfg_guards(source, items)]
-        if guards or directory == crate:
-            return " ".join(filter(None, guards))
-        names.insert(0, directory.name)
-        directory = directory.parent
+                broken.append((f"{file}: {error}", file.read_text(encoding="utf-8", errors="replace")))
+                continue
+            for declaration in parsed.declarations:
+                try:
+                    targets = list(module_files(file, owner, parsed, declaration))
+                except ValueError as error:
+                    broken.append((str(error), parsed.source.uncommented[declaration.start:declaration.end]))
+                    continue
+                for target, owns in targets:
+                    if target.is_file():
+                        target = target.resolve()
+                        edges.setdefault(target, set()).add((file, declaration))
+                        work.append((target, owns))
+        TREES[roots] = edges, broken
+    return TREES[roots]
+
+
+HIDDEN_DECLARATION = re.compile(r"\bmod\s+(?:r#)?(\w+)\s*;")
+HIDDEN_PATH = re.compile(r"[\[,]\s*path\s*=\s*")
+
+
+def hidden_declaration(file, parsed, path):
+    """Return the offset of a `mod name;` inside a macro or function body in file that may load path where it
+    stands, or of a `path = "..."` attribute setting there that names path's file name."""
+    module = path.parent.name if path.name == "mod.rs" else path.stem
+    mask, text = parsed.source.without_comments_or_strings, parsed.source.uncommented
+    literals = dict(parsed.source.literals)
+    for start, end in parsed.opaque + [(function.body, function.end) for function in parsed.functions]:
+        for match in HIDDEN_DECLARATION.finditer(mask, start, end):
+            declaration = RustFunction(match[1], match.start(), match.start(), match.end() - 1, match.end())
+            if match[1] == module and any(target.is_file() and target.resolve() == path for owner in (True, False)
+                                          for target, _ in module_files(file, owner, parsed, declaration)):
+                return match.start()
+        for setting in HIDDEN_PATH.finditer(mask, start, end):
+            value = string_value(text[setting.end():literals.get(setting.end(), setting.end())])
+            if value is not None and Path(value).name == path.name:
+                return setting.start()
+    return None
+
+
+def declaration_guards(path):
+    """Return the guards on the out-of-line `mod` declarations that lead to path from its crate roots, outermost
+    first, or nothing for a crate root, which its own crate always compiles.
+
+    It follows each declaration from the crate roots by rustc's rules, including `#[path = "..."]` and each path
+    that a cfg_attr may set. It fails for a file that no root reaches, and for a module declaration inside a macro
+    or a function body of a reached file that may load path.
+    """
+    roots = crate_roots(path)
+    if roots is None or path in roots:
+        return ""
+    edges, broken = module_tree(roots)
+    module = path.parent.name if path.name == "mod.rs" else path.stem
+    for message, text in broken:
+        if re.search(rf"\b{re.escape(module)}\b|{re.escape(path.name)}", text):
+            raise ValueError(message)
+    for file in sorted(set(roots) | edges.keys()):
+        try:
+            parsed = parse_rust(file)
+        except ValueError:
+            continue
+        if (offset := hidden_declaration(file, parsed, path)) is not None:
+            line = parsed.source.without_comments_or_strings.count("\n", 0, offset) + 1
+            raise ValueError(f"{file}:{line}: a module declaration inside a macro or function body may load {path}, and the record cannot read the cfg around it; declare the module outside macros and function bodies")
+    if path not in edges:
+        unread = "".join(f"; {message}" for message, _ in broken)
+        raise ValueError(f"{path}: no module declaration that the record can read leads to this file from a crate root; declare it with `mod <name>;` or `#[path = \"...\"]` outside macros and function bodies, in a file that a crate root reaches{unread}")
+
+    def chain(file, visiting):
+        guards = []
+        for declarer, declaration in sorted(edges.get(file, ()), key=lambda edge: (str(edge[0]), edge[1].start)):
+            if declarer in visiting:
+                continue
+            parsed = parse_rust(declarer)
+            items = [(0, 0, -1)] + [(module.start, module.keyword, module.body) for module in enclosing_modules(parsed, declaration)] + [(declaration.start, declaration.keyword, declaration.body)]
+            guards += [chain(declarer, visiting | {declarer}), cfg_guards(parsed.source, items)]
+        return " ".join(filter(None, guards))
+
+    return chain(path, {path})
 
 
 def kani_surface(path):
