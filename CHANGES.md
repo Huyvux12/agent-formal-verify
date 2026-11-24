@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+`scripts/baseline.py` no longer records a `cfg(...)` inside another attribute as a guard on a Kani harness. A `cfg_attr` counts when its own attribute list, or that of a `cfg_attr` nested in it, applies `cfg(...)`. Before this change, `#[cfg_attr(docsrs, doc(cfg(feature = "x")))]`, which only labels the documentation, was recorded, so editing it printed `CHANGED`. So were the `cfg(z)` inside an attribute such as `#[my(#[cfg(z)] q)]` and a `cfg_attr` whose condition string held `,cfg(`. A record that holds such a guard prints `CHANGED` once, with the guard under `old:`; record the file again.
+
 A `SIGINT` that reaches `setup.sh tla`, `setup.sh rust` or `setup.sh lean` while its readiness check is still importing Python modules now ends the check by the signal with nothing on stderr. `tlc.py`, `kani.py`, `lean.py` and `mutate.py` restore the default `SIGINT` action before their other imports, when run as a script, until `runner.run` installs its handlers. Before this change, such a `SIGINT` printed a `KeyboardInterrupt` traceback.
 
 `setup.sh tla` now prints `usage: setup.sh tla` and exits 2 when it gets an argument after `tla`, as `setup.sh rust` and `setup.sh storage` do for theirs. Before this change, it ignored the argument and ran the readiness check.

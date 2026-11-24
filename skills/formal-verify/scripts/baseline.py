@@ -429,39 +429,52 @@ MACROS = (
 )
 PROOF = re.compile(KANI_ATTRIBUTE + r"proof(?:_for_contract\s*\([^)]*\))?\s*\)?\s*\]")
 KANI_TOKEN = re.compile(r"\bkani\s*::\s*(?:assume|any_where|cover|stub|proof)\w*\b")
-OUTER_CFG, INNER_CFG = (re.compile(rf"#\s*{bang}\[\s*cfg(?:_attr)?\s*\(") for bang in ("", r"!\s*"))
+ATTRIBUTE = re.compile(r"#\s*(!\s*)?\[")
 INNER_ATTRIBUTE = re.compile(r"[\s\ufeff]*#\s*!\s*\[")
 RENAMING_IMPORT = re.compile(r"\buse\s+[^;]*?(?<![\w:])(?:::\s*)?kani\b[^;]*?(?:\bas\b|\*|\b(?:assume|any_where|cover|stub|proof)\w*\b)|\bextern\s+crate\s+kani\s+as\b")
 
 
+def applies_cfg(attribute):
+    """Return whether a compact `cfg_attr(predicate, attribute, ...)` applies a cfg in its own attribute list."""
+    arguments, depth, start = [], 0, len("cfg_attr(")
+    for i in range(start, len(attribute) - 1):
+        depth += (attribute[i] in "([{") - (attribute[i] in ")]}")
+        if attribute[i] == "," and not depth:
+            arguments.append(attribute[start:i])
+            start = i + 1
+    arguments.append(attribute[start:-1])
+    return any(argument.startswith("cfg(") or argument.startswith("cfg_attr(") and applies_cfg(argument) for argument in arguments[1:])
+
+
 def cfg_guards(source, items):
-    """Return the cfg attributes other than cfg(kani), and the cfg_attr ones that apply a cfg, on each
-    (start, keyword, body) item, between its start and its fn or mod keyword, and at the start of its body.
+    """Return the cfg attributes other than cfg(kani), and the cfg_attr ones whose attribute list applies a cfg, on
+    each (start, keyword, body) item, between its start and its fn or mod keyword, and at the start of its body.
 
     A body of -1 stands for the file, which has only inner attributes, and a body at a `;` for an out-of-line `mod`
-    declaration, which has none.
+    declaration, which has none. An attribute nested inside another attribute's tokens is not read.
     """
     text, mask = source.uncommented, source.without_comments_or_strings
     guards = []
 
-    def read(pattern, start, stop):
-        for match in pattern.finditer(mask, start, stop):
-            opener = mask.index("[", match.start())
-            attribute = rust_masks(text[opener + 1:after_closing(mask, opener) - 1])
-            guard = collapse(attribute.uncommented, attribute.literals)
-            compact = re.sub(r"\s+", "", guard)
-            if compact.startswith("cfg(") and compact != "cfg(kani)" or re.search(r"[(,]cfg\(", compact.removeprefix("cfg_attr(")):
-                guards.append(guard)
+    def read(opener):
+        close = after_closing(mask, opener)
+        attribute = rust_masks(text[opener + 1:close - 1])
+        compact = re.sub(r"\s+", "", attribute.without_comments_or_strings)
+        if compact.startswith("cfg(") and compact != "cfg(kani)" or compact.startswith("cfg_attr(") and applies_cfg(compact):
+            guards.append(collapse(attribute.uncommented, attribute.literals))
+        return close
 
     for start, keyword, body in items:
         if body >= 0:
-            read(OUTER_CFG, start, keyword)
+            outer = start
+            while attribute := ATTRIBUTE.search(mask, outer, keyword):
+                opener = attribute.end() - 1
+                outer = after_closing(mask, opener) if attribute[1] else read(opener)
         if body >= 0 and mask[body] == ";":
             continue
-        first = inner = body + 1
+        inner = body + 1
         while attribute := INNER_ATTRIBUTE.match(mask, inner):
-            inner = after_closing(mask, attribute.end() - 1)
-        read(INNER_CFG, first, inner)
+            inner = read(attribute.end() - 1)
     return " ".join(guards)
 
 
