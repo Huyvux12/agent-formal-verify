@@ -35,8 +35,8 @@ jobs:
         with:
           persist-credentials: false
       - run: npm ci
-        working-directory: .github/skills-cli
-      - run: .github/skills-cli/node_modules/.bin/skills add ./skills --skill '*' --agent codex --yes --copy
+        working-directory: tests/skills-cli
+      - run: tests/skills-cli/node_modules/.bin/skills add ./skills --skill '*' --agent codex --yes --copy
       - run: diff -qr skills .agents/skills
 
   # A Mac runs the helpers' #!/bin/bash with Bash 3.2. The container swaps its
